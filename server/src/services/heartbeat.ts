@@ -45,6 +45,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { lifecycleHooks } from "./lifecycle-hooks.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -3739,6 +3740,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      // Fire internal lifecycle hooks (vault memory writer, etc).
+      // Registry isolates per-hook errors; we fire-and-forget so the hot
+      // path is not blocked by filesystem writes.
+      // Paperclip's heartbeat run terminal statuses (mirrors
+      // publishRunLifecyclePluginEvent above): `succeeded` is the canonical
+      // success state; older / alternative values are accepted defensively.
+      const lifecycleEvent =
+        status === "succeeded" || status === "completed" || status === "success" || status === "done"
+          ? "run.after.success"
+          : status === "failed" || status === "timed_out"
+            ? "run.after.failure"
+            : status === "cancelled"
+              ? "run.after.cancelled"
+              : null;
+      if (lifecycleEvent) {
+        void (async () => {
+          try {
+            const agent = await db.query.agents.findFirst({ where: eq(agents.id, updated.agentId) });
+            if (agent) {
+              await lifecycleHooks.firePost(lifecycleEvent, { db, agent, run: updated });
+            }
+          } catch (err) {
+            logger.warn({ err, event: lifecycleEvent, runId: updated.id }, "lifecycle hook dispatch failed");
+          }
+        })();
+      }
     }
 
     return updated;

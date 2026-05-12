@@ -8,6 +8,11 @@ export const agentWakeupRequests = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
+    // Optional team hint: the id of an agent whose subtree (via reports_to)
+    // defines the team that should handle this wakeup. When null, dispatch
+    // falls back to the direct agent_id path (legacy behaviour).
+    // Routed through `pickAgentForTeam` in services/department-router.ts.
+    teamLeadId: uuid("team_lead_id").references(() => agents.id, { onDelete: "set null" }),
     source: text("source").notNull(),
     triggerDetail: text("trigger_detail"),
     reason: text("reason"),
@@ -36,5 +41,6 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    teamLeadStatusIdx: index("agent_wakeup_requests_team_lead_status_idx").on(table.teamLeadId, table.status),
   }),
 );

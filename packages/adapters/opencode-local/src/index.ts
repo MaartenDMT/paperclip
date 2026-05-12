@@ -26,9 +26,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "Use GitHub Copilot's GPT-5 mini as the budget lane (cheap + reliable on Windows; was openai/gpt-5.1-codex-mini).",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: "github-copilot/gpt-5-mini",
       variant: "low",
     },
     source: "adapter_default",

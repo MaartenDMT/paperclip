@@ -294,7 +294,36 @@ export async function terminateLocalService(
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
-  const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+  const forceAfterMs = opts?.forceAfterMs ?? 2_000;
+
+  // Windows: process.kill is TerminateProcess (no cleanup handlers, no signal
+  // delivery to children). Use taskkill /T to walk the process tree so embedded
+  // postgres and other spawned children are reaped alongside the parent.
+  if (process.platform === "win32") {
+    if (!isPidAlive(record.pid)) return;
+    try {
+      // Graceful: WM_CLOSE to console parent + tree
+      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T"]);
+    } catch {
+      // Fall through to force kill below
+    }
+
+    const deadline = Date.now() + forceAfterMs;
+    while (Date.now() < deadline) {
+      if (!isPidAlive(record.pid)) return;
+      await delay(100);
+    }
+
+    if (!isPidAlive(record.pid)) return;
+    try {
+      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T", "/F"]);
+    } catch {
+      // Ignore cleanup races.
+    }
+    return;
+  }
+
+  const targetProcessGroup = !!(record.processGroupId && record.processGroupId > 0);
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
@@ -305,7 +334,7 @@ export async function terminateLocalService(
     return;
   }
 
-  const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
+  const deadline = Date.now() + forceAfterMs;
   while (Date.now() < deadline) {
     const targetAlive = targetProcessGroup
       ? isProcessGroupAlive(record.processGroupId)

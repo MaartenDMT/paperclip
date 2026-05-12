@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -9,7 +11,57 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
+const MODELS_DISK_CACHE_TTL_MS = 60 * 60 * 1000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const DISK_CACHE_SCHEMA_VERSION = 1;
+
+type DiskCacheEntry = { expiresAt: number; models: AdapterModel[] };
+type DiskCacheFile = { version: number; entries: Record<string, DiskCacheEntry> };
+
+function resolveDiskCachePath(): string {
+  const override = process.env.PAPERCLIP_OPENCODE_MODELS_CACHE_PATH;
+  if (override && override.trim().length > 0) return override.trim();
+  const baseDir =
+    process.platform === "win32"
+      ? process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local")
+      : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+  return path.join(baseDir, "paperclip", "opencode-models.json");
+}
+
+async function readDiskCache(): Promise<DiskCacheFile> {
+  try {
+    const raw = await readFile(resolveDiskCachePath(), "utf8");
+    const parsed = JSON.parse(raw) as Partial<DiskCacheFile>;
+    if (parsed?.version !== DISK_CACHE_SCHEMA_VERSION || typeof parsed.entries !== "object" || parsed.entries === null) {
+      return { version: DISK_CACHE_SCHEMA_VERSION, entries: {} };
+    }
+    return { version: DISK_CACHE_SCHEMA_VERSION, entries: parsed.entries as Record<string, DiskCacheEntry> };
+  } catch {
+    return { version: DISK_CACHE_SCHEMA_VERSION, entries: {} };
+  }
+}
+
+async function writeDiskCache(file: DiskCacheFile): Promise<void> {
+  const cachePath = resolveDiskCachePath();
+  try {
+    await mkdir(path.dirname(cachePath), { recursive: true });
+    const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(file), "utf8");
+    await rename(tmpPath, cachePath);
+  } catch {
+    // Cache write failures must never break discovery.
+  }
+}
+
+function pruneExpiredDiskEntries(file: DiskCacheFile, now: number): DiskCacheFile {
+  const entries: Record<string, DiskCacheEntry> = {};
+  for (const [k, v] of Object.entries(file.entries)) {
+    if (v && typeof v.expiresAt === "number" && v.expiresAt > now && Array.isArray(v.models)) {
+      entries[k] = v;
+    }
+  }
+  return { version: DISK_CACHE_SCHEMA_VERSION, entries };
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -21,6 +73,11 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+// In-flight de-dup: when multiple agents probe simultaneously, only the first
+// kicks off the external `opencode models` invocation; the rest await the same
+// promise. Prevents concurrent SQLite migrations against opencode.db (the root
+// cause of 20s timeouts when many idle agents wake at once).
+const inflightDiscovery = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -170,9 +227,37 @@ export async function discoverOpenCodeModelsCached(input: {
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  // Single-flight: collapse concurrent callers onto one external invocation.
+  const existing = inflightDiscovery.get(key);
+  if (existing) return existing;
+
+  // L2: cross-process disk cache. Hydrates L1 on hit so concurrent Paperclip
+  // processes don't all race `opencode models` (which migrates opencode.db on
+  // every invocation and produces SQLite lock crashes under contention).
+  const diskHydration = (async () => {
+    const file = await readDiskCache();
+    const entry = file.entries[key];
+    if (entry && entry.expiresAt > Date.now()) {
+      discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models: entry.models });
+      return entry.models;
+    }
+    return null;
+  })();
+
+  const pending = diskHydration.then(async (hit) => {
+    if (hit) return hit;
+    const models = await discoverOpenCodeModels({ command, cwd, env });
+    const nowAfter = Date.now();
+    discoveryCache.set(key, { expiresAt: nowAfter + MODELS_CACHE_TTL_MS, models });
+    const next = pruneExpiredDiskEntries(await readDiskCache(), nowAfter);
+    next.entries[key] = { expiresAt: nowAfter + MODELS_DISK_CACHE_TTL_MS, models };
+    await writeDiskCache(next);
+    return models;
+  }).finally(() => {
+    inflightDiscovery.delete(key);
+  });
+  inflightDiscovery.set(key, pending);
+  return pending;
 }
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
@@ -213,4 +298,13 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  inflightDiscovery.clear();
+}
+
+export async function resetOpenCodeModelsDiskCacheForTests() {
+  try {
+    await writeFile(resolveDiskCachePath(), JSON.stringify({ version: DISK_CACHE_SCHEMA_VERSION, entries: {} }), "utf8");
+  } catch {
+    // ignore
+  }
 }

@@ -144,6 +144,7 @@ if (mode === "watch") {
   delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  env.PAPERCLIP_PLUGIN_DEV_WATCHER ??= "false";
 }
 
 if (tailscaleAuth || bindMode) {

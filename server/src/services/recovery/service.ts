@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -57,9 +57,29 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// Output-silence watchdog thresholds. Lower defaults than the historical 1h/4h
+// so a crashed adapter doesn't hold an agent's queue for hours. Override with
+// PAPERCLIP_RUN_OUTPUT_SUSPICION_MS / PAPERCLIP_RUN_OUTPUT_CRITICAL_MS /
+// PAPERCLIP_RUN_OUTPUT_REARM_MS when you genuinely need longer silence windows
+// (e.g. long-running external integrations).
+function envMs(name: string, fallbackMs: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallbackMs;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+}
+export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = envMs(
+  "PAPERCLIP_RUN_OUTPUT_SUSPICION_MS",
+  10 * 60 * 1000,
+);
+export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = envMs(
+  "PAPERCLIP_RUN_OUTPUT_CRITICAL_MS",
+  30 * 60 * 1000,
+);
+export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = envMs(
+  "PAPERCLIP_RUN_OUTPUT_REARM_MS",
+  10 * 60 * 1000,
+);
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -804,6 +824,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
     }
     if (input.runningAgent.reportsTo) candidateIds.push(input.runningAgent.reportsTo);
+    // Prefer ops/recovery agents whose job IS run recovery, so the work doesn't
+    // pile onto CTO/CEO as the default escalation target. Match by role first
+    // (covers any company that has ops-flavoured roles) and by name as a
+    // pragmatic fallback (we know "Engineering Operations Coordinator" and
+    // "Worktree Steward" exist in the seed org).
+    const opsCandidates = await db
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, input.run.companyId),
+          or(
+            inArray(agents.role, [
+              "ops",
+              "operations",
+              "engineering_ops",
+              "engineering_operations",
+              "worktree_steward",
+              "operations_coordinator",
+            ]),
+            inArray(agents.name, ["Engineering Operations Coordinator", "Worktree Steward"]),
+          ),
+        ),
+      )
+      .orderBy(asc(agents.createdAt));
+    candidateIds.push(...opsCandidates.map((agent) => agent.id));
+    // Final fallback: CTO then CEO. Reaches these only when no ops-flavoured
+    // agent is invokable (e.g. paused, over budget, or doesn't exist).
     const roleCandidates = await db
       .select()
       .from(agents)
