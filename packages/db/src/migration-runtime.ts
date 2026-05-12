@@ -1,8 +1,13 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
+import {
+  readEmbeddedPostgresPostmasterPid,
+  readEmbeddedPostgresPostmasterPort,
+  startEmbeddedPostgresWithRecovery,
+} from "./embedded-postgres-runtime.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 type EmbeddedPostgresInstance = {
@@ -27,29 +32,6 @@ export type MigrationConnection = {
   source: string;
   stop: () => Promise<void>;
 };
-
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
-
-function readPidFilePort(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const lines = readFileSync(postmasterPidFile, "utf8").split("\n");
-    const port = Number(lines[3]?.trim());
-    return Number.isInteger(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
 
 async function isPortInUse(port: number): Promise<boolean> {
   return await new Promise((resolve) => {
@@ -95,8 +77,8 @@ async function ensureEmbeddedPostgresConnection(
   const selectedPort = await findAvailablePort(preferredPort);
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  const runningPort = readPidFilePort(postmasterPidFile);
+  const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
+  const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
   const preferredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`;
   const logBuffer = createEmbeddedPostgresLogBuffer();
 
@@ -156,11 +138,13 @@ async function ensureEmbeddedPostgresConnection(
       });
     }
   }
-  if (existsSync(postmasterPidFile)) {
-    rmSync(postmasterPidFile, { force: true });
-  }
   try {
-    await instance.start();
+    await startEmbeddedPostgresWithRecovery({
+      instance,
+      postmasterPidFile,
+      getRecentLogs: () => logBuffer.getRecentLogs(),
+      onRecovered: (message) => process.emitWarning(message),
+    });
   } catch (error) {
     throw formatEmbeddedPostgresError(error, {
       fallbackMessage: `Failed to start embedded PostgreSQL on port ${selectedPort}`,

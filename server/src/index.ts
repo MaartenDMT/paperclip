@@ -1,5 +1,5 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -15,9 +15,12 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  readEmbeddedPostgresPostmasterPid,
+  readEmbeddedPostgresPostmasterPort,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  startEmbeddedPostgresWithRecovery,
   authUsers,
   companies,
   companyMemberships,
@@ -333,30 +336,10 @@ export async function startServer(): Promise<StartedServer> {
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
     const clusterAlreadyInitialized = existsSync(clusterVersionFile);
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
-    const isPidRunning = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-  
-    const getRunningPid = (): number | null => {
-      if (!existsSync(postmasterPidFile)) return null;
-      try {
-        const pidLine = readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim();
-        const pid = Number(pidLine);
-        if (!Number.isInteger(pid) || pid <= 0) return null;
-        if (!isPidRunning(pid)) return null;
-        return pid;
-      } catch {
-        return null;
-      }
-    };
-  
-    const runningPid = getRunningPid();
+    const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
+    const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
     if (runningPid) {
+      port = runningPort ?? port;
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
@@ -404,12 +387,13 @@ export async function startServer(): Promise<StartedServer> {
           logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
         }
 
-        if (existsSync(postmasterPidFile)) {
-          logger.warn("Removing stale embedded PostgreSQL lock file");
-          rmSync(postmasterPidFile, { force: true });
-        }
         try {
-          await embeddedPostgres.start();
+          await startEmbeddedPostgresWithRecovery({
+            instance: embeddedPostgres,
+            postmasterPidFile,
+            getRecentLogs: () => logBuffer.getRecentLogs(),
+            onRecovered: (message) => logger.warn(message),
+          });
         } catch (err) {
           logEmbeddedPostgresFailure("start", err);
           throw formatEmbeddedPostgresError(err, {
