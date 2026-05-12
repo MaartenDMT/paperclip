@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import type { AdapterModel } from "./types.js";
 
@@ -15,6 +17,35 @@ interface CodexModelListEntry {
 
 interface CodexModelListResult {
   data?: unknown;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveCodexCommand(): string {
+  const explicit = (
+    asNonEmptyString(process.env.PAPERCLIP_CODEX_COMMAND) ??
+    asNonEmptyString(process.env.CODEX_COMMAND) ??
+    null
+  );
+  if (explicit) return explicit;
+
+  const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const pathValue = asNonEmptyString(process.env[pathKey]) ?? asNonEmptyString(process.env.PATH) ?? "";
+  const pathEntries = pathValue.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  const candidates = process.platform === "win32"
+    ? ["codex.cmd", "codex.exe", "codex.ps1", "codex"]
+    : ["codex"];
+
+  for (const dir of pathEntries) {
+    for (const candidate of candidates) {
+      const absolute = path.join(dir, candidate);
+      if (existsSync(absolute)) return absolute;
+    }
+  }
+
+  return process.platform === "win32" ? "codex.cmd" : "codex";
 }
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
@@ -64,7 +95,7 @@ function parseCodexModelListResult(payload: Record<string, unknown> | null | und
 type CodexRpcMessage = Record<string, unknown>;
 
 async function requestCodexRpc(method: string, params: Record<string, unknown> = {}): Promise<CodexRpcMessage | null> {
-  const proc = spawn("codex", ["-s", "read-only", "-a", "untrusted", "app-server"], {
+  const proc = spawn(resolveCodexCommand(), ["-s", "read-only", "-a", "untrusted", "app-server"], {
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env,
   });
@@ -87,6 +118,11 @@ async function requestCodexRpc(method: string, params: Record<string, unknown> =
     }
     pending.clear();
   };
+
+  proc.on("error", (error) => {
+    settled = true;
+    finishPending(error instanceof Error ? error : new Error(String(error)));
+  });
 
   proc.stdout.setEncoding("utf8");
   proc.stdout.on("data", (chunk: string) => {

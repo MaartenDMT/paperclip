@@ -17,6 +17,14 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
   );
 }
 
+function resolveXdgDataHome(env: Record<string, string>): string {
+  return (
+    (typeof env.XDG_DATA_HOME === "string" && env.XDG_DATA_HOME.trim()) ||
+    (typeof process.env.XDG_DATA_HOME === "string" && process.env.XDG_DATA_HOME.trim()) ||
+    path.join(os.homedir(), ".local", "share")
+  );
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -59,6 +67,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
+  const sourceDataHome = resolveXdgDataHome(input.env);
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
@@ -94,9 +103,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     env: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
+      XDG_DATA_HOME: sourceDataHome,
     },
     notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts while preserving the user's OpenCode data home for provider/login state.",
     ],
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });

@@ -40,12 +40,13 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     });
 
     const prepared = await prepareOpenCodeRuntimeConfig({
-      env: { XDG_CONFIG_HOME: configHome },
+      env: { XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: "/tmp/paperclip-opencode-data" },
       config: {},
     });
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
 
     expect(prepared.env.XDG_CONFIG_HOME).not.toBe(configHome);
+    expect(prepared.env.XDG_DATA_HOME).toBe("/tmp/paperclip-opencode-data");
     const runtimeConfig = JSON.parse(
       await fs.readFile(
         path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
@@ -68,12 +69,29 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
-      env: { XDG_CONFIG_HOME: configHome },
+      env: { XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: "/tmp/paperclip-opencode-data" },
       config: { dangerouslySkipPermissions: false },
     });
 
-    expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
+    expect(prepared.env).toEqual({
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: "/tmp/paperclip-opencode-data",
+    });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("defaults XDG_DATA_HOME when not explicitly provided", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    expect(prepared.env.XDG_DATA_HOME).toBe(path.join(os.homedir(), ".local", "share"));
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
   });
 });
