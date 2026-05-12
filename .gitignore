@@ -56,3 +56,17 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Local investigation / scratch artifacts
+.graphify-work/
+.graphify_detect.json
+.graphify_detect.py
+.pnpm/
+.worktrees/
+create_content_writer.json
+graphify-db/
+graphify-extract.log
+graphify-server/
+packages/db/src/graphify-out/
+raw/
+server/src/graphify-out/
