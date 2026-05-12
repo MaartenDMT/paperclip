@@ -45,7 +45,6 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
-  ensureOpenCodeModelConfiguredAndAvailable,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
 } from "./models.js";
@@ -201,7 +200,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "opencode");
-  const model = asString(config.model, "").trim();
+  const model = requireOpenCodeModelId(config.model);
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -320,15 +319,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
-    if (!executionTargetIsRemote) {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model,
-        command,
-        cwd,
-        env: runtimeEnv,
-      });
-    }
-
     const extraArgs = (() => {
       const fromExtraArgs = asStringArray(config.extraArgs);
       if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -407,16 +397,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
         );
       }
-      await ensureRemoteOpenCodeModelConfiguredAndAvailable({
-        runId,
-        executionTarget,
-        command,
-        model,
-        cwd,
-        env: preparedRuntimeConfig.env,
-        timeoutSec,
-        graceSec,
-      });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
