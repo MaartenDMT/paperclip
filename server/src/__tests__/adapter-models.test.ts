@@ -44,7 +44,7 @@ describe("adapter model listing", () => {
     expect(models).toEqual(codexFallbackModels);
   });
 
-  it("loads codex models dynamically and merges fallback options", async () => {
+  it("loads only dynamically discovered codex models when discovery succeeds", async () => {
     const fetcher = vi.fn(async () => [
       { id: "gpt-5.5", label: "GPT-5.5" },
       { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
@@ -58,7 +58,7 @@ describe("adapter model listing", () => {
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "gpt-5.5")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.4-mini")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(false);
   });
 
   it("refreshes cached codex models on demand", async () => {

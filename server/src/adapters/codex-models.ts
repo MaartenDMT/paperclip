@@ -60,13 +60,6 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   return deduped;
 }
 
-function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
-  return dedupeModels([
-    ...models,
-    ...codexFallbackModels,
-  ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
-}
-
 function parseCodexModelListResult(payload: Record<string, unknown> | null | undefined): AdapterModel[] {
   const result =
     payload && typeof payload.result === "object" && payload.result !== null
@@ -201,12 +194,14 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
 
   const fetched = await codexModelsFetcher();
   if (fetched.length > 0) {
-    const merged = mergedWithFallback(fetched);
+    const discovered = dedupeModels(fetched).sort((a, b) =>
+      a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }),
+    );
     cached = {
       expiresAt: now + CODEX_MODELS_CACHE_TTL_MS,
-      models: merged,
+      models: discovered,
     };
-    return merged;
+    return discovered;
   }
 
   if (cached && cached.models.length > 0) {
