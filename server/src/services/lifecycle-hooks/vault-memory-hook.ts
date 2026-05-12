@@ -21,6 +21,7 @@
  *  - PAPERCLIP_MEMORY_VAULT_TZ (default Europe/Brussels — label only)
  */
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { LifecycleContext, PostHookHandler } from "../lifecycle-hooks.js";
@@ -30,6 +31,67 @@ const VAULT =
   "A:/Programming/paperclip/memory/obsidian";
 const TZ_LABEL = process.env.PAPERCLIP_MEMORY_VAULT_TZ || "Europe/Brussels";
 const ISSUE_RE = /\bREA-\d{2,5}\b/g;
+
+// graphify CLI shim path — installed via `uv tool install graphifyy`.
+const GRAPHIFY_BIN = process.env.PAPERCLIP_GRAPHIFY_BIN || "graphify";
+// LLM backend for extraction. Default to local ollama so background rebuilds
+// don't burn external API quota. Override with PAPERCLIP_GRAPHIFY_BACKEND.
+const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
+const GRAPHIFY_MODEL = process.env.PAPERCLIP_GRAPHIFY_MODEL || "qwen3.5:9b";
+// Throttle: only re-index the memory graph at most every N seconds.
+// Multiple agent runs in a burst share one update.
+const GRAPHIFY_THROTTLE_MS = Number(
+  process.env.PAPERCLIP_GRAPHIFY_THROTTLE_MS || 5 * 60 * 1000,
+);
+let lastGraphifyAt = 0;
+let graphifyInFlight = false;
+
+/**
+ * Fire-and-forget `graphify <vault> --update` to refresh the agent-memory
+ * knowledge graph after the vault changes. Throttled and silent — failures
+ * never block the heartbeat run. The graph powers `graphify query "..."`
+ * which agents are told about in the heartbeat prompt.
+ */
+function maybeRefreshMemoryGraph(): void {
+  const now = Date.now();
+  if (graphifyInFlight) return;
+  if (now - lastGraphifyAt < GRAPHIFY_THROTTLE_MS) return;
+  lastGraphifyAt = now;
+  graphifyInFlight = true;
+  try {
+    // `extract` has built-in caching, so only new/changed files are re-processed.
+    // `--no-cluster` keeps it fast; clustering can be re-run on demand later.
+    // `--max-concurrency 1` is required for local LLMs (per graphify CLI docs).
+    const child = spawn(
+      GRAPHIFY_BIN,
+      [
+        "extract",
+        VAULT,
+        "--backend",
+        GRAPHIFY_BACKEND,
+        "--model",
+        GRAPHIFY_MODEL,
+        "--max-concurrency",
+        "1",
+        "--no-cluster",
+      ],
+      {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      shell: process.platform === "win32",
+    });
+    child.on("error", () => {
+      graphifyInFlight = false;
+    });
+    child.on("exit", () => {
+      graphifyInFlight = false;
+    });
+    child.unref();
+  } catch {
+    graphifyInFlight = false;
+  }
+}
 
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -112,6 +174,74 @@ TODO: scaffolded by vault-memory-hook. Owning agent should fill in next wake.
   fs.writeFileSync(file, body);
 }
 
+/**
+ * Build a compact, append-only digest from the run record. This is a fallback
+ * for when the agent itself failed to write durable memory — we'd rather have
+ * a noisy auto-digest than an empty page that says "TODO".
+ */
+function buildFallbackDigest(opts: {
+  stamp: string;
+  agentName: string;
+  agentSlug: string;
+  runId: string;
+  status: string;
+  resultText: string;
+  stdoutExcerpt: string | null | undefined;
+  nextAction: string | null | undefined;
+}): string {
+  const clip = (s: string | null | undefined, n: number): string => {
+    if (!s) return "";
+    const trimmed = s.trim();
+    if (trimmed.length <= n) return trimmed;
+    return trimmed.slice(0, n) + "…";
+  };
+
+  // Try to surface a one-line summary from result_json if it's structured.
+  let summary = "";
+  try {
+    const parsed = JSON.parse(opts.resultText || "null");
+    if (parsed && typeof parsed === "object") {
+      const candidate =
+        (parsed as Record<string, unknown>).summary ??
+        (parsed as Record<string, unknown>).message ??
+        (parsed as Record<string, unknown>).result ??
+        (parsed as Record<string, unknown>).output;
+      if (typeof candidate === "string") summary = clip(candidate, 400);
+    }
+  } catch {
+    summary = clip(opts.resultText, 400);
+  }
+
+  const lines = [
+    "",
+    `## [${opts.stamp}] auto-digest by [[${opts.agentSlug}]] (hook-written)`,
+    `- Run: \`${opts.runId.slice(0, 8)}\` status=${opts.status}; agent did not write durable memory, hook captured this digest.`,
+  ];
+  if (summary) lines.push(`- Summary: ${summary}`);
+  if (opts.nextAction) lines.push(`- Next action (from run): ${clip(opts.nextAction, 400)}`);
+  const tail = clip(opts.stdoutExcerpt, 600);
+  if (tail) {
+    lines.push("- Stdout excerpt:");
+    lines.push("");
+    lines.push("```");
+    lines.push(tail);
+    lines.push("```");
+  }
+  return lines.join("\n") + "\n";
+}
+
+function appendFallbackDigest(
+  issueId: string,
+  digest: string,
+): void {
+  const file = path.join(VAULT, "issues", `${issueId}.md`);
+  try {
+    fs.appendFileSync(file, digest);
+  } catch {
+    // swallow — vault writes are best-effort
+  }
+}
+
 function issuePageUpdatedSince(issueId: string, since: Date): boolean {
   const file = path.join(VAULT, "issues", `${issueId}.md`);
   try {
@@ -153,14 +283,30 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
   const blob = `${resultText}\n${run.stdoutExcerpt ?? ""}\n${run.nextAction ?? ""}`;
   const touched = extractIssueIds(blob);
 
+  const stamp = fmtStamp(finishedAt);
   const missed: string[] = [];
   for (const id of touched) {
     ensureIssuePage(id);
     if (!issuePageUpdatedSince(id, startedAt)) missed.push(id);
   }
 
-  const stamp = fmtStamp(finishedAt);
-  const action = missed.length > 0 ? "noncompliant" : "run";
+  // Fallback: agent didn't update touched issue pages — write a hook-authored
+  // digest so the page is no longer empty. Better noisy than blank.
+  if (missed.length > 0) {
+    const digest = buildFallbackDigest({
+      stamp,
+      agentName: agent.name,
+      agentSlug: slug,
+      runId: run.id,
+      status: run.status,
+      resultText,
+      stdoutExcerpt: run.stdoutExcerpt,
+      nextAction: run.nextAction,
+    });
+    for (const id of missed) appendFallbackDigest(id, digest);
+  }
+
+  const action = missed.length > 0 ? "noncompliant-autodigest" : "run";
   const touchedRef = touched.length
     ? touched.map((i) => `[[${i}]]`).join(", ")
     : "no issue touched";
@@ -173,4 +319,8 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
       : `- Next: review surfaced facts for [[${slug}]] role page if material.`,
   ];
   fs.appendFileSync(path.join(VAULT, "log.md"), lines.join("\n") + "\n");
+
+  // Kick the memory knowledge graph to refresh in the background.
+  // Throttled internally — safe to call after every run.
+  maybeRefreshMemoryGraph();
 };

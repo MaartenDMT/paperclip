@@ -2148,6 +2148,25 @@ export function buildPaperclipTaskMarkdown(input: {
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
   }
+  if (issue) {
+    const issueCode = issue.identifier || issue.id;
+    lines.push(
+      "",
+      "Durable memory requirement (MANDATORY):",
+      `- Before declaring this run done, append a concise progress note to A:\\Programming\\paperclip\\memory\\obsidian\\issues\\${issueCode}.md`,
+      "- Follow the karpathy-obsidian-memory skill: use [[wikilinks]] to related issues/agents, keep entries dated, prefer append-only edits.",
+      "- Include: what you did, files touched (relative paths), decisions made, blockers, and the next concrete step.",
+      "- Treat this as part of the assignment, not optional. The vault is shared memory across heartbeats and other agents depend on it.",
+      "",
+      "Searching prior memory (BEFORE you start work):",
+      "- The vault is indexed by graphify into a knowledge graph (A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json) connecting every note across issues and agents.",
+      `- Search related past notes: \`graphify query "<your question>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Find shortest path between two concepts: \`graphify path "<concept-a>" "<concept-b>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Explain a single node in plain language: \`graphify explain "<node-id>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Always check the graph for prior work on this issue (\`${issueCode}\`), related issues, and agents who touched the same area before re-discovering known facts.`,
+      "- The graph auto-refreshes after every heartbeat; queries reflect the latest agent writes within ~5 minutes.",
+    );
+  }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
 }
