@@ -115,6 +115,67 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function readConfiguredAdapterModelsFromAgents(
+  agents: Array<{ adapterType: string; adapterConfig?: unknown; runtimeConfig?: unknown }>,
+  adapterType: string,
+): Array<{ id: string; label: string }> {
+  const models = new Set<string>();
+
+  const collectModel = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const model = value.trim();
+    if (!model) return;
+    models.add(model);
+  };
+
+  for (const agent of agents) {
+    if (agent.adapterType !== adapterType) continue;
+    const adapterConfig =
+      typeof agent.adapterConfig === "object" && agent.adapterConfig !== null
+        ? (agent.adapterConfig as Record<string, unknown>)
+        : null;
+    const runtimeConfig =
+      typeof agent.runtimeConfig === "object" && agent.runtimeConfig !== null
+        ? (agent.runtimeConfig as Record<string, unknown>)
+        : null;
+    collectModel(adapterConfig?.model);
+
+    const modelProfiles =
+      runtimeConfig && typeof runtimeConfig.modelProfiles === "object" && runtimeConfig.modelProfiles !== null
+        ? (runtimeConfig.modelProfiles as Record<string, unknown>)
+        : null;
+    if (!modelProfiles) continue;
+    for (const profile of Object.values(modelProfiles)) {
+      const profileRecord =
+        typeof profile === "object" && profile !== null ? (profile as Record<string, unknown>) : null;
+      const profileAdapterConfig =
+        profileRecord && typeof profileRecord.adapterConfig === "object" && profileRecord.adapterConfig !== null
+          ? (profileRecord.adapterConfig as Record<string, unknown>)
+          : null;
+      collectModel(profileAdapterConfig?.model);
+    }
+  }
+
+  return [...models]
+    .sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }))
+    .map((id) => ({ id, label: id }));
+}
+
+function mergeAdapterModelLists(
+  discovered: Array<{ id: string; label: string }>,
+  configured: Array<{ id: string; label: string }>,
+) {
+  const seen = new Set<string>();
+  const merged: Array<{ id: string; label: string }> = [];
+  for (const model of [...discovered, ...configured]) {
+    const id = typeof model.id === "string" ? model.id.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push({ id, label: typeof model.label === "string" && model.label.trim() ? model.label.trim() : id });
+  }
+  return merged;
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -1368,11 +1429,16 @@ export function agentRoutes(
       res.json(adapter.models ?? []);
       return;
     }
-    const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
-    res.json(models);
-  });
+      const models = refresh
+        ? await refreshAdapterModels(type)
+        : await listAdapterModels(type);
+      if (type === "opencode_local") {
+        const configuredModels = readConfiguredAdapterModelsFromAgents(await svc.list(companyId), type);
+        res.json(mergeAdapterModelLists(models, configuredModels));
+        return;
+      }
+      res.json(models);
+    });
 
   router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
     const companyId = req.params.companyId as string;

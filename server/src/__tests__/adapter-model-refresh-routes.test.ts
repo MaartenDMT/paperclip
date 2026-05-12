@@ -43,6 +43,10 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   ensureManagedBundle: vi.fn(),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockBudgetService = vi.hoisted(() => ({
   upsertPolicy: vi.fn(),
 }));
@@ -76,7 +80,7 @@ function registerModuleMocks() {
   });
 
   vi.doMock("../services/index.js", () => ({
-    agentService: () => ({}),
+    agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -166,6 +170,7 @@ describe("adapter model refresh route", () => {
     vi.clearAllMocks();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
+    mockAgentService.list.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
@@ -247,5 +252,36 @@ describe("adapter model refresh route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
     expect(mockListOpenCodeModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("merges company-configured OpenCode models into the picker when discovery is incomplete", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        adapterType: "opencode_local",
+        adapterConfig: { model: "github-copilot/gemini-3-flash-preview" },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: {
+              adapterConfig: { model: "minimax/MiniMax-M2.5" },
+            },
+          },
+        },
+      },
+    ]);
+    mockListOpenCodeModels.mockResolvedValue([
+      { id: "opencode/minimax-m2.5-free", label: "opencode/minimax-m2.5-free" },
+    ]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/opencode_local/models"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      { id: "opencode/minimax-m2.5-free", label: "opencode/minimax-m2.5-free" },
+      { id: "github-copilot/gemini-3-flash-preview", label: "github-copilot/gemini-3-flash-preview" },
+      { id: "minimax/MiniMax-M2.5", label: "minimax/MiniMax-M2.5" },
+    ]);
   });
 });
