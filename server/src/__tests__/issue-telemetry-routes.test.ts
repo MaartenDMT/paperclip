@@ -124,7 +124,7 @@ describe("issue telemetry routes", () => {
       companyId: "company-1",
       role: "engineer",
       adapterType: "codex_local",
-      adapterConfig: { model: "claude-sonnet-4-6" },
+      adapterConfig: { model: "claude-haiku-4-5-20251001" },
     });
 
     const app = await createApp({
@@ -143,7 +143,7 @@ describe("issue telemetry routes", () => {
         agentRole: "engineer",
         agentId: "agent-1",
         adapterType: "codex_local",
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-4-5-20251001",
       });
     });
   }, 10_000);

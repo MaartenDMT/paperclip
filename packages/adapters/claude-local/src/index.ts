@@ -18,9 +18,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
+    description: "Use Claude Haiku as the lower-cost Claude Code lane while preserving the agent's primary model.",
     adapterConfig: {
-      model: "claude-sonnet-4-6",
+      model: "claude-haiku-4-5-20251001",
       effort: "low",
     },
     source: "adapter_default",

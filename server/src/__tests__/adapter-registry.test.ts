@@ -197,14 +197,14 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
+        adapterConfig: expect.objectContaining({ model: "claude-haiku-4-5-20251001" }),
         source: "adapter_default",
       }),
     ]);
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
         source: "adapter_default",
       }),
     ]);

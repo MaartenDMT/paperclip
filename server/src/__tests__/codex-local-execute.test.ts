@@ -580,7 +580,7 @@ describe("codex execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          model: "gpt-5.3-codex-spark",
+          model: "gpt-5.4",
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},
