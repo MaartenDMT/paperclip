@@ -13,6 +13,10 @@
  */
 
 import { lifecycleHooks } from "./lifecycle-hooks.js";
+import {
+  goalChecklistEnforcementPostHook,
+  goalChecklistInstructionPreHook,
+} from "./lifecycle-hooks/goal-checklist-enforcement-hook.js";
 import { mandatorySkillInstructionPreHook } from "./lifecycle-hooks/mandatory-skill-instruction-hook.js";
 import { vaultMemoryPostHook } from "./lifecycle-hooks/vault-memory-hook.js";
 import { logger } from "../middleware/logger.js";
@@ -22,6 +26,8 @@ export interface LifecycleBootstrapOptions {
   enableVaultMemoryHook?: boolean;
   /** Default true. Set false to disable mandatory runtime skill instruction injection. */
   enableMandatorySkillInstructionHook?: boolean;
+  /** Default true. Set false to disable manager goal-checklist enforcement. */
+  enableGoalChecklistEnforcementHook?: boolean;
 }
 
 export function registerCoreLifecycleHooks(
@@ -31,11 +37,20 @@ export function registerCoreLifecycleHooks(
     opts.enableVaultMemoryHook ?? process.env.PAPERCLIP_VAULT_HOOK !== "off";
   const enableMandatorySkillInstruction =
     opts.enableMandatorySkillInstructionHook ?? process.env.PAPERCLIP_MANDATORY_SKILL_HOOK !== "off";
+  const enableGoalChecklistEnforcement =
+    opts.enableGoalChecklistEnforcementHook ?? process.env.PAPERCLIP_GOAL_CHECKLIST_ENFORCEMENT_HOOK !== "off";
 
   if (enableMandatorySkillInstruction) {
     lifecycleHooks.register("run.before", "mandatory-skill-instruction", mandatorySkillInstructionPreHook);
   } else {
     logger.info("mandatory-skill-instruction lifecycle hook disabled by config");
+  }
+
+  if (enableGoalChecklistEnforcement) {
+    lifecycleHooks.register("run.before", "goal-checklist-instruction", goalChecklistInstructionPreHook);
+    lifecycleHooks.register("run.after.success", "goal-checklist-enforcement", goalChecklistEnforcementPostHook);
+  } else {
+    logger.info("goal-checklist-enforcement lifecycle hook disabled by config");
   }
 
   if (enableVault) {
