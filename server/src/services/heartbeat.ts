@@ -3730,6 +3730,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  function noOpenRoutineExecutionDuplicateForIssue() {
+    return sql`not exists (
+      select 1
+      from issues routine_duplicate
+      where routine_duplicate.company_id = ${issues.companyId}
+        and routine_duplicate.origin_kind = 'routine_execution'
+        and routine_duplicate.origin_id = ${issues.originId}
+        and routine_duplicate.origin_fingerprint = ${issues.originFingerprint}
+        and routine_duplicate.hidden_at is null
+        and routine_duplicate.execution_run_id is not null
+        and routine_duplicate.status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+        and routine_duplicate.id <> ${issues.id}
+    )`;
+  }
   async function setRunStatus(
     runId: string,
     status: string,
@@ -5961,7 +5975,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      const lockedIssue = await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -5977,8 +5991,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            noOpenRoutineExecutionDuplicateForIssue(),
           ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (!lockedIssue) {
+        const reason =
+          "Cancelled because another open routine execution issue for the same routine already owns the active execution lock";
+        const finishedAt = new Date();
+        await setRunStatus(claimed.id, "cancelled", {
+          finishedAt,
+          error: reason,
+          errorCode: "duplicate_routine_execution",
+          resultJson: {
+            ...parseObject(claimed.resultJson),
+            stopReason: "duplicate_routine_execution",
+            issueId: claimedIssueId,
+          },
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "skipped", {
+          finishedAt,
+          error: reason,
+        });
+        logger.warn(
+          { runId: claimed.id, issueId: claimedIssueId },
+          "claimQueuedRun: cancelled duplicate routine execution run",
         );
+        return null;
+      }
     }
 
     return claimed;
@@ -8567,7 +8609,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-      await tx
+      const lockedIssue = await tx
         .update(issues)
         .set({
           executionRunId: queuedRun.id,
@@ -8575,7 +8617,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           executionLockedAt: now,
           updatedAt: now,
         })
-        .where(eq(issues.id, issue.id));
+        .where(and(eq(issues.id, issue.id), noOpenRoutineExecutionDuplicateForIssue()))
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (!lockedIssue) {
+        const reason =
+          "Skipped recovery because another open routine execution issue for the same routine already owns the active execution lock";
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: reason,
+            errorCode: "duplicate_routine_execution",
+            resultJson: {
+              ...parseObject(queuedRun.resultJson),
+              stopReason: "duplicate_routine_execution",
+              issueId: issue.id,
+              retryOfRunId: run.id,
+            },
+            updatedAt: now,
+          })
+          .where(eq(heartbeatRuns.id, queuedRun.id));
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: now,
+            error: reason,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        return {
+          kind: "duplicate_routine_execution_skipped" as const,
+          run: null,
+        };
+      }
 
       return {
         kind: "queued_recovery" as const,
@@ -9896,3 +9974,4 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
   };
 }
+
