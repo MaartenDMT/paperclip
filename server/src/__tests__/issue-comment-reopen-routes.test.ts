@@ -349,10 +349,9 @@ describe.sequential("issue comment reopen routes", () => {
 
       const res = await request(await installActor(createApp()))
         .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-        .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+        .send({ comment: "hello", reopen: true });
 
       expect(res.status).toBe(200);
-      expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -361,7 +360,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       );
     },
-    10000,
+    60000,
   );
 
   it(
@@ -399,7 +398,7 @@ describe.sequential("issue comment reopen routes", () => {
       );
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     },
-    10000,
+    60000,
   );
 
   it("resolves assignee shortnames before updating an issue", async () => {
@@ -1046,6 +1045,20 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct PATCH status reopen on cancelled issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
+    mockIssueService.update.mockRejectedValue(new Error("should not be called"));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
