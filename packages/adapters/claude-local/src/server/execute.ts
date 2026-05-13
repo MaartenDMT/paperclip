@@ -28,6 +28,7 @@ import {
   asStringArray,
   parseObject,
   parseJson,
+  applyAdapterConfigEnv,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
@@ -250,9 +251,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
   });
-  for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
-  }
+  applyAdapterConfigEnv(env, shapedEnvConfig);
 
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;

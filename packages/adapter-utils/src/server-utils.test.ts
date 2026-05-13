@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  applyAdapterConfigEnv,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildInvocationEnvForLogs,
@@ -61,6 +62,39 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
     );
+  });
+});
+
+describe("applyAdapterConfigEnv", () => {
+  it("does not override runtime-owned Paperclip identity and wake env", () => {
+    const env = {
+      PAPERCLIP_AGENT_ID: "agent-actual",
+      PAPERCLIP_COMPANY_ID: "company-actual",
+      PAPERCLIP_RUN_ID: "run-actual",
+      PAPERCLIP_TASK_ID: "task-actual",
+    };
+
+    const ignored = applyAdapterConfigEnv(env, {
+      PAPERCLIP_AGENT_ID: "agent-ceo",
+      PAPERCLIP_COMPANY_ID: "company-ceo",
+      PAPERCLIP_RUN_ID: "run-ceo",
+      PAPERCLIP_TASK_ID: "task-ceo",
+      OPENAI_API_KEY: "sk-test",
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_AGENT_ID: "agent-actual",
+      PAPERCLIP_COMPANY_ID: "company-actual",
+      PAPERCLIP_RUN_ID: "run-actual",
+      PAPERCLIP_TASK_ID: "task-actual",
+      OPENAI_API_KEY: "sk-test",
+    });
+    expect(ignored).toEqual([
+      "PAPERCLIP_AGENT_ID",
+      "PAPERCLIP_COMPANY_ID",
+      "PAPERCLIP_RUN_ID",
+      "PAPERCLIP_TASK_ID",
+    ]);
   });
 });
 

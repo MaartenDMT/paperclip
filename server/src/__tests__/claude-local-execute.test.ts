@@ -62,6 +62,10 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  paperclipAgentId: process.env.PAPERCLIP_AGENT_ID || null,
+  paperclipCompanyId: process.env.PAPERCLIP_COMPANY_ID || null,
+  paperclipRunId: process.env.PAPERCLIP_RUN_ID || null,
+  paperclipTaskId: process.env.PAPERCLIP_TASK_ID || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -86,6 +90,10 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
+  paperclipAgentId?: string | null;
+  paperclipCompanyId?: string | null;
+  paperclipRunId?: string | null;
+  paperclipTaskId?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
@@ -224,6 +232,44 @@ describe("claude execute", () => {
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
       expect(captured.argv).toContain("--append-system-prompt-file");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves runtime-owned Paperclip env over adapter config env", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-env-guard-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const result = await execute({
+        runId: "run-actual",
+        agent: { id: "agent-actual", companyId: "company-actual", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_AGENT_ID: "agent-ceo",
+            PAPERCLIP_COMPANY_ID: "company-ceo",
+            PAPERCLIP_RUN_ID: "run-ceo",
+            PAPERCLIP_TASK_ID: "task-ceo",
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: { taskId: "task-actual" },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      expect(capture.paperclipAgentId).toBe("agent-actual");
+      expect(capture.paperclipCompanyId).toBe("company-actual");
+      expect(capture.paperclipRunId).toBe("run-actual");
+      expect(capture.paperclipTaskId).toBe("task-actual");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

@@ -913,6 +913,53 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   return vars;
 }
 
+const PAPERCLIP_RUNTIME_OWNED_ENV_KEYS = new Set([
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_ISSUE_WORK_MODE",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_RUNTIME_PRIMARY_URL",
+  "PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON",
+  "PAPERCLIP_RUNTIME_SERVICES_JSON",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_REPO_URL",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_STRATEGY",
+  "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
+  "PAPERCLIP_WORKSPACES_JSON",
+]);
+
+export function isPaperclipRuntimeOwnedEnvKey(key: string): boolean {
+  return PAPERCLIP_RUNTIME_OWNED_ENV_KEYS.has(key.toUpperCase());
+}
+
+export function applyAdapterConfigEnv(
+  env: Record<string, string>,
+  envConfig: Record<string, unknown>,
+): string[] {
+  const ignoredKeys: string[] = [];
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value !== "string") continue;
+    if (isPaperclipRuntimeOwnedEnvKey(key)) {
+      ignoredKeys.push(key);
+      continue;
+    }
+    env[key] = value;
+  }
+  return ignoredKeys;
+}
+
 export function applyPaperclipWorkspaceEnv(
   env: Record<string, string>,
   input: {
@@ -1112,9 +1159,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote: input.executionTargetIsRemote,
   });
-  for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    input.env[key] = value;
-  }
+  applyAdapterConfigEnv(input.env, shapedEnvConfig);
 
   return shapedWorkspaceEnv;
 }
