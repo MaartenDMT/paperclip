@@ -13,12 +13,15 @@
  */
 
 import { lifecycleHooks } from "./lifecycle-hooks.js";
+import { mandatorySkillInstructionPreHook } from "./lifecycle-hooks/mandatory-skill-instruction-hook.js";
 import { vaultMemoryPostHook } from "./lifecycle-hooks/vault-memory-hook.js";
 import { logger } from "../middleware/logger.js";
 
 export interface LifecycleBootstrapOptions {
   /** Default true. Set false to disable the karpathy-vault writer entirely. */
   enableVaultMemoryHook?: boolean;
+  /** Default true. Set false to disable mandatory runtime skill instruction injection. */
+  enableMandatorySkillInstructionHook?: boolean;
 }
 
 export function registerCoreLifecycleHooks(
@@ -26,6 +29,14 @@ export function registerCoreLifecycleHooks(
 ): void {
   const enableVault =
     opts.enableVaultMemoryHook ?? process.env.PAPERCLIP_VAULT_HOOK !== "off";
+  const enableMandatorySkillInstruction =
+    opts.enableMandatorySkillInstructionHook ?? process.env.PAPERCLIP_MANDATORY_SKILL_HOOK !== "off";
+
+  if (enableMandatorySkillInstruction) {
+    lifecycleHooks.register("run.before", "mandatory-skill-instruction", mandatorySkillInstructionPreHook);
+  } else {
+    logger.info("mandatory-skill-instruction lifecycle hook disabled by config");
+  }
 
   if (enableVault) {
     // registry.register() already logs the registration; no echo needed.

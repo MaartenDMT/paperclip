@@ -21,7 +21,7 @@
  *  - PAPERCLIP_MEMORY_VAULT_TZ (default Europe/Brussels — label only)
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { LifecycleContext, PostHookHandler } from "../lifecycle-hooks.js";
@@ -32,38 +32,70 @@ const VAULT =
 const TZ_LABEL = process.env.PAPERCLIP_MEMORY_VAULT_TZ || "Europe/Brussels";
 const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 
-// graphify CLI shim path — installed via `uv tool install graphifyy`.
-const GRAPHIFY_BIN = process.env.PAPERCLIP_GRAPHIFY_BIN || "graphify";
 // LLM backend for extraction. Default to local ollama so background rebuilds
 // don't burn external API quota. Override with PAPERCLIP_GRAPHIFY_BACKEND.
 const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
 const GRAPHIFY_MODEL = process.env.PAPERCLIP_GRAPHIFY_MODEL || "qwen3.5:9b";
-// Throttle: only re-index the memory graph at most every N seconds.
-// Multiple agent runs in a burst share one update.
-const GRAPHIFY_THROTTLE_MS = Number(
-  process.env.PAPERCLIP_GRAPHIFY_THROTTLE_MS || 5 * 60 * 1000,
+// Periodic refresh: extract the vault into a fresh graph every N ms regardless
+// of run activity. Predictable load, no per-run trigger means no shell spam.
+const GRAPHIFY_INTERVAL_MS = Number(
+  process.env.PAPERCLIP_GRAPHIFY_INTERVAL_MS || 15 * 60 * 1000,
 );
-let lastGraphifyAt = 0;
-let graphifyInFlight = false;
+// Set PAPERCLIP_GRAPHIFY_DISABLE=1 to turn off auto-refresh entirely.
+const GRAPHIFY_DISABLED = process.env.PAPERCLIP_GRAPHIFY_DISABLE === "1";
 
 /**
- * Fire-and-forget `graphify <vault> --update` to refresh the agent-memory
- * knowledge graph after the vault changes. Throttled and silent — failures
- * never block the heartbeat run. The graph powers `graphify query "..."`
- * which agents are told about in the heartbeat prompt.
+ * Resolve the graphify executable to an absolute path ONCE at module load.
+ * On Windows the binary is a `.cmd` shim; Node's spawn() does not honour
+ * PATHEXT without `shell: true`. Using `where graphify` (or `which graphify`)
+ * gives us the absolute path so we can spawn it directly — no shell, no
+ * lingering cmd.exe wrappers, reliable exit detection.
  */
-function maybeRefreshMemoryGraph(): void {
-  const now = Date.now();
+function resolveGraphifyBin(): string | null {
+  const override = process.env.PAPERCLIP_GRAPHIFY_BIN;
+  if (override && fs.existsSync(override)) return override;
+  const lookupCmd = process.platform === "win32" ? "where" : "which";
+  try {
+    const output = execFileSync(lookupCmd, ["graphify"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    // `where` may print multiple lines; prefer the `.cmd` shim on Windows.
+    const candidates = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (candidates.length === 0) return null;
+    const cmdShim = candidates.find((line) => line.toLowerCase().endsWith(".cmd"));
+    return cmdShim ?? candidates[0];
+  } catch {
+    return null;
+  }
+}
+
+const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
+let graphifyInFlight = false;
+let graphifyTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Fire-and-forget `graphify extract <vault>` to refresh the agent-memory
+ * knowledge graph. Driven by a periodic timer (not per-run) so server load is
+ * predictable. Errors are swallowed; failures never block the heartbeat hook.
+ * The resulting graph powers `graphify query "..."` for agents.
+ */
+function runGraphifyExtract(): void {
+  if (GRAPHIFY_DISABLED) return;
+  if (!GRAPHIFY_BIN_RESOLVED) return; // graphify not installed — silently skip
   if (graphifyInFlight) return;
-  if (now - lastGraphifyAt < GRAPHIFY_THROTTLE_MS) return;
-  lastGraphifyAt = now;
+  if (!fs.existsSync(VAULT)) return; // vault missing — nothing to index
   graphifyInFlight = true;
   try {
     // `extract` has built-in caching, so only new/changed files are re-processed.
     // `--no-cluster` keeps it fast; clustering can be re-run on demand later.
     // `--max-concurrency 1` is required for local LLMs (per graphify CLI docs).
+    // No `shell: true` — we resolved the absolute path so cmd.exe is unnecessary.
     const child = spawn(
-      GRAPHIFY_BIN,
+      GRAPHIFY_BIN_RESOLVED,
       [
         "extract",
         VAULT,
@@ -76,11 +108,11 @@ function maybeRefreshMemoryGraph(): void {
         "--no-cluster",
       ],
       {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      shell: process.platform === "win32",
-    });
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    );
     child.on("error", () => {
       graphifyInFlight = false;
     });
@@ -91,6 +123,19 @@ function maybeRefreshMemoryGraph(): void {
   } catch {
     graphifyInFlight = false;
   }
+}
+
+/**
+ * Idempotent: starts the periodic timer once. Called lazily from the hook so
+ * we don't pay the cost in test environments that never invoke the hook.
+ * Module-level `graphifyTimer` guards against duplicate timers.
+ */
+function ensureGraphifyTimer(): void {
+  if (GRAPHIFY_DISABLED) return;
+  if (!GRAPHIFY_BIN_RESOLVED) return;
+  if (graphifyTimer) return;
+  graphifyTimer = setInterval(runGraphifyExtract, GRAPHIFY_INTERVAL_MS);
+  graphifyTimer.unref(); // don't keep the event loop alive just for this
 }
 
 function slugify(name: string): string {
@@ -320,7 +365,10 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
   ];
   fs.appendFileSync(path.join(VAULT, "log.md"), lines.join("\n") + "\n");
 
-  // Kick the memory knowledge graph to refresh in the background.
-  // Throttled internally — safe to call after every run.
-  maybeRefreshMemoryGraph();
+  // Make sure the periodic graphify-refresh timer is armed. Idempotent —
+  // the first hook call after server start starts the timer; further calls
+  // are no-ops. The timer fires every PAPERCLIP_GRAPHIFY_INTERVAL_MS (default
+  // 15 min) regardless of how many runs happen, so server load is predictable
+  // and there's no per-run shell spawn.
+  ensureGraphifyTimer();
 };

@@ -2179,31 +2179,30 @@ export function issueService(db: Db) {
     return adopted;
   }
 
-  async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
-    return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
-      const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
-      if (!issue?.executionRunId) return false;
+  async function clearExecutionRunIfTerminalFrom(dbLike: Pick<Db, "select" | "update" | "execute">, issueId: string): Promise<boolean> {
+    await dbLike.execute(
+      sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+    );
+    const issue = await dbLike
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+    const hasCheckoutRunId = issue.checkoutRunId !== null;
+    const hasExecutionRunId = issue.executionRunId !== null;
+    if (!hasCheckoutRunId && !hasExecutionRunId) return false;
 
-      const updated = await tx
+    if (issue.status === "done" || issue.status === "cancelled") {
+      const updated = await dbLike
         .update(issues)
         .set({
+          checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
@@ -2212,14 +2211,54 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, issueId),
-            eq(issues.executionRunId, issue.executionRunId),
+            or(
+              isNull(issues.checkoutRunId),
+              isNull(issues.executionRunId),
+              eq(issues.checkoutRunId, issue.checkoutRunId),
+              eq(issues.executionRunId, issue.executionRunId),
+            ),
           ),
         )
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
 
       return Boolean(updated);
-    });
+    }
+
+    if (!issue.executionRunId) return false;
+
+    await dbLike.execute(
+      sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
+    );
+    const run = await dbLike
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, issue.executionRunId))
+      .then((rows) => rows[0] ?? null);
+    if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+    const updated = await dbLike
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, issue.executionRunId),
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+
+    return Boolean(updated);
+  }
+
+  async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
+    return db.transaction(async (tx) => clearExecutionRunIfTerminalFrom(tx, issueId));
   }
 
   return {
@@ -3038,12 +3077,22 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ) => {
-      const existing = await dbOrTx
+      let existing = await dbOrTx
         .select()
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+
+      const terminalCleanupApplied = await clearExecutionRunIfTerminalFrom(dbOrTx, id);
+      if (terminalCleanupApplied) {
+        existing = await dbOrTx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!existing) return null;
+      }
 
       const {
         labelIds: nextLabelIds,
@@ -3241,15 +3290,20 @@ export function issueService(db: Db) {
           }
         }
 
-        patch.goalId = resolveNextIssueGoalId({
-          currentProjectId: existing.projectId,
-          currentGoalId: existing.goalId,
-          currentProjectGoalId,
-          projectId: issueData.projectId,
-          goalId: issueData.goalId,
-          projectGoalId: nextProjectGoalId,
-          defaultGoalId: defaultCompanyGoal?.id ?? null,
-        });
+        // Status-only and execution-only updates must not silently rewrite goal
+        // linkage. Re-resolve the goal only when the caller is making a
+        // goal-related change.
+        if (issueData.projectId !== undefined || issueData.goalId !== undefined) {
+          patch.goalId = resolveNextIssueGoalId({
+            currentProjectId: existing.projectId,
+            currentGoalId: existing.goalId,
+            currentProjectGoalId,
+            projectId: issueData.projectId,
+            goalId: issueData.goalId,
+            projectGoalId: nextProjectGoalId,
+            defaultGoalId: defaultCompanyGoal?.id ?? null,
+          });
+        }
         const updated = await tx
           .update(issues)
           .set(patch)

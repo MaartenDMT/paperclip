@@ -720,14 +720,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // Windows reports process exit codes as unsigned 32-bit integers, so a
+  // signed -1 (typical for crashes / signal terminations) arrives as
+  // 4294967295. Postgres `heartbeat_runs.exit_code` is INT4 (max
+  // 2_147_483_647 signed), so writing that raw value blows up the run-status
+  // update with `value "4294967295" is out of range for type integer`, which
+  // in turn leaves the run stuck in "running" forever. Reinterpret any value
+  // outside the signed int32 range as its two's-complement equivalent so the
+  // DB sees -1 / -2 / etc.
+  const normalizeExitCode = (code: number | null): number | null => {
+    if (code === null || code === undefined) return null;
+    if (!Number.isFinite(code)) return null;
+    const INT32_MAX = 2147483647;
+    const INT32_MIN = -2147483648;
+    if (code > INT32_MAX) return code - 4294967296;
+    if (code < INT32_MIN) return INT32_MIN;
+    return code;
+  };
+
   const toResult = (
     attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
     isRetry = false,
   ): AdapterExecutionResult => {
+    const normalizedExitCode = normalizeExitCode(attempt.proc.exitCode);
     if (attempt.proc.timedOut) {
       return {
-        exitCode: attempt.proc.exitCode,
+        exitCode: normalizedExitCode,
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
@@ -758,9 +777,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const fallbackErrorMessage =
       parsedError ||
       stderrLine ||
-      `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+      `Codex exited with code ${normalizedExitCode ?? -1}`;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      (normalizedExitCode ?? 0) !== 0
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -768,7 +787,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
+      (normalizedExitCode ?? 0) !== 0 &&
       isCodexTransientUpstreamError({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -776,11 +795,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
 
     return {
-      exitCode: attempt.proc.exitCode,
+      exitCode: normalizedExitCode,
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+        (normalizedExitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
       errorCode:

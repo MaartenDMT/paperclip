@@ -88,9 +88,13 @@ function parseCodexModelListResult(payload: Record<string, unknown> | null | und
 type CodexRpcMessage = Record<string, unknown>;
 
 async function requestCodexRpc(method: string, params: Record<string, unknown> = {}): Promise<CodexRpcMessage | null> {
-  const proc = spawn(resolveCodexCommand(), ["-s", "read-only", "-a", "untrusted", "app-server"], {
+  const command = resolveCodexCommand();
+  // Node 20.12+ refuses to spawn .cmd/.bat/.ps1 without shell:true (CVE-2024-27980).
+  const needsShell = process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(command);
+  const proc = spawn(command, ["-s", "read-only", "-a", "untrusted", "app-server"], {
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env,
+    shell: needsShell,
   });
 
   let nextId = 1;

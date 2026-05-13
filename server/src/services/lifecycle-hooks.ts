@@ -39,6 +39,10 @@ export interface LifecycleContext {
   agent: typeof agentsTable.$inferSelect;
   /** The heartbeat run row (post-update for after.* events). */
   run: typeof heartbeatRuns.$inferSelect;
+  /** Mutable adapter config for run.before hooks. */
+  runtimeConfig?: Record<string, unknown>;
+  /** Mutable run context snapshot for run.before hooks. */
+  contextSnapshot?: Record<string, unknown>;
   /** Optional error for failure events. */
   error?: Error | null;
 }

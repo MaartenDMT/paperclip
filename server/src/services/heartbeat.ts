@@ -3735,9 +3735,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    // Defense-in-depth: clamp `exitCode` to signed int32 range before
+    // Drizzle/Postgres rejects it. Windows reports unsigned 32-bit exit
+    // codes, so a crashed/signal-killed subprocess (-1) reaches us as
+    // 4294967295, which overflows the INT4 column and leaves the run row
+    // stuck in `running` forever. Individual adapters normalize at their
+    // boundary too (e.g. codex-local/execute.ts normalizeExitCode), but
+    // this safeguard ensures any future adapter that forgets cannot
+    // wedge the run lifecycle.
+    let safePatch = patch;
+    if (patch && "exitCode" in patch) {
+      const raw = patch.exitCode;
+      let safe: number | null | undefined = raw as number | null | undefined;
+      if (typeof raw === "number" && Number.isFinite(raw)) {
+        const INT32_MAX = 2147483647;
+        const INT32_MIN = -2147483648;
+        if (raw > INT32_MAX) safe = raw - 4294967296;
+        else if (raw < INT32_MIN) safe = INT32_MIN;
+      } else if (typeof raw === "number" && !Number.isFinite(raw)) {
+        safe = null;
+      }
+      if (safe !== raw) {
+        logger.warn(
+          { runId, rawExitCode: raw, normalizedExitCode: safe },
+          "clamped out-of-range exit code before run-status update",
+        );
+        safePatch = { ...patch, exitCode: safe };
+      }
+    }
+
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...safePatch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -7136,6 +7165,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const preHookOutcome = await lifecycleHooks.firePre(\"run.before\", {
+      db,
+      agent,
+      run,
+      runtimeConfig,
+      contextSnapshot: context,
+    });
+    if (preHookOutcome.abort) {
+      await setRunStatus(run.id, \"cancelled\", {
+        finishedAt: new Date(),
+        error: preHookOutcome.abort.reason,
+        errorCode: \"lifecycle_pre_hook_aborted\",
+      });
+      return;
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
