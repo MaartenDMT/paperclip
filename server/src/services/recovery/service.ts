@@ -738,6 +738,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Same dismissal-record rationale as the stranded-issue recovery path. A
+  // silent-run evaluation that was explicitly cancelled stays cancelled - the
+  // watchdog never re-creates one for the same run until the dismissal row is
+  // deleted or restored.
+  async function findStaleRunEvaluationDismissal(
+    companyId: string,
+    runId: string,
+  ) {
+    const [row] = await db
+      .select({ id: issues.id, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          eq(issues.status, "cancelled"),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1082,6 +1106,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    // Dismissal record: skip permanently if a board user / CEO triage
+    // explicitly cancelled the stale-run evaluation for this run. Delete or
+    // restore that row to re-enable the watchdog for this run.
+    const evaluationDismissal = await findStaleRunEvaluationDismissal(
+      input.run.companyId,
+      input.run.id,
+    );
+    if (evaluationDismissal) {
+      logger.debug?.(
+        {
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          dismissalEvaluationId: evaluationDismissal.id,
+        },
+        "recovery.skipped_stale_run_evaluation_dismissed",
+      );
+      return { kind: "skipped" as const };
+    }
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
@@ -1393,6 +1435,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  // Dismissal record: a cancelled stranded-recovery issue for a given source
+  // is a permanent "stop recreating" marker. To re-enable recovery for that
+  // source, delete or restore (move out of `cancelled`) the dismissal row.
+  // This prevents the cancel-then-recreate amplifier observed when many
+  // recoveries are cleaned up at once (e.g. CEO triage after an adapter outage).
+  async function findStrandedRecoveryDismissal(
+    companyId: string,
+    sourceIssueId: string,
+  ) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "cancelled"),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {
     return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   }
@@ -1539,6 +1606,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    // Dismissal record: if a board user / CEO triage has previously cancelled
+    // a recovery issue for this source, treat that as a permanent "do not
+    // re-create" marker. To re-enable recovery for this source, delete or
+    // restore (move out of `cancelled`) the dismissal row.
+    const dismissal = await findStrandedRecoveryDismissal(
+      input.issue.companyId,
+      input.issue.id,
+    );
+    if (dismissal) {
+      logger.debug?.(
+        {
+          companyId: input.issue.companyId,
+          sourceIssueId: input.issue.id,
+          dismissalRecoveryId: dismissal.id,
+          dismissedAt: dismissal.updatedAt?.toISOString?.() ?? null,
+        },
+        "recovery.skipped_stranded_issue_recovery_dismissed",
+      );
+      return null;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;

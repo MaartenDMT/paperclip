@@ -7165,7 +7165,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
-    const preHookOutcome = await lifecycleHooks.firePre(\"run.before\", {
+    const preHookOutcome = await lifecycleHooks.firePre("run.before", {
       db,
       agent,
       run,
@@ -7173,10 +7173,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       contextSnapshot: context,
     });
     if (preHookOutcome.abort) {
-      await setRunStatus(run.id, \"cancelled\", {
+      await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: preHookOutcome.abort.reason,
-        errorCode: \"lifecycle_pre_hook_aborted\",
+        errorCode: "lifecycle_pre_hook_aborted",
       });
       return;
     }
