@@ -1447,12 +1447,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  // Dismissal record: a cancelled stranded-recovery issue for a given source
-  // is a permanent "stop recreating" marker. To re-enable recovery for that
-  // source, delete or restore (move out of `cancelled`) the dismissal row.
-  // This prevents the cancel-then-recreate amplifier observed when many
-  // recoveries are cleaned up at once (e.g. CEO triage after an adapter outage).
-  async function findStrandedRecoveryDismissal(
+  // Terminal recovery marker: a done/cancelled stranded-recovery issue for a
+  // given source is a durable "stop recreating" marker. To re-enable recovery
+  // for that source, delete or restore (move out of a terminal status) the
+  // marker row. This prevents both cancel-then-recreate and done-then-recreate
+  // amplifiers when recovery tasks close without materially resolving source
+  // issue state.
+  async function findTerminalStrandedRecoveryMarker(
     companyId: string,
     sourceIssueId: string,
   ) {
@@ -1467,7 +1468,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issues.originId, sourceIssueId),
             eq(issues.parentId, sourceIssueId),
           ),
-          eq(issues.status, "cancelled"),
+          inArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .orderBy(desc(issues.updatedAt))
@@ -1622,23 +1623,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
-    // Dismissal record: if a board user / CEO triage has previously cancelled
-    // a recovery issue for this source, treat that as a permanent "do not
-    // re-create" marker. To re-enable recovery for this source, delete or
-    // restore (move out of `cancelled`) the dismissal row.
-    const dismissal = await findStrandedRecoveryDismissal(
+    // Terminal marker: if a board user / CEO triage has previously completed or
+    // cancelled a recovery issue for this source, treat that as a durable "do
+    // not re-create" marker. To re-enable recovery for this source, delete or
+    // restore (move out of a terminal status) the marker row.
+    const terminalMarker = await findTerminalStrandedRecoveryMarker(
       input.issue.companyId,
       input.issue.id,
     );
-    if (dismissal) {
+    if (terminalMarker) {
       logger.debug?.(
         {
           companyId: input.issue.companyId,
           sourceIssueId: input.issue.id,
-          dismissalRecoveryId: dismissal.id,
-          dismissedAt: dismissal.updatedAt?.toISOString?.() ?? null,
+          markerRecoveryId: terminalMarker.id,
+          markerStatus: terminalMarker.status,
+          markedAt: terminalMarker.updatedAt?.toISOString?.() ?? null,
         },
-        "recovery.skipped_stranded_issue_recovery_dismissed",
+        "recovery.skipped_stranded_issue_recovery_terminal_marker",
       );
       return null;
     }
