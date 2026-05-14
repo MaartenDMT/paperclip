@@ -939,6 +939,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("does not queue another process_lost retry after the per-agent issue hourly cap", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        retryOfRunId: runId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "process_lost_retry",
+          retryReason: "process_lost",
+        },
+        createdAt: new Date(Date.now() - 10 * 60 * 1000),
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000),
+      },
+      {
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        retryOfRunId: runId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "process_lost_retry",
+          retryReason: "process_lost",
+        },
+        createdAt: new Date(Date.now() - 20 * 60 * 1000),
+        updatedAt: new Date(Date.now() - 20 * 60 * 1000),
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const processLossRetryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((runs) => runs.filter((run) => {
+        const context = run.contextSnapshot as Record<string, unknown> | null;
+        return context?.retryReason === "process_lost";
+      }));
+    expect(processLossRetryRuns).toHaveLength(2);
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("process_lost retry cap reached");
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,

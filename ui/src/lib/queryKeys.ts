@@ -73,6 +73,7 @@ export const queryKeys = {
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
       ["routines", companyId, filters?.projectId ?? "__all-projects__"] as const,
+    health: (companyId: string) => ["routines", companyId, "health"] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,

@@ -221,6 +221,14 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const PROCESS_LOSS_RETRY_WINDOW_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.PAPERCLIP_PROCESS_LOSS_RETRY_WINDOW_MS ?? "", 10) || 60 * 60 * 1000,
+);
+const PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP = Math.max(
+  0,
+  Number.parseInt(process.env.PAPERCLIP_PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP ?? "", 10) || 2,
+);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -4847,6 +4855,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return queued;
   }
 
+  async function processLossRetryCapReached(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string | null;
+    now: Date;
+  }) {
+    if (!input.issueId || PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP <= 0) return false;
+    const windowStart = new Date(input.now.getTime() - PROCESS_LOSS_RETRY_WINDOW_MS);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.invocationSource, "automation"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'process_lost'`,
+          gt(heartbeatRuns.createdAt, windowStart),
+        ),
+      );
+    return Number(row?.count ?? 0) >= PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP;
+  }
+
   type ScheduledRetryGate =
     | { allowed: true }
     | {
@@ -6650,11 +6682,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(contextSnapshot.issueId);
+      const retryCapReached = await processLossRetryCapReached({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        issueId,
+        now,
+      });
+      const shouldRetry =
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        !retryCapReached;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const retrySuppressionMessage = retryCapReached
+        ? `; process_lost retry cap reached for this agent/issue (${PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP} per ${Math.round(PROCESS_LOSS_RETRY_WINDOW_MS / 60_000)}m)`
+        : "";
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? `${baseMessage}; retrying once` : `${baseMessage}${retrySuppressionMessage}`,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
@@ -6663,13 +6710,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           {
             resultJson: parseObject(run.resultJson),
             errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : `${baseMessage}${retrySuppressionMessage}`,
           },
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? `${baseMessage}; retrying once` : `${baseMessage}${retrySuppressionMessage}`,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -6698,11 +6745,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "error",
         message: shouldRetry
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+          : `${baseMessage}${retrySuppressionMessage}`,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(retryCapReached ? {
+            processLossRetryCap: PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP,
+            processLossRetryWindowMs: PROCESS_LOSS_RETRY_WINDOW_MS,
+          } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });

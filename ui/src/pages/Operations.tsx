@@ -3,6 +3,7 @@ import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Boxes, ShieldAlert, Zap, type LucideIcon } from "lucide-react";
 import { activityApi, type AgentSkillCoverage, type AgentSkillUsageSummary } from "../api/activity";
+import { routinesApi } from "../api/routines";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -67,6 +68,14 @@ function suppressionRemaining(value: string) {
   return `${Math.ceil(seconds / 60)}m remaining`;
 }
 
+function formatDuration(value: number | null) {
+  if (value === null) return "none";
+  if (value < 1000) return `${value}ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.round(seconds / 60)}m`;
+}
+
 function skillListLabel(values: string[], max = 3) {
   if (values.length === 0) return "None";
   const shown = values.slice(0, max).join(", ");
@@ -113,6 +122,12 @@ export function Operations() {
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
+  const routineHealth = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.routines.health(selectedCompanyId) : ["routines", "health", "none"],
+    queryFn: () => routinesApi.health(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
 
   const agentSkillGroups = useMemo(
     () => groupAgentSkills(skillUsageByAgent.data ?? []),
@@ -123,17 +138,24 @@ export function Operations() {
     return <EmptyState icon={Activity} message="Select a company to view operations." />;
   }
 
-  if (skillUsage.isLoading || skillUsageByAgent.isLoading || skillCoverage.isLoading || recoveryDismissals.isLoading || wakeSuppressions.isLoading) {
+  if (skillUsage.isLoading || skillUsageByAgent.isLoading || skillCoverage.isLoading || recoveryDismissals.isLoading || wakeSuppressions.isLoading || routineHealth.isLoading) {
     return <PageSkeleton variant="list" />;
   }
 
-  const firstError = skillUsage.error ?? skillUsageByAgent.error ?? skillCoverage.error ?? recoveryDismissals.error ?? wakeSuppressions.error;
+  const firstError = skillUsage.error ?? skillUsageByAgent.error ?? skillCoverage.error ?? recoveryDismissals.error ?? wakeSuppressions.error ?? routineHealth.error;
   const coverageRows = [...(skillCoverage.data ?? [])].sort(
     (a, b) =>
       Number(b.missingDesiredSkills) - Number(a.missingDesiredSkills) ||
       Number(!b.adapterSupportsActivationTelemetry) - Number(!a.adapterSupportsActivationTelemetry) ||
       b.neverUsedCount - a.neverUsedCount ||
       a.agentName.localeCompare(b.agentName),
+  );
+  const routineHealthRows = [...(routineHealth.data ?? [])].sort(
+    (a, b) =>
+      Number(b.shouldAutoPause) - Number(a.shouldAutoPause) ||
+      b.consecutiveFailures - a.consecutiveFailures ||
+      b.noopRate - a.noopRate ||
+      a.title.localeCompare(b.title),
   );
 
   return (
@@ -197,6 +219,69 @@ export function Operations() {
                       <StatusPill tone={row.adapterSupportsActivationTelemetry ? "green" : "amber"}>
                         {row.adapterSupportsActivationTelemetry ? "Yes" : "No"}
                       </StatusPill>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeader
+          icon={Activity}
+          title="Routine Health"
+          subtitle="Surfaces noisy or failing routines. Server-side health logic auto-pauses active routines after repeated failures or high no-result rates."
+        />
+        {routineHealthRows.length === 0 ? (
+          <EmptyState icon={Activity} message="No routines found." />
+        ) : (
+          <div className="overflow-x-auto border border-border">
+            <table className="min-w-full divide-y divide-border text-sm">
+              <thead className="bg-muted/30 text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Routine</th>
+                  <th className="px-3 py-2 text-left font-medium">Status</th>
+                  <th className="px-3 py-2 text-left font-medium">Last Fired</th>
+                  <th className="px-3 py-2 text-left font-medium">Last Success</th>
+                  <th className="px-3 py-2 text-left font-medium">Failures</th>
+                  <th className="px-3 py-2 text-left font-medium">No-Result Rate</th>
+                  <th className="px-3 py-2 text-left font-medium">Avg Duration</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {routineHealthRows.map((routine) => (
+                  <tr key={routine.routineId} className="align-top">
+                    <td className="px-3 py-3">
+                      <Link to={`/routines/${routine.routineId}`} className="font-medium hover:underline">
+                        {routine.title}
+                      </Link>
+                      <p className="text-xs text-muted-foreground">{routine.runCount} recent runs</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={routine.shouldAutoPause || routine.status === "paused" ? "amber" : "neutral"}>
+                        {routine.shouldAutoPause ? "auto-pause eligible" : routine.status}
+                      </StatusPill>
+                    </td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">
+                      {routine.lastFiredAt ? relativeTime(routine.lastFiredAt) : "never"}
+                    </td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">
+                      {routine.lastSuccessAt ? relativeTime(routine.lastSuccessAt) : "none"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={routine.consecutiveFailures > 0 ? "amber" : "green"}>
+                        {routine.consecutiveFailures}
+                      </StatusPill>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={routine.noopRate > 0.8 ? "amber" : "neutral"}>
+                        {Math.round(routine.noopRate * 100)}%
+                      </StatusPill>
+                    </td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">
+                      {formatDuration(routine.avgDurationMs)}
                     </td>
                   </tr>
                 ))}

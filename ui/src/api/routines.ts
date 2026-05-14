@@ -34,6 +34,19 @@ export interface RestoreRoutineRevisionResponse {
   secretMaterials: RestoreRoutineRevisionSecretMaterial[];
 }
 
+export interface RoutineHealth {
+  routineId: string;
+  title: string;
+  status: string;
+  lastFiredAt: string | null;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+  avgDurationMs: number | null;
+  noopRate: number;
+  runCount: number;
+  shouldAutoPause: boolean;
+}
+
 export const routinesApi = {
   list: (companyId: string, filters?: { projectId?: string | null }) => {
     const params = new URLSearchParams();
@@ -41,6 +54,7 @@ export const routinesApi = {
     const query = params.toString();
     return api.get<RoutineListItem[]>(`/companies/${companyId}/routines${query ? `?${query}` : ""}`);
   },
+  health: (companyId: string) => api.get<RoutineHealth[]>(`/companies/${companyId}/routines/health`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Routine>(`/companies/${companyId}/routines`, data),
   get: (id: string) => api.get<RoutineDetail>(`/routines/${id}`),
