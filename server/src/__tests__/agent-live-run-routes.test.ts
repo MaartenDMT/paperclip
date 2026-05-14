@@ -8,6 +8,8 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  getRetryExhaustedReason: vi.fn(),
+  getRun: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
@@ -185,6 +187,24 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRetryExhaustedReason.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      logBytes: 0,
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -318,6 +338,50 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("exposes agent-scoped run detail aliases for run monitoring consumers", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/agents/agent-1/runs/run-1`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRetryExhaustedReason).toHaveBeenCalledWith("run-1");
+    expect(res.body).toMatchObject({
+      id: "run-1",
+      agentId: "agent-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      status: "running",
+      invocationSource: "on_demand",
+    });
+  });
+
+  it("returns not found when an agent-scoped run alias targets another agent", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-2",
+      issueId: "issue-1",
+      logBytes: 0,
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/agents/agent-1/runs/run-1`),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Heartbeat run not found" });
   });
 
   it("caps company live run polling by default", async () => {

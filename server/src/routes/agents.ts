@@ -3277,21 +3277,47 @@ export function agentRoutes(
     }))));
   });
 
-  router.get("/heartbeat-runs/:runId", async (req, res) => {
-    const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
+  async function respondWithHeartbeatRun(req: Request, res: Response, input: {
+    runId: string;
+    agentId?: string;
+  }) {
+    const run = await heartbeat.getRun(input.runId);
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
+    if (input.agentId && run.agentId !== input.agentId) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(input.runId);
     res.json(
       redactCurrentUserValue(
         { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     );
+  }
+
+  router.get("/heartbeat-runs/:runId", async (req, res) => {
+    await respondWithHeartbeatRun(req, res, {
+      runId: req.params.runId as string,
+    });
+  });
+
+  router.get("/agents/:id/runs/:runId", async (req, res) => {
+    const agentId = req.params.id as string;
+    const agent = await svc.getById(agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    await respondWithHeartbeatRun(req, res, {
+      runId: req.params.runId as string,
+      agentId: agent.id,
+    });
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
