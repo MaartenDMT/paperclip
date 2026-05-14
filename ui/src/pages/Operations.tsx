@@ -6,6 +6,7 @@ import { activityApi, type AgentSkillCoverage, type AgentSkillUsageSummary } fro
 import { routinesApi } from "../api/routines";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -162,7 +163,17 @@ export function Operations() {
     <div className="space-y-6">
       {firstError ? <p className="text-sm text-destructive">{firstError.message}</p> : null}
 
-      <section className="space-y-3">
+      <Tabs defaultValue="coverage" className="space-y-4">
+        <TabsList variant="line" className="w-full justify-start gap-1 overflow-x-auto">
+          <TabsTrigger value="coverage">Coverage ({coverageRows.length})</TabsTrigger>
+          <TabsTrigger value="routines">Routines ({routineHealthRows.length})</TabsTrigger>
+          <TabsTrigger value="activations">Activations ({agentSkillGroups.length})</TabsTrigger>
+          <TabsTrigger value="outcomes">Outcomes ({skillUsage.data?.length ?? 0})</TabsTrigger>
+          <TabsTrigger value="recovery">Recovery ({recoveryDismissals.data?.length ?? 0})</TabsTrigger>
+          <TabsTrigger value="wake">Wake Dampener ({wakeSuppressions.data?.length ?? 0})</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="coverage" className="space-y-3">
         <SectionHeader
           icon={Boxes}
           title="Skill Coverage"
@@ -226,9 +237,9 @@ export function Operations() {
             </table>
           </div>
         )}
-      </section>
+        </TabsContent>
 
-      <section className="space-y-3">
+        <TabsContent value="routines" className="space-y-3">
         <SectionHeader
           icon={Activity}
           title="Routine Health"
@@ -289,9 +300,9 @@ export function Operations() {
             </table>
           </div>
         )}
-      </section>
+        </TabsContent>
 
-      <section className="space-y-3">
+        <TabsContent value="activations" className="space-y-3">
         <SectionHeader
           icon={Boxes}
           title="Skills Activated Per Agent"
@@ -325,9 +336,9 @@ export function Operations() {
             ))}
           </div>
         )}
-      </section>
+        </TabsContent>
 
-      <section className="space-y-3">
+        <TabsContent value="outcomes" className="space-y-3">
         <SectionHeader
           icon={Activity}
           title="Skill Usage Outcomes"
@@ -353,9 +364,9 @@ export function Operations() {
             ))}
           </div>
         )}
-      </section>
+        </TabsContent>
 
-      <section className="space-y-3">
+        <TabsContent value="recovery" className="space-y-3">
         <SectionHeader
           icon={ShieldAlert}
           title="Recovery Dismissals"
@@ -392,9 +403,9 @@ export function Operations() {
             ))}
           </div>
         )}
-      </section>
+        </TabsContent>
 
-      <section className="space-y-3">
+        <TabsContent value="wake" className="space-y-3">
         <SectionHeader
           icon={Zap}
           title="Wake-Storm Dampener"
@@ -422,7 +433,8 @@ export function Operations() {
             ))}
           </div>
         )}
-      </section>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
