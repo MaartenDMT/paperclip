@@ -8,6 +8,11 @@ const mockActivityService = vi.hoisted(() => ({
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   skillUsageForCompany: vi.fn(),
+  skillUsageByAgent: vi.fn(),
+  skillCoverageForCompany: vi.fn(),
+  skillActivationsForAgent: vi.fn(),
+  recoveryDismissalsForCompany: vi.fn(),
+  wakeSuppressionsForCompany: vi.fn(),
   create: vi.fn(),
 }));
 
@@ -148,6 +153,40 @@ describe.sequential("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.skillUsageForCompany).toHaveBeenCalledWith("company-1");
     expect(res.body[0]).toMatchObject({ skillKey: "paperclip", runCount: 3, doneCount: 2 });
+  });
+
+  it("returns skill coverage for a company", async () => {
+    mockActivityService.skillCoverageForCompany.mockResolvedValue([
+      {
+        agentId: "agent-1",
+        agentName: "CTO",
+        adapterType: "opencode_local",
+        status: "active",
+        desiredSkills: ["paperclip", "graphify"],
+        desiredSkillCount: 2,
+        runtimeSynced: true,
+        adapterSupportsSkillSync: true,
+        adapterSupportsActivationTelemetry: true,
+        activatedLast7d: [{ skillKey: "paperclip", skillName: "paperclip", activationCount: 3, runCount: 2 }],
+        activatedLast7dCount: 3,
+        neverUsedSkills: ["graphify"],
+        neverUsedCount: 1,
+        missingDesiredSkills: false,
+      },
+    ]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/skill-coverage"));
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.skillCoverageForCompany).toHaveBeenCalledWith("company-1");
+    expect(res.body[0]).toMatchObject({
+      agentName: "CTO",
+      desiredSkillCount: 2,
+      activatedLast7dCount: 3,
+      neverUsedCount: 1,
+      adapterSupportsActivationTelemetry: true,
+    });
   });
 
   it("resolves alphanumeric issue identifiers before loading runs", async () => {

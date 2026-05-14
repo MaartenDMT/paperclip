@@ -1,5 +1,17 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+type ParsedSkillActivation = {
+  skillKey: string;
+  skillName: string;
+  source: "opencode";
+};
+
+function readSkillName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
@@ -19,11 +31,22 @@ function errorText(value: unknown): string {
   }
 }
 
+function extractOpenCodeSkillActivation(part: Record<string, unknown>): ParsedSkillActivation | null {
+  const toolName = asString(part.tool, "") || asString(part.name, "") || asString(part.tool_name, "");
+  if (!/^skill$/i.test(toolName.trim())) return null;
+  const state = parseObject(part.state);
+  const input = parseObject(state.input ?? part.input ?? part.arguments ?? part.args);
+  const skillName = readSkillName(input.skill ?? input.skill_name ?? input.name);
+  if (!skillName) return null;
+  return { skillKey: skillName, skillName, source: "opencode" };
+}
+
 export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
   const toolErrors: string[] = [];
+  const skillActivations: ParsedSkillActivation[] = [];
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -63,6 +86,8 @@ export function parseOpenCodeJsonl(stdout: string) {
 
     if (type === "tool_use") {
       const part = parseObject(event.part);
+      const skillActivation = extractOpenCodeSkillActivation(part);
+      if (skillActivation) skillActivations.push(skillActivation);
       const state = parseObject(part.state);
       if (asString(state.status, "") === "error") {
         const text = asString(state.error, "").trim();
@@ -85,6 +110,7 @@ export function parseOpenCodeJsonl(stdout: string) {
     costUsd,
     errorMessage: errors.length > 0 ? errors.join("\n") : null,
     toolErrors,
+    skillActivations,
   };
 }
 

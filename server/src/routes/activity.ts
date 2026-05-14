@@ -59,6 +59,12 @@ export function activityRoutes(db: Db) {
     res.json(await svc.skillUsageByAgent(companyId));
   });
 
+  router.get("/companies/:companyId/skill-coverage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillCoverageForCompany(companyId));
+  });
+
   router.get("/companies/:companyId/agents/:agentId/skill-activations", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

@@ -153,6 +153,7 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   skillUsage: (companyId: string) => ["skill-usage", companyId] as const,
   skillUsageByAgent: (companyId: string) => ["skill-usage", companyId, "agents"] as const,
+  skillCoverage: (companyId: string) => ["skill-coverage", companyId] as const,
   agentSkillActivations: (companyId: string, agentId: string) =>
     ["skill-activations", companyId, agentId] as const,
   recoveryDismissals: (companyId: string) => ["recovery-dismissals", companyId] as const,

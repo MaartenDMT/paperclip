@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Boxes, ShieldAlert, Zap, type LucideIcon } from "lucide-react";
-import { activityApi, type AgentSkillUsageSummary } from "../api/activity";
+import { activityApi, type AgentSkillCoverage, type AgentSkillUsageSummary } from "../api/activity";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -67,6 +67,18 @@ function suppressionRemaining(value: string) {
   return `${Math.ceil(seconds / 60)}m remaining`;
 }
 
+function skillListLabel(values: string[], max = 3) {
+  if (values.length === 0) return "None";
+  const shown = values.slice(0, max).join(", ");
+  return values.length > max ? `${shown}, +${values.length - max}` : shown;
+}
+
+function coverageTone(row: AgentSkillCoverage): "neutral" | "green" | "amber" {
+  if (!row.adapterSupportsActivationTelemetry || row.missingDesiredSkills || !row.runtimeSynced) return "amber";
+  if (row.neverUsedCount === 0) return "green";
+  return "neutral";
+}
+
 export function Operations() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -83,6 +95,11 @@ export function Operations() {
   const skillUsageByAgent = useQuery({
     queryKey: selectedCompanyId ? queryKeys.skillUsageByAgent(selectedCompanyId) : ["skill-usage", "agents", "none"],
     queryFn: () => activityApi.skillUsageByAgent(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const skillCoverage = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.skillCoverage(selectedCompanyId) : ["skill-coverage", "none"],
+    queryFn: () => activityApi.skillCoverage(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const recoveryDismissals = useQuery({
@@ -106,15 +123,88 @@ export function Operations() {
     return <EmptyState icon={Activity} message="Select a company to view operations." />;
   }
 
-  if (skillUsage.isLoading || skillUsageByAgent.isLoading || recoveryDismissals.isLoading || wakeSuppressions.isLoading) {
+  if (skillUsage.isLoading || skillUsageByAgent.isLoading || skillCoverage.isLoading || recoveryDismissals.isLoading || wakeSuppressions.isLoading) {
     return <PageSkeleton variant="list" />;
   }
 
-  const firstError = skillUsage.error ?? skillUsageByAgent.error ?? recoveryDismissals.error ?? wakeSuppressions.error;
+  const firstError = skillUsage.error ?? skillUsageByAgent.error ?? skillCoverage.error ?? recoveryDismissals.error ?? wakeSuppressions.error;
+  const coverageRows = [...(skillCoverage.data ?? [])].sort(
+    (a, b) =>
+      Number(b.missingDesiredSkills) - Number(a.missingDesiredSkills) ||
+      Number(!b.adapterSupportsActivationTelemetry) - Number(!a.adapterSupportsActivationTelemetry) ||
+      b.neverUsedCount - a.neverUsedCount ||
+      a.agentName.localeCompare(b.agentName),
+  );
 
   return (
     <div className="space-y-6">
       {firstError ? <p className="text-sm text-destructive">{firstError.message}</p> : null}
+
+      <section className="space-y-3">
+        <SectionHeader
+          icon={Boxes}
+          title="Skill Coverage"
+          subtitle="Compares configured skills, runtime sync support, and structured Skill tool activations from the last 7 days."
+        />
+        {coverageRows.length === 0 ? (
+          <EmptyState icon={Boxes} message="No active agents found for skill coverage." />
+        ) : (
+          <div className="overflow-x-auto border border-border">
+            <table className="min-w-full divide-y divide-border text-sm">
+              <thead className="bg-muted/30 text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Agent</th>
+                  <th className="px-3 py-2 text-left font-medium">Desired Skills</th>
+                  <th className="px-3 py-2 text-left font-medium">Runtime Synced</th>
+                  <th className="px-3 py-2 text-left font-medium">Activated Last 7d</th>
+                  <th className="px-3 py-2 text-left font-medium">Never Used</th>
+                  <th className="px-3 py-2 text-left font-medium">Adapter Supports Activation Telemetry</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {coverageRows.map((row) => (
+                  <tr key={row.agentId} className="align-top">
+                    <td className="px-3 py-3">
+                      <Link to={`/agents/${row.agentId}/skills`} className="font-medium hover:underline">
+                        {row.agentName}
+                      </Link>
+                      <p className="text-xs text-muted-foreground">{row.adapterType} · {row.status}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={row.missingDesiredSkills ? "amber" : "neutral"}>
+                        {row.desiredSkillCount}
+                      </StatusPill>
+                      <p className="mt-1 max-w-xs text-xs text-muted-foreground">{skillListLabel(row.desiredSkills)}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={row.runtimeSynced ? "green" : "amber"}>
+                        {row.runtimeSynced ? "Yes" : row.adapterSupportsSkillSync ? "No desired skills" : "Unsupported"}
+                      </StatusPill>
+                    </td>
+                    <td className="px-3 py-3">
+                      <Link to={`/agents/${row.agentId}/skill-activations`} className="hover:underline">
+                        {row.activatedLast7dCount}
+                      </Link>
+                      <p className="mt-1 max-w-xs text-xs text-muted-foreground">
+                        {skillListLabel(row.activatedLast7d.map((skill) => `${skill.skillName} (${skill.activationCount})`), 2)}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={coverageTone(row)}>{row.neverUsedCount}</StatusPill>
+                      <p className="mt-1 max-w-xs text-xs text-muted-foreground">{skillListLabel(row.neverUsedSkills)}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusPill tone={row.adapterSupportsActivationTelemetry ? "green" : "amber"}>
+                        {row.adapterSupportsActivationTelemetry ? "Yes" : "No"}
+                      </StatusPill>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section className="space-y-3">
         <SectionHeader

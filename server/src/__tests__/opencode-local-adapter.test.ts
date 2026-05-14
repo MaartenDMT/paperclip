@@ -45,6 +45,41 @@ describe("opencode_local parser", () => {
     });
     expect(parsed.costUsd).toBeCloseTo(0.003, 6);
     expect(parsed.errorMessage).toBe("model access denied");
+    expect(parsed.skillActivations).toEqual([]);
+  });
+
+  it("extracts Skill tool activations", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          id: "prt_tool_1",
+          callID: "call_1",
+          tool: "Skill",
+          state: {
+            status: "completed",
+            input: { skill: "graphify" },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          id: "prt_tool_2",
+          callID: "call_2",
+          tool: "skill",
+          state: {
+            status: "completed",
+            input: { skill_name: "paperclip" },
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseOpenCodeJsonl(stdout).skillActivations).toEqual([
+      { skillKey: "graphify", skillName: "graphify", source: "opencode" },
+      { skillKey: "paperclip", skillName: "paperclip", source: "opencode" },
+    ]);
   });
 });
 

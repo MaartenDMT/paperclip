@@ -90,6 +90,29 @@ export interface AgentSkillActivation {
   issueStatus: string | null;
 }
 
+export interface AgentSkillCoverage {
+  agentId: string;
+  agentName: string;
+  adapterType: string;
+  status: string;
+  desiredSkills: string[];
+  desiredSkillCount: number;
+  runtimeSynced: boolean;
+  adapterSupportsSkillSync: boolean;
+  adapterSupportsActivationTelemetry: boolean;
+  activatedLast7d: Array<{
+    skillKey: string;
+    skillName: string;
+    activationCount: number;
+    runCount: number;
+    lastActivatedAt: string;
+  }>;
+  activatedLast7dCount: number;
+  neverUsedSkills: string[];
+  neverUsedCount: number;
+  missingDesiredSkills: boolean;
+}
+
 export interface RecoveryDismissal {
   issueId: string;
   identifier: string | null;
@@ -133,6 +156,8 @@ export const activityApi = {
   skillUsage: (companyId: string) => api.get<SkillUsageSummary[]>(`/companies/${companyId}/skill-usage`),
   skillUsageByAgent: (companyId: string) =>
     api.get<AgentSkillUsageSummary[]>(`/companies/${companyId}/skill-usage/agents`),
+  skillCoverage: (companyId: string) =>
+    api.get<AgentSkillCoverage[]>(`/companies/${companyId}/skill-coverage`),
   agentSkillActivations: (companyId: string, agentId: string, limit = 200) =>
     api.get<AgentSkillActivation[]>(`/companies/${companyId}/agents/${agentId}/skill-activations?limit=${limit}`),
   recoveryDismissals: (companyId: string) =>

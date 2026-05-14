@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   activityLog,
   agents,
@@ -29,6 +30,20 @@ export interface ActivityFilters {
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
+const SKILL_SYNC_ADAPTERS = new Set([
+  "acpx_local",
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+]);
+const SKILL_ACTIVATION_TELEMETRY_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+]);
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
@@ -139,6 +154,10 @@ export function activityService(db: Db) {
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
+  }
+
+  function readDesiredSkills(config: unknown) {
+    return readPaperclipSkillSyncPreference(asRecord(config) ?? {}).desiredSkills;
   }
 
   function readNumber(value: unknown) {
@@ -478,6 +497,84 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(heartbeatRunSkillEvents.activatedAt), desc(heartbeatRunSkillEvents.id))
         .limit(normalizedLimit);
+    },
+
+    skillCoverageForCompany: async (companyId: string) => {
+      const [agentRows, activationRows] = await Promise.all([
+        db
+          .select({
+            agentId: agents.id,
+            agentName: agents.name,
+            adapterType: agents.adapterType,
+            status: agents.status,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), sql`${agents.status} != 'terminated'`))
+          .orderBy(asc(agents.name)),
+        db
+          .select({
+            agentId: heartbeatRunSkillEvents.agentId,
+            skillKey: heartbeatRunSkillEvents.skillKey,
+            skillName: heartbeatRunSkillEvents.skillName,
+            activationCount: sql<number>`count(*)::int`,
+            runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+            lastActivatedAt: sql<Date>`max(${heartbeatRunSkillEvents.activatedAt})`,
+          })
+          .from(heartbeatRunSkillEvents)
+          .where(
+            and(
+              eq(heartbeatRunSkillEvents.companyId, companyId),
+              sql`${heartbeatRunSkillEvents.activatedAt} >= now() - interval '7 days'`,
+            ),
+          )
+          .groupBy(
+            heartbeatRunSkillEvents.agentId,
+            heartbeatRunSkillEvents.skillKey,
+            heartbeatRunSkillEvents.skillName,
+          ),
+      ]);
+
+      const activationsByAgent = new Map<string, typeof activationRows>();
+      for (const row of activationRows) {
+        const rows = activationsByAgent.get(row.agentId) ?? [];
+        rows.push(row);
+        activationsByAgent.set(row.agentId, rows);
+      }
+
+      return agentRows.map((agent) => {
+        const desiredSkills = readDesiredSkills(agent.adapterConfig);
+        const activatedSkills = (activationsByAgent.get(agent.agentId) ?? [])
+          .map((row) => ({
+            skillKey: row.skillKey,
+            skillName: row.skillName,
+            activationCount: Number(row.activationCount ?? 0),
+            runCount: Number(row.runCount ?? 0),
+            lastActivatedAt: row.lastActivatedAt,
+          }))
+          .sort((a, b) => b.activationCount - a.activationCount || a.skillName.localeCompare(b.skillName));
+        const activatedKeys = new Set(activatedSkills.map((skill) => skill.skillKey));
+        const neverUsedSkills = desiredSkills.filter((skill) => !activatedKeys.has(skill));
+        const adapterSupportsSkillSync = SKILL_SYNC_ADAPTERS.has(agent.adapterType);
+        const adapterSupportsActivationTelemetry = SKILL_ACTIVATION_TELEMETRY_ADAPTERS.has(agent.adapterType);
+
+        return {
+          agentId: agent.agentId,
+          agentName: agent.agentName,
+          adapterType: agent.adapterType,
+          status: agent.status,
+          desiredSkills,
+          desiredSkillCount: desiredSkills.length,
+          runtimeSynced: adapterSupportsSkillSync && desiredSkills.length > 0,
+          adapterSupportsSkillSync,
+          adapterSupportsActivationTelemetry,
+          activatedLast7d: activatedSkills,
+          activatedLast7dCount: activatedSkills.reduce((sum, skill) => sum + skill.activationCount, 0),
+          neverUsedSkills,
+          neverUsedCount: neverUsedSkills.length,
+          missingDesiredSkills: desiredSkills.length === 0,
+        };
+      });
     },
 
     recoveryDismissalsForCompany: async (companyId: string) => {
