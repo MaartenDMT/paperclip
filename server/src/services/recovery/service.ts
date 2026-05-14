@@ -1239,6 +1239,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
+    if (process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG !== "on") {
+      return {
+        scanned: 0,
+        created: 0,
+        existing: 0,
+        escalated: 0,
+        snoozed: 0,
+        skipped: 0,
+        evaluationIssueIds: [] as string[],
+      };
+    }
+
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
     const candidates = await db
