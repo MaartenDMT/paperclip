@@ -364,6 +364,40 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
+    skillUsageForCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+          doneCount: sql<number>`count(distinct case when ${issues.status} = 'done' then ${heartbeatRunSkillEvents.runId} end)::int`,
+          blockedCount: sql<number>`count(distinct case when ${issues.status} = 'blocked' then ${heartbeatRunSkillEvents.runId} end)::int`,
+          cancelledCount: sql<number>`count(distinct case when ${issues.status} = 'cancelled' then ${heartbeatRunSkillEvents.runId} end)::int`,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, heartbeatRunSkillEvents.runId))
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, heartbeatRunSkillEvents.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text`,
+          ),
+        )
+        .where(eq(heartbeatRunSkillEvents.companyId, companyId))
+        .groupBy(heartbeatRunSkillEvents.skillKey, heartbeatRunSkillEvents.skillName)
+        .orderBy(desc(sql`count(distinct ${heartbeatRunSkillEvents.runId})`), asc(heartbeatRunSkillEvents.skillName));
+
+      return rows.map((row) => ({
+        skillKey: row.skillKey,
+        skillName: row.skillName,
+        runCount: Number(row.runCount ?? 0),
+        doneCount: Number(row.doneCount ?? 0),
+        blockedCount: Number(row.blockedCount ?? 0),
+        cancelledCount: Number(row.cancelledCount ?? 0),
+        noopCount: 0,
+      }));
+    },
+
     forIssue: (issueId: string) =>
       db
         .select()

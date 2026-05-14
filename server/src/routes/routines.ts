@@ -93,6 +93,12 @@ export function routineRoutes(
     res.json(result);
   });
 
+  router.get("/companies/:companyId/routines/health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listHealth(companyId));
+  });
+
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);

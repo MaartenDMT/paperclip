@@ -101,6 +101,19 @@ function applyStatusSideEffects(
   return patch;
 }
 
+function inferCancelledByKind(input: {
+  cancelledByKind?: string | null;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+}) {
+  if (input.cancelledByKind) return input.cancelledByKind;
+  if (input.actorAgentId || input.createdByAgentId) return "agent";
+  if (input.actorUserId || input.createdByUserId) return "user";
+  return "recovery";
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
@@ -1482,6 +1495,7 @@ const issueListSelect = {
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
+  cancelledByKind: issues.cancelledByKind,
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
@@ -3035,6 +3049,11 @@ export function issueService(db: Db) {
         }
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
+          values.cancelledByKind = inferCancelledByKind({
+            cancelledByKind: values.cancelledByKind,
+            createdByAgentId: values.createdByAgentId,
+            createdByUserId: values.createdByUserId,
+          });
         }
         Object.assign(
           values,
@@ -3168,11 +3187,19 @@ export function issueService(db: Db) {
       }
 
       applyStatusSideEffects(issueData.status, patch);
+      if (issueData.status === "cancelled") {
+        patch.cancelledByKind = inferCancelledByKind({
+          cancelledByKind: patch.cancelledByKind,
+          actorAgentId,
+          actorUserId,
+        });
+      }
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
       if (issueData.status && issueData.status !== "cancelled") {
         patch.cancelledAt = null;
+        patch.cancelledByKind = null;
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
@@ -3835,8 +3862,8 @@ export function issueService(db: Db) {
       return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
-    getCommentCursor: async (issueId: string) => {
-      const [latest, countRow] = await Promise.all([
+    getCommentCursor: async (issueId: string, opts?: { userId?: string | null }) => {
+      const [latest, countRow, readState] = await Promise.all([
         db
           .select({
             latestCommentId: issueComments.id,
@@ -3854,12 +3881,31 @@ export function issueService(db: Db) {
           .from(issueComments)
           .where(eq(issueComments.issueId, issueId))
           .then((rows) => rows[0] ?? null),
+        opts?.userId
+          ? db
+            .select({ lastReadAt: issueReadStates.lastReadAt })
+            .from(issueReadStates)
+            .where(and(eq(issueReadStates.issueId, issueId), eq(issueReadStates.userId, opts.userId)))
+            .then((rows) => rows[0] ?? null)
+          : null,
       ]);
+      const totalComments = Number(countRow?.totalComments ?? 0);
+      const unreadRow = readState?.lastReadAt
+        ? await db
+          .select({ unreadCount: sql<number>`count(*)::int` })
+          .from(issueComments)
+          .where(and(eq(issueComments.issueId, issueId), sql`${issueComments.createdAt} > ${readState.lastReadAt}`))
+          .then((rows) => rows[0] ?? null)
+        : opts?.userId
+          ? { unreadCount: totalComments }
+          : null;
+      const unreadCount = Number(unreadRow?.unreadCount ?? 0);
 
       return {
-        totalComments: Number(countRow?.totalComments ?? 0),
+        totalComments,
         latestCommentId: latest?.latestCommentId ?? null,
         latestCommentAt: latest?.latestCommentAt ?? null,
+        firstUnreadCommentIndex: unreadCount > 0 ? totalComments - unreadCount : null,
       };
     },
 

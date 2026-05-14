@@ -365,6 +365,7 @@ export interface Issue {
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
+  cancelledByKind?: "agent" | "user" | "recovery" | "cycle_detector" | null;
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];

@@ -7,6 +7,7 @@ const mockActivityService = vi.hoisted(() => ({
   forIssue: vi.fn(),
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
+  skillUsageForCompany: vi.fn(),
   create: vi.fn(),
 }));
 
@@ -126,6 +127,27 @@ describe.sequential("activity routes", () => {
       entityId: undefined,
       limit: 500,
     });
+  });
+
+  it("returns aggregate skill usage for a company", async () => {
+    mockActivityService.skillUsageForCompany.mockResolvedValue([
+      {
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        runCount: 3,
+        doneCount: 2,
+        blockedCount: 1,
+        cancelledCount: 0,
+        noopCount: 0,
+      },
+    ]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/skill-usage"));
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.skillUsageForCompany).toHaveBeenCalledWith("company-1");
+    expect(res.body[0]).toMatchObject({ skillKey: "paperclip", runCount: 3, doneCount: 2 });
   });
 
   it("resolves alphanumeric issue identifiers before loading runs", async () => {
