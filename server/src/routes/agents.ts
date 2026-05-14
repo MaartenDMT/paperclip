@@ -1817,23 +1817,51 @@ export function agentRoutes(
       req.actor.companyId,
       rows.map((issue) => issue.id),
     );
+    const wakeReason =
+      typeof req.query.wakeReason === "string"
+        ? req.query.wakeReason
+        : typeof req.headers["x-paperclip-wake-reason"] === "string"
+          ? req.headers["x-paperclip-wake-reason"]
+          : process.env.PAPERCLIP_WAKE_REASON ?? null;
+    const allowDeepBlockers = wakeReason === "issue_blockers_resolved";
+    const priorityWeight: Record<string, number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
 
     res.json(
-      rows.map((issue) => ({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
-        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
-        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
-      })),
+      rows
+        .map((issue) => {
+          const readiness = dependencyReadiness.get(issue.id);
+          const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+          const updatedAtMs = new Date(issue.updatedAt).getTime();
+          const recency = Number.isFinite(updatedAtMs) ? updatedAtMs : 0;
+          const blockerPenalty = Math.max(0, 1 - unresolvedBlockerCount / 3);
+          return {
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            status: issue.status,
+            priority: issue.priority,
+            projectId: issue.projectId,
+            goalId: issue.goalId,
+            parentId: issue.parentId,
+            updatedAt: issue.updatedAt,
+            activeRun: issue.activeRun,
+            dependencyReady: readiness?.isDependencyReady ?? true,
+            unresolvedBlockerCount,
+            unresolvedBlockerIssueIds: readiness?.unresolvedBlockerIssueIds ?? [],
+            inboxScore: (priorityWeight[issue.priority] ?? 1) * blockerPenalty * Math.max(1, recency),
+          };
+        })
+        .filter((issue) => allowDeepBlockers || issue.unresolvedBlockerCount < 3)
+        .sort((a, b) => {
+          if (b.inboxScore !== a.inboxScore) return b.inboxScore - a.inboxScore;
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+        })
+        .map(({ inboxScore: _inboxScore, ...issue }) => issue),
     );
   });
 

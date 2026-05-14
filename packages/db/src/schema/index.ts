@@ -52,6 +52,7 @@ export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
+export { heartbeatRunSkillEvents } from "./heartbeat_run_skill_events.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunSkillEvents } from "./heartbeat_run_skill_events.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";

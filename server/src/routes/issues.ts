@@ -1545,7 +1545,9 @@ export function issueRoutes(
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
         svc.getAncestors(issue.id),
-        svc.getCommentCursor(issue.id),
+        svc.getCommentCursor(issue.id, {
+          userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        }),
         wakeCommentId ? svc.getComment(wakeCommentId) : null,
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),

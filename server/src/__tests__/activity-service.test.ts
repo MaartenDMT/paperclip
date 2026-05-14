@@ -214,6 +214,90 @@ describeEmbeddedPostgres("activity service", () => {
       lastUsefulActionAt: new Date("2026-04-18T19:59:00.000Z"),
       nextAction: "Review the completed output.",
     });
+    expect(runs[0]?.skillActivations).toEqual([]);
+  });
+
+  it("includes skill activations on issue run ledger rows", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Agent",
+      adapterType: "codex",
+      mode: "build",
+      status: "idle",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wire skill chips",
+      body: "Show skills on runs",
+      status: "assigned",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(heartbeatRunSkillEvents).values([
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.skillActivations).toEqual([
+      {
+        runId,
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        runId,
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
   });
 
   it("returns skill activations for issue runs", async () => {

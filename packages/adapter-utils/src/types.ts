@@ -92,8 +92,8 @@ export interface AdapterExecutionResult {
   skillActivations?: Array<{
     skillKey: string;
     skillName?: string | null;
-    activatedAt?: string | null;
     source?: string | null;
+    activatedAt?: string | Date | null;
   }>;
   summary?: string | null;
   clearSession?: boolean;

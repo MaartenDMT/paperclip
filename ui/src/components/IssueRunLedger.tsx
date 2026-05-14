@@ -198,25 +198,29 @@ function modelProfileTitle(summary: ModelProfileSummary) {
   return lines.join("\n");
 }
 
-function skillActivationTitle(run: RunForIssue, skillName: string) {
-  const count = run.skillActivations?.filter((activation) =>
-    (activation.skillName || activation.skillKey) === skillName
-  ).length ?? 0;
-  return count > 1
-    ? `Skill activated ${count} times in this run`
-    : "Skill activated in this run";
+function uniqueSkillActivationNames(run: RunForIssue) {
+  const names = new Set<string>();
+  for (const activation of run.skillActivations ?? []) {
+    const name = readString(activation.skillName) ?? readString(activation.skillKey);
+    if (name) names.add(name);
+  }
+  return Array.from(names);
 }
 
-function uniqueSkillActivationNames(run: RunForIssue) {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  for (const activation of run.skillActivations ?? []) {
-    const name = activation.skillName || activation.skillKey;
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names.slice(0, 5);
+function skillActivationTitle(run: RunForIssue, skillName: string) {
+  const matching = (run.skillActivations ?? []).filter((activation) => {
+    const name = readString(activation.skillName) ?? readString(activation.skillKey);
+    return name === skillName;
+  });
+  const first = matching[0];
+  const activatedAt = first?.activatedAt ? new Date(first.activatedAt) : null;
+  const timeLabel = activatedAt && Number.isFinite(activatedAt.getTime())
+    ? activatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "unknown time";
+  const source = readString(first?.source) ?? "skill activation";
+  const lines = [`Activated by ${source} at ${timeLabel}`];
+  if (matching.length > 1) lines.push(`${matching.length} activations in this run`);
+  return lines.join("\n");
 }
 
 function readNumber(value: unknown) {
@@ -796,10 +800,11 @@ export function IssueRunLedgerContent({
                   })()}
                   {uniqueSkillActivationNames(run).map((skillName) => (
                     <span
-                      key={`skill:${skillName}`}
-                      className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                      key={`${run.runId}-${skillName}`}
+                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
                       title={skillActivationTitle(run, skillName)}
                     >
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
                       {skillName}
                     </span>
                   ))}

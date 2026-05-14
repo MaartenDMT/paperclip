@@ -47,6 +47,12 @@ export function activityRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/skill-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillUsageForCompany(companyId));
+  });
+
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

@@ -505,6 +505,44 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("agent_runtime_profile_disabled");
   });
 
+  it("renders skill activation chips for each run", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-with-skills",
+          skillActivations: [
+            {
+              skillKey: "paperclip",
+              skillName: "paperclip",
+              source: "SkillUse",
+              activatedAt: "2026-04-18T19:58:12.000Z",
+            },
+            {
+              skillKey: "diagnose-why-work-stopped",
+              skillName: "diagnose-why-work-stopped",
+              source: "SkillUse",
+              activatedAt: "2026-04-18T19:58:15.000Z",
+            },
+            {
+              skillKey: "paperclip",
+              skillName: "paperclip",
+              source: "SkillUse",
+              activatedAt: "2026-04-18T19:58:20.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("paperclip");
+    expect(container.textContent).toContain("diagnose-why-work-stopped");
+    const paperclipChip = Array.from(container.querySelectorAll("span")).find(
+      (node) => node.textContent === "paperclip",
+    );
+    expect(paperclipChip?.getAttribute("title")).toContain("Activated by SkillUse");
+    expect(paperclipChip?.getAttribute("title")).toContain("2 activations in this run");
+  });
+
   it("hides watchdog decision actions for known non-owner viewers", () => {
     const onWatchdogDecision = vi.fn();
     renderLedger({
