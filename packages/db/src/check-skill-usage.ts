@@ -1,7 +1,8 @@
 import postgres from "postgres";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
-const TARGET_KEYS = ["karpathy-obsidian-memory", "caveman"];
+const TARGET_KEYS = ["karpathy-obsidian-memory", "caveman"] as const;
+const TARGET_SUFFIX_PATTERNS = TARGET_KEYS.map((key) => `%/${key}`);
 
 async function main() {
   const r = await resolveMigrationConnection();
@@ -13,6 +14,7 @@ async function main() {
     >`SELECT company_id, key, name, created_at
         FROM company_skills
         WHERE key = ANY(${TARGET_KEYS as unknown as string[]})
+           OR key LIKE ANY(${TARGET_SUFFIX_PATTERNS})
         ORDER BY key, created_at`;
     if (skills.length === 0) {
       console.log("  (none installed)");
@@ -48,7 +50,7 @@ async function main() {
     // Cheap heuristic: result_json text < 400 chars AND status='success'
     const cave = await sql<{ c: number; total: number }[]>`
       SELECT
-        sum(CASE WHEN length(result_json::text) < 400 THEN 1 ELSE 0 END)::int AS c,
+        coalesce(sum(CASE WHEN length(result_json::text) < 400 THEN 1 ELSE 0 END), 0)::int AS c,
         count(*)::int AS total
       FROM heartbeat_runs
        WHERE created_at > now() - interval '30 days'

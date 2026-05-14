@@ -2228,8 +2228,8 @@ export function issueService(db: Db) {
             or(
               isNull(issues.checkoutRunId),
               isNull(issues.executionRunId),
-              eq(issues.checkoutRunId, issue.checkoutRunId),
-              eq(issues.executionRunId, issue.executionRunId),
+              ...(issue.checkoutRunId !== null ? [eq(issues.checkoutRunId, issue.checkoutRunId)] : []),
+              ...(issue.executionRunId !== null ? [eq(issues.executionRunId, issue.executionRunId)] : []),
             ),
           ),
         )

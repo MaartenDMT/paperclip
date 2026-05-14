@@ -1463,7 +1463,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
-          eq(issues.originId, sourceIssueId),
+          or(
+            eq(issues.originId, sourceIssueId),
+            eq(issues.parentId, sourceIssueId),
+          ),
           eq(issues.status, "cancelled"),
         ),
       )

@@ -77,6 +77,114 @@ const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
 let graphifyInFlight = false;
 let graphifyTimer: NodeJS.Timeout | null = null;
 
+function walkMarkdownFiles(root: string, out: string[] = []): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".trash") continue;
+      walkMarkdownFiles(fullPath, out);
+      continue;
+    }
+    if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) out.push(fullPath);
+  }
+  return out;
+}
+
+function slash(value: string): string {
+  return value.replaceAll("\\", "/");
+}
+
+function stripMd(value: string): string {
+  return value.toLowerCase().replace(/\.md$/i, "");
+}
+
+function buildMarkdownIndexes(vaultRoot: string): {
+  pathIndex: Set<string>;
+  basenameIndex: Set<string>;
+} {
+  const pathIndex = new Set<string>();
+  const basenameIndex = new Set<string>();
+
+  for (const file of walkMarkdownFiles(vaultRoot)) {
+    const relPath = slash(path.relative(vaultRoot, file));
+    pathIndex.add(stripMd(relPath));
+    basenameIndex.add(stripMd(path.posix.basename(relPath)));
+  }
+
+  return { pathIndex, basenameIndex };
+}
+
+function wikilinkTargetResolves(
+  target: string,
+  indexes: { pathIndex: Set<string>; basenameIndex: Set<string> },
+): boolean {
+  const clean = target.split("#")[0]?.trim() ?? "";
+  if (!clean || /^[a-z]+:/i.test(clean)) return true;
+
+  const normalized = stripMd(slash(clean).replace(/^\/+/, ""));
+  if (normalized.includes("/")) return indexes.pathIndex.has(normalized);
+  return indexes.basenameIndex.has(normalized.toLowerCase());
+}
+
+export function normalizeVaultIssueLinks(vaultRoot: string): number {
+  let replacements = 0;
+  for (const file of walkMarkdownFiles(vaultRoot)) {
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (!text.includes("/REA/issues/")) continue;
+    const replacementCount = text.split("/REA/issues/").length - 1;
+    fs.writeFileSync(file, text.split("/REA/issues/").join("issues/"), "utf8");
+    replacements += replacementCount;
+  }
+  return replacements;
+}
+
+export function sanitizeGraphReportWikilinks(vaultRoot: string): number {
+  const reportFile = path.join(vaultRoot, "graphify-out", "GRAPH_REPORT.md");
+  if (!fs.existsSync(reportFile)) return 0;
+
+  let text: string;
+  try {
+    text = fs.readFileSync(reportFile, "utf8");
+  } catch {
+    return 0;
+  }
+
+  const indexes = buildMarkdownIndexes(vaultRoot);
+  let replacements = 0;
+  const updated = text.replace(/\[\[([^\]]+)\]\]/g, (match, body: string) => {
+    const separator = body.indexOf("|");
+    const target = separator >= 0 ? body.slice(0, separator) : body;
+    const alias = separator >= 0 ? body.slice(separator + 1) : "";
+    if (wikilinkTargetResolves(target, indexes)) return match;
+    replacements += 1;
+    return alias || target;
+  });
+
+  if (replacements > 0) fs.writeFileSync(reportFile, updated, "utf8");
+  return replacements;
+}
+
+function sanitizeVaultMemoryOutputs(): void {
+  try {
+    normalizeVaultIssueLinks(VAULT);
+    sanitizeGraphReportWikilinks(VAULT);
+  } catch {
+    // Graphify refresh sanitation is best-effort; never block heartbeat work.
+  }
+}
+
 /**
  * Fire-and-forget `graphify extract <vault>` to refresh the agent-memory
  * knowledge graph. Driven by a periodic timer (not per-run) so server load is
@@ -117,6 +225,7 @@ function runGraphifyExtract(): void {
       graphifyInFlight = false;
     });
     child.on("exit", () => {
+      sanitizeVaultMemoryOutputs();
       graphifyInFlight = false;
     });
     child.unref();
