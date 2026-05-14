@@ -3363,6 +3363,16 @@ export function agentRoutes(
     res.json(runs);
   });
 
+  router.get("/companies/:companyId/agents/:agentId/runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.params.agentId as string;
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const runs = await heartbeat.list(companyId, agentId, limit);
+    res.json(runs);
+  });
+
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -3636,6 +3646,28 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     await respondWithHeartbeatRunLog(req, res, req.params.runId as string, companyId);
+  });
+
+  router.get("/companies/:companyId/runs/:runId/logs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRunLogAccess(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const offset = Number(req.query.offset ?? 0);
+    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    const result = await heartbeat.readLog(run, {
+      offset: Number.isFinite(offset) ? offset : 0,
+      limitBytes,
+    });
+
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(result);
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {

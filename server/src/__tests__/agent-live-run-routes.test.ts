@@ -237,6 +237,14 @@ describe("agent live run routes", () => {
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
+    mockHeartbeatService.list.mockResolvedValue([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "running",
+      },
+    ]);
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "run-1",
       store: "local_file",
@@ -395,6 +403,7 @@ describe("agent live run routes", () => {
       { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" },
     ]);
   });
+
   it("uses run log stat metadata for metadata-only polling", async () => {
     const res = await requestApp(
       await createApp(),
