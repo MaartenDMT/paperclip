@@ -245,6 +245,51 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("supports the company-scoped issue patch alias", async () => {
+    const existing = makeIssue();
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-company-scope",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "write the company-scoped version",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/companies/${existing.companyId}/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        comment: "write the company-scoped version",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-company-scope",
+          mutation: "update",
+        }),
+      }),
+    );
+  });
+
   it("wakes the assignee on comment-only issue updates", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
