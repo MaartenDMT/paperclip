@@ -2523,7 +2523,7 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  const handleUpdateIssue = async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -3388,6 +3388,13 @@ export function issueRoutes(
     })();
 
     res.json({ ...issueResponse, comment });
+  };
+
+  router.patch("/issues/:id", validate(updateIssueRouteSchema), handleUpdateIssue);
+  router.patch("/companies/:companyId/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await handleUpdateIssue(req, res);
   });
 
   router.delete("/issues/:id", async (req, res) => {

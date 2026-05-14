@@ -11,6 +11,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  list: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -206,6 +207,14 @@ describe("agent live run routes", () => {
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
+    mockHeartbeatService.list.mockResolvedValue([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "running",
+      },
+    ]);
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "run-1",
       store: "local_file",
@@ -318,6 +327,50 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("supports the company-scoped run log alias", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/run-1/logs?offset=12&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    }, {
+      offset: 12,
+      limitBytes: 64,
+    });
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "chunk",
+      nextOffset: 5,
+    });
+  });
+
+  it("supports the company-scoped agent runs alias", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/agents/agent-1/runs?limit=25"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", "agent-1", 25);
+    expect(res.body).toEqual([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "running",
+      },
+    ]);
   });
 
   it("caps company live run polling by default", async () => {
