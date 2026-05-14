@@ -53,6 +53,30 @@ export function activityRoutes(db: Db) {
     res.json(await svc.skillUsageForCompany(companyId));
   });
 
+  router.get("/companies/:companyId/skill-usage/agents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillUsageByAgent(companyId));
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/skill-activations", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillActivationsForAgent(companyId, req.params.agentId as string, Number(req.query.limit)));
+  });
+
+  router.get("/companies/:companyId/recovery-dismissals", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.recoveryDismissalsForCompany(companyId));
+  });
+
+  router.get("/companies/:companyId/wake-suppressions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.wakeSuppressionsForCompany(companyId));
+  });
+
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

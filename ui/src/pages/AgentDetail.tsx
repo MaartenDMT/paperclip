@@ -13,7 +13,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
-import { activityApi } from "../api/activity";
+import { activityApi, type AgentSkillActivation } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -235,12 +235,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "skill-activations" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
+  if (value === "skill-activations" || value === "skill-usage") return "skill-activations";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
@@ -757,11 +758,13 @@ export function AgentDetail() {
           ? "configuration"
           : activeView === "skills"
             ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+            : activeView === "skill-activations"
+              ? "skill-activations"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
+                : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -881,6 +884,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Configuration" });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
+      } else if (activeView === "skill-activations") {
+        crumbs.push({ label: "Skill Activations" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -1022,6 +1027,7 @@ export function AgentDetail() {
               { value: "dashboard", label: "Dashboard" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
+              { value: "skill-activations", label: "Skill Activations" },
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
@@ -1137,6 +1143,13 @@ export function AgentDetail() {
         <AgentSkillsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
+        />
+      )}
+
+      {activeView === "skill-activations" && resolvedCompanyId && (
+        <AgentSkillActivationsTab
+          companyId={resolvedCompanyId}
+          agent={agent}
         />
       )}
 
@@ -2470,6 +2483,96 @@ function PromptEditorSkeleton() {
     <div className="space-y-3">
       <Skeleton className="h-10 w-full" />
       <Skeleton className="h-[420px] w-full" />
+    </div>
+  );
+}
+
+function AgentSkillActivationsTab({ companyId, agent }: { companyId: string; agent: AgentDetailRecord }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.agentSkillActivations(companyId, agent.id),
+    queryFn: () => activityApi.agentSkillActivations(companyId, agent.id),
+    enabled: Boolean(companyId && agent.id),
+  });
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, { skillName: string; skillKey: string; count: number; lastActivatedAt: string }>();
+    for (const row of data ?? []) {
+      const existing = map.get(row.skillKey);
+      if (!existing) {
+        map.set(row.skillKey, {
+          skillName: row.skillName,
+          skillKey: row.skillKey,
+          count: 1,
+          lastActivatedAt: row.activatedAt,
+        });
+        continue;
+      }
+      existing.count += 1;
+      if (new Date(row.activatedAt).getTime() > new Date(existing.lastActivatedAt).getTime()) {
+        existing.lastActivatedAt = row.activatedAt;
+      }
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count || a.skillName.localeCompare(b.skillName));
+  }, [data]);
+
+  if (isLoading) return <PageSkeleton variant="list" />;
+  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+
+  const rows: AgentSkillActivation[] = data ?? [];
+
+  return (
+    <div className="space-y-4">
+      {grouped.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {grouped.map((skill) => (
+            <div key={skill.skillKey} className="border border-border p-3">
+              <p className="truncate text-sm font-medium">{skill.skillName}</p>
+              <p className="truncate text-xs text-muted-foreground">{skill.skillKey}</p>
+              <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                <span>{skill.count} activations</span>
+                <span className="text-muted-foreground">{relativeTime(skill.lastActivatedAt)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {rows.length === 0 ? (
+        <div className="border border-border p-6 text-sm text-muted-foreground">
+          No skill activations have been recorded for this agent.
+        </div>
+      ) : (
+        <div className="border border-border divide-y divide-border">
+          {rows.map((row) => (
+            <div key={row.id} className="grid gap-2 p-3 lg:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_auto] lg:items-start">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{row.skillName}</p>
+                <p className="truncate text-xs text-muted-foreground">{row.skillKey}</p>
+              </div>
+              <div className="min-w-0 text-xs text-muted-foreground">
+                {row.issueId ? (
+                  <Link to={`/issues/${row.issueIdentifier ?? row.issueId}`} className="hover:underline">
+                    {row.issueIdentifier ?? row.issueId.slice(0, 8)} · {row.issueTitle ?? "Untitled issue"}
+                  </Link>
+                ) : (
+                  <span>No linked issue</span>
+                )}
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <span className="rounded-full border border-border px-2 py-0.5">{row.runStatus}</span>
+                  <span className="rounded-full border border-border px-2 py-0.5">{row.invocationSource}</span>
+                  <span className="rounded-full border border-border px-2 py-0.5">{row.source}</span>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground lg:text-right">
+                <Link to={`/agents/${agentRouteRef(agent)}/runs/${row.runId}`} className="hover:underline">
+                  Run {row.runId.slice(0, 8)}
+                </Link>
+                <p>{relativeTime(row.activatedAt)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

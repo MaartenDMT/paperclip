@@ -8850,6 +8850,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const wakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+    if (wakeReason?.startsWith("issue_")) {
+      const recentRecoveryDismissal = await db
+        .select({ latestDismissedAt: sql<Date>`max(${issues.updatedAt})` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agentId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.status, "cancelled"),
+            isNull(issues.hiddenAt),
+            sql`${issues.updatedAt} >= now() - interval '60 seconds'`,
+          ),
+        )
+        .then((rows) => rows[0]?.latestDismissedAt ?? null);
+      if (recentRecoveryDismissal) {
+        await writeSkippedRequest("issue_wake_storm_suppressed");
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId,
+          runId: null,
+          action: "heartbeat.issue_wake_suppressed",
+          entityType: issueId ? "issue" : "agent",
+          entityId: issueId ?? agentId,
+          details: {
+            wakeReason,
+            source,
+            triggerDetail,
+            latestRecoveryDismissalAt: recentRecoveryDismissal,
+            suppressWindowSeconds: 60,
+          },
+        });
+        return null;
+      }
+    }
+
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
       if (activePauseHold) {

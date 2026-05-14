@@ -55,6 +55,71 @@ export interface IssueForRun {
   priority: string;
 }
 
+export interface SkillUsageSummary {
+  skillKey: string;
+  skillName: string;
+  runCount: number;
+  doneCount: number;
+  blockedCount: number;
+  cancelledCount: number;
+  noopCount: number;
+}
+
+export interface AgentSkillUsageSummary {
+  agentId: string;
+  agentName: string;
+  skillKey: string;
+  skillName: string;
+  runCount: number;
+  activationCount: number;
+  lastActivatedAt: string;
+}
+
+export interface AgentSkillActivation {
+  id: number;
+  runId: string;
+  skillKey: string;
+  skillName: string;
+  source: string;
+  activatedAt: string;
+  runStatus: string;
+  invocationSource: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueStatus: string | null;
+}
+
+export interface RecoveryDismissal {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  originId: string | null;
+  parentId: string | null;
+  assigneeAgentId: string | null;
+  assigneeAgentName: string | null;
+  cancelledAt: string | null;
+  updatedAt: string;
+  createdAt: string;
+  cancelledByKind: string | null;
+  sourceIssue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  } | null;
+}
+
+export interface WakeSuppression {
+  agentId: string;
+  agentName: string | null;
+  dismissalCount: number;
+  latestDismissedAt: string;
+  suppressUntil: string;
+  suppressedWakeReasonPrefix: string;
+}
+
 export const activityApi = {
   list: (companyId: string, filters?: { entityType?: string; entityId?: string; agentId?: string; limit?: number }) => {
     const params = new URLSearchParams();
@@ -65,6 +130,15 @@ export const activityApi = {
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`);
   },
+  skillUsage: (companyId: string) => api.get<SkillUsageSummary[]>(`/companies/${companyId}/skill-usage`),
+  skillUsageByAgent: (companyId: string) =>
+    api.get<AgentSkillUsageSummary[]>(`/companies/${companyId}/skill-usage/agents`),
+  agentSkillActivations: (companyId: string, agentId: string, limit = 200) =>
+    api.get<AgentSkillActivation[]>(`/companies/${companyId}/agents/${agentId}/skill-activations?limit=${limit}`),
+  recoveryDismissals: (companyId: string) =>
+    api.get<RecoveryDismissal[]>(`/companies/${companyId}/recovery-dismissals`),
+  wakeSuppressions: (companyId: string) =>
+    api.get<WakeSuppression[]>(`/companies/${companyId}/wake-suppressions`),
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),

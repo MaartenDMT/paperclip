@@ -149,6 +149,12 @@ export const queryKeys = {
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
+  skillUsage: (companyId: string) => ["skill-usage", companyId] as const,
+  skillUsageByAgent: (companyId: string) => ["skill-usage", companyId, "agents"] as const,
+  agentSkillActivations: (companyId: string, agentId: string) =>
+    ["skill-activations", companyId, agentId] as const,
+  recoveryDismissals: (companyId: string) => ["recovery-dismissals", companyId] as const,
+  wakeSuppressions: (companyId: string) => ["wake-suppressions", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>

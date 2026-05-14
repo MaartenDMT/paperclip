@@ -398,6 +398,199 @@ export function activityService(db: Db) {
       }));
     },
 
+    skillUsageByAgent: async (companyId: string) => {
+      const rows = await db
+        .select({
+          agentId: heartbeatRunSkillEvents.agentId,
+          agentName: agents.name,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+          activationCount: sql<number>`count(*)::int`,
+          lastActivatedAt: sql<Date>`max(${heartbeatRunSkillEvents.activatedAt})`,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(
+          agents,
+          and(
+            eq(agents.id, heartbeatRunSkillEvents.agentId),
+            eq(agents.companyId, heartbeatRunSkillEvents.companyId),
+          ),
+        )
+        .where(eq(heartbeatRunSkillEvents.companyId, companyId))
+        .groupBy(
+          heartbeatRunSkillEvents.agentId,
+          agents.name,
+          heartbeatRunSkillEvents.skillKey,
+          heartbeatRunSkillEvents.skillName,
+        )
+        .orderBy(desc(sql`max(${heartbeatRunSkillEvents.activatedAt})`), asc(agents.name), asc(heartbeatRunSkillEvents.skillName));
+
+      return rows.map((row) => ({
+        agentId: row.agentId,
+        agentName: row.agentName,
+        skillKey: row.skillKey,
+        skillName: row.skillName,
+        runCount: Number(row.runCount ?? 0),
+        activationCount: Number(row.activationCount ?? 0),
+        lastActivatedAt: row.lastActivatedAt,
+      }));
+    },
+
+    skillActivationsForAgent: async (companyId: string, agentId: string, limit: number | undefined) => {
+      const normalizedLimit = normalizeActivityLimit(limit);
+      return db
+        .select({
+          id: heartbeatRunSkillEvents.id,
+          runId: heartbeatRunSkillEvents.runId,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          source: heartbeatRunSkillEvents.source,
+          activatedAt: heartbeatRunSkillEvents.activatedAt,
+          runStatus: heartbeatRuns.status,
+          invocationSource: heartbeatRuns.invocationSource,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(
+          heartbeatRuns,
+          and(
+            eq(heartbeatRuns.id, heartbeatRunSkillEvents.runId),
+            eq(heartbeatRuns.companyId, heartbeatRunSkillEvents.companyId),
+          ),
+        )
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, heartbeatRunSkillEvents.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text`,
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .where(
+          and(
+            eq(heartbeatRunSkillEvents.companyId, companyId),
+            eq(heartbeatRunSkillEvents.agentId, agentId),
+          ),
+        )
+        .orderBy(desc(heartbeatRunSkillEvents.activatedAt), desc(heartbeatRunSkillEvents.id))
+        .limit(normalizedLimit);
+    },
+
+    recoveryDismissalsForCompany: async (companyId: string) => {
+      const recoveryRows = await db
+        .select({
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          originId: issues.originId,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          cancelledAt: issues.cancelledAt,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+          cancelledByKind: issues.cancelledByKind,
+          assigneeAgentName: agents.name,
+        })
+        .from(issues)
+        .leftJoin(
+          agents,
+          and(
+            eq(agents.id, issues.assigneeAgentId),
+            eq(agents.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.status, "cancelled"),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(desc(issues.updatedAt))
+        .limit(200);
+
+      const sourceIds = [
+        ...new Set(
+          recoveryRows
+            .flatMap((row) => [row.originId, row.parentId])
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      ];
+      const sourceRows = sourceIds.length > 0
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, sourceIds)))
+        : [];
+      const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
+
+      return recoveryRows.map((row) => {
+        const sourceIssue = (row.originId ? sourceById.get(row.originId) : null)
+          ?? (row.parentId ? sourceById.get(row.parentId) : null)
+          ?? null;
+        return {
+          ...row,
+          sourceIssue,
+        };
+      });
+    },
+
+    wakeSuppressionsForCompany: async (companyId: string) => {
+      const windowSeconds = 60;
+      const rows = await db
+        .select({
+          agentId: issues.assigneeAgentId,
+          agentName: agents.name,
+          dismissalCount: sql<number>`count(*)::int`,
+          latestDismissedAt: sql<Date>`max(${issues.updatedAt})`,
+        })
+        .from(issues)
+        .leftJoin(
+          agents,
+          and(
+            eq(agents.id, issues.assigneeAgentId),
+            eq(agents.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.status, "cancelled"),
+            isNull(issues.hiddenAt),
+            sql`${issues.updatedAt} >= now() - interval '60 seconds'`,
+          ),
+        )
+        .groupBy(issues.assigneeAgentId, agents.name)
+        .orderBy(desc(sql`max(${issues.updatedAt})`));
+
+      return rows
+        .filter((row) => row.agentId)
+        .map((row) => {
+          const latestDismissedAt = row.latestDismissedAt;
+          const suppressUntil = new Date(latestDismissedAt.getTime() + windowSeconds * 1000);
+          return {
+            agentId: row.agentId,
+            agentName: row.agentName,
+            dismissalCount: Number(row.dismissalCount ?? 0),
+            latestDismissedAt,
+            suppressUntil,
+            suppressedWakeReasonPrefix: "issue_",
+          };
+        });
+    },
+
     forIssue: (issueId: string) =>
       db
         .select()
