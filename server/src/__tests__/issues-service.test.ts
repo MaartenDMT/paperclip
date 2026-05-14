@@ -744,6 +744,66 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(operationIssueId);
   });
 
+  it("filters issues by goal", async () => {
+    const companyId = randomUUID();
+    const targetGoalId = randomUUID();
+    const otherGoalId = randomUUID();
+    const targetIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const noGoalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values([
+      {
+        id: targetGoalId,
+        companyId,
+        title: "Target goal",
+        level: "department",
+        status: "active",
+      },
+      {
+        id: otherGoalId,
+        companyId,
+        title: "Other goal",
+        level: "department",
+        status: "active",
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: targetIssueId,
+        companyId,
+        title: "Target goal task",
+        status: "todo",
+        priority: "medium",
+        goalId: targetGoalId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Other goal task",
+        status: "todo",
+        priority: "medium",
+        goalId: otherGoalId,
+      },
+      {
+        id: noGoalIssueId,
+        companyId,
+        title: "No goal task",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const goalIssueIds = (await svc.list(companyId, { goalId: targetGoalId })).map((issue) => issue.id);
+    expect(goalIssueIds).toEqual([targetIssueId]);
+  });
+
   it("excludes plugin operation issues from unread inbox counts", async () => {
     const companyId = randomUUID();
     const userId = "board-user";
