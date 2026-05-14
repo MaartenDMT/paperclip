@@ -199,7 +199,9 @@ function modelProfileTitle(summary: ModelProfileSummary) {
 }
 
 function skillActivationTitle(run: RunForIssue, skillName: string) {
-  const count = run.skillActivations?.filter((activation) => activation.skillName === skillName).length ?? 0;
+  const count = run.skillActivations?.filter((activation) =>
+    (activation.skillName || activation.skillKey) === skillName
+  ).length ?? 0;
   return count > 1
     ? `Skill activated ${count} times in this run`
     : "Skill activated in this run";

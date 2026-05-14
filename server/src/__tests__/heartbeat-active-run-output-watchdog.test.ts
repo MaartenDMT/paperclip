@@ -72,8 +72,11 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let previousWatchdogEnv: string | undefined;
 
   beforeAll(async () => {
+    previousWatchdogEnv = process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG;
+    process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG = "on";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
@@ -88,10 +91,15 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousWatchdogEnv === undefined) {
+      delete process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG;
+    } else {
+      process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG = previousWatchdogEnv;
+    }
   });
 
   async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
