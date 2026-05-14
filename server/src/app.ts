@@ -60,6 +60,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { createLegacyApiCompatibilityMiddleware } from "./legacy-api-compat.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -301,6 +302,14 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  const legacyApiCompat = Router();
+  legacyApiCompat.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  legacyApiCompat.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+  }));
+  legacyApiCompat.use(activityRoutes(db));
+  app.use(createLegacyApiCompatibilityMiddleware(legacyApiCompat));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
