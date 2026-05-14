@@ -69,6 +69,13 @@ import {
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const AUTO_HIDE_TERMINAL_ORIGIN_KINDS = new Set([
+  "harness_liveness_escalation",
+  "issue_productivity_review",
+  "stale_active_run_evaluation",
+  "stranded_issue_recovery",
+]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -112,6 +119,18 @@ function inferCancelledByKind(input: {
   if (input.actorAgentId || input.createdByAgentId) return "agent";
   if (input.actorUserId || input.createdByUserId) return "user";
   return "recovery";
+}
+
+function shouldAutoHideTerminalOperationalIssue(input: {
+  originKind: string | null | undefined;
+  status: string | null | undefined;
+}) {
+  return (
+    typeof input.status === "string" &&
+    TERMINAL_ISSUE_STATUSES.has(input.status) &&
+    typeof input.originKind === "string" &&
+    AUTO_HIDE_TERMINAL_ORIGIN_KINDS.has(input.originKind)
+  );
 }
 
 function readStringFromRecord(record: unknown, key: string) {
@@ -3057,6 +3076,15 @@ export function issueService(db: Db) {
             createdByUserId: values.createdByUserId,
           });
         }
+        if (
+          !values.hiddenAt &&
+          shouldAutoHideTerminalOperationalIssue({
+            originKind: values.originKind,
+            status: values.status,
+          })
+        ) {
+          values.hiddenAt = new Date();
+        }
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
@@ -3219,6 +3247,16 @@ export function issueService(db: Db) {
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+      }
+      if (
+        patch.hiddenAt === undefined &&
+        existing.hiddenAt === null &&
+        shouldAutoHideTerminalOperationalIssue({
+          originKind: issueData.originKind ?? existing.originKind,
+          status: issueData.status ?? existing.status,
+        })
+      ) {
+        patch.hiddenAt = new Date();
       }
 
       const runUpdate = async (tx: any) => {

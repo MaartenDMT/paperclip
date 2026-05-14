@@ -3046,4 +3046,45 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionLockedAt: null,
     });
   });
+
+  it("auto-hides terminal operational recovery issues without hiding normal completed work", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssue = await svc.create(companyId, {
+      title: "Normal product task",
+      status: "todo",
+      priority: "medium",
+    });
+    const recoveryIssue = await svc.create(companyId, {
+      title: "Recover stalled issue",
+      status: "todo",
+      priority: "medium",
+      parentId: sourceIssue.id,
+      originKind: "stranded_issue_recovery",
+      originId: sourceIssue.id,
+    });
+
+    const completedProduct = await svc.update(sourceIssue.id, { status: "done" });
+    const completedRecovery = await svc.update(recoveryIssue.id, { status: "done" });
+
+    expect(completedProduct?.hiddenAt).toBeNull();
+    expect(completedRecovery?.hiddenAt).toBeInstanceOf(Date);
+
+    const visibleIssues = await svc.list(companyId, { status: "done" });
+    expect(visibleIssues.map((issue) => issue.id)).toEqual([sourceIssue.id]);
+
+    const marker = await db
+      .select({ id: issues.id, hiddenAt: issues.hiddenAt, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, recoveryIssue.id))
+      .then((rows) => rows[0]);
+    expect(marker).toMatchObject({ id: recoveryIssue.id, status: "done" });
+    expect(marker?.hiddenAt).toBeInstanceOf(Date);
+  });
 });
