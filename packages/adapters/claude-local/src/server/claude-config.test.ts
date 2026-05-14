@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, prepareClaudeRuntimeConfigDir } from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -62,5 +62,29 @@ describe("prepareClaudeConfigSeed", () => {
       .resolves.toBe(JSON.stringify({ theme: "light" }));
     await expect(fs.readFile(path.join(second, "settings.json"), "utf8"))
       .resolves.toBe(JSON.stringify({ theme: "dark" }));
+  });
+
+  it("prepares mutable agent-scoped runtime config without copying shared project memory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-runtime-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(path.join(sourceDir, "projects", "shared"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({ hooks: [] }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "projects", "shared", "MEMORY.md"), "stale shared memory\n", "utf8");
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const runtimeDir = await prepareClaudeRuntimeConfigDir(env, onLog, "company-1", "agent-1");
+
+    expect(runtimeDir).toContain(path.join("company-1", "claude-config-runtime", "agents", "agent-1"));
+    await expect(fs.readFile(path.join(runtimeDir, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ hooks: [] }));
+    await expect(fs.access(path.join(runtimeDir, "projects", "shared", "MEMORY.md")))
+      .rejects.toThrow();
+
+    await fs.writeFile(path.join(runtimeDir, "agent-local.txt"), "keep\n", "utf8");
+    await prepareClaudeRuntimeConfigDir(env, onLog, "company-1", "agent-1");
+    await expect(fs.readFile(path.join(runtimeDir, "agent-local.txt"), "utf8"))
+      .resolves.toBe("keep\n");
   });
 });

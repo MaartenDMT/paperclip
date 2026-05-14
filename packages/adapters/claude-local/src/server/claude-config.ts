@@ -102,6 +102,26 @@ export function resolveManagedClaudeConfigSeedDir(
     : path.resolve(instanceRoot, "claude-config-seed");
 }
 
+export function resolveManagedClaudeRuntimeConfigDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.resolve(
+    instanceRoot,
+    "companies",
+    companyId,
+    "claude-config-runtime",
+    "agents",
+    agentId,
+  );
+}
+
 export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
@@ -133,6 +153,35 @@ export async function prepareClaudeConfigSeed(
       `[paperclip] No local Claude config seed files were found in "${sourceDir}". Remote Claude auth may still require login.\n`,
     );
   }
+
+  return targetDir;
+}
+
+export async function prepareClaudeRuntimeConfigDir(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId: string,
+  agentId: string,
+): Promise<string> {
+  const sourceDir = resolveSharedClaudeConfigDir(env);
+  const targetDir = resolveManagedClaudeRuntimeConfigDir(env, companyId, agentId);
+
+  if (path.resolve(sourceDir) === path.resolve(targetDir)) {
+    return targetDir;
+  }
+
+  await fs.mkdir(targetDir, { recursive: true });
+  const copiedFiles = await collectSeedFiles(sourceDir);
+  for (const file of copiedFiles) {
+    await fs.copyFile(file.sourcePath, path.join(targetDir, file.name));
+  }
+
+  await onLog(
+    "stdout",
+    copiedFiles.length > 0
+      ? `[paperclip] Prepared agent-scoped Claude config "${targetDir}" from "${sourceDir}" (${copiedFiles.map((file) => file.name).join(", ")}).\n`
+      : `[paperclip] Prepared empty agent-scoped Claude config "${targetDir}"; Claude auth may require login.\n`,
+  );
 
   return targetDir;
 }

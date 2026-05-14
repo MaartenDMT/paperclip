@@ -55,7 +55,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, prepareClaudeRuntimeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -442,6 +442,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
+  const localClaudeConfigDir =
+    !executionTargetIsRemote && !hasExplicitClaudeConfigDir
+      ? await prepareClaudeRuntimeConfigDir(process.env, onLog, agent.companyId, agent.id)
+      : null;
+  if (localClaudeConfigDir) {
+    env.CLAUDE_CONFIG_DIR = localClaudeConfigDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = localClaudeConfigDir;
+  }
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
