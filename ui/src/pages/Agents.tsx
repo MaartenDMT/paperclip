@@ -247,6 +247,7 @@ export function Agents() {
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          link={false}
                         />
                       ) : (
                         <StatusBadge status={agent.status} />
@@ -258,6 +259,7 @@ export function Agents() {
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          link={false}
                         />
                       )}
                       <span className="w-28 whitespace-nowrap text-left font-mono text-xs text-muted-foreground">
@@ -354,6 +356,7 @@ function OrgTreeNode({
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                link={false}
               />
             ) : (
               <StatusBadge status={node.status} />
@@ -365,6 +368,7 @@ function OrgTreeNode({
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                link={false}
               />
             )}
             {agent && (
@@ -404,17 +408,15 @@ function LiveRunIndicator({
   agentRef,
   runId,
   liveCount,
+  link = true,
 }: {
   agentRef: string;
   runId: string;
   liveCount: number;
+  link?: boolean;
 }) {
-  return (
-    <Link
-      to={`/agents/${agentRef}/runs/${runId}`}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-      onClick={(e) => e.stopPropagation()}
-    >
+  const content = (
+    <>
       <span className="relative flex h-2 w-2">
         <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
@@ -422,6 +424,22 @@ function LiveRunIndicator({
       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
         Live{liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
+    </>
+  );
+  if (!link) {
+    return (
+      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10">
+        {content}
+      </span>
+    );
+  }
+  return (
+    <Link
+      to={`/agents/${agentRef}/runs/${runId}`}
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {content}
     </Link>
   );
 }

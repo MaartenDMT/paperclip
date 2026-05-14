@@ -1244,10 +1244,9 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         </Link>
       </div>
 
-      <Link
-        to={`/agents/${agentId}/runs/${run.id}`}
+      <div
         className={cn(
-          "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
+          "border rounded-lg p-4 space-y-2 w-full",
           isLive ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.08)]" : "border-border"
         )}
       >
@@ -1272,7 +1271,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
             <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{summary}</MarkdownBody>
           </div>
         )}
-      </Link>
+      </div>
     </div>
   );
 }
