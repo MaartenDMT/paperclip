@@ -31,6 +31,7 @@ import {
   documentRevisions,
   issueDocuments,
   heartbeatRunEvents,
+  heartbeatRunSkillEvents,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -227,6 +228,39 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+
+type NormalizedSkillActivation = {
+  skillKey: string;
+  skillName: string;
+  activatedAt: Date;
+  source: string;
+};
+
+function normalizeSkillActivationKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized.slice(0, 160);
+}
+
+function normalizeAdapterSkillActivations(value: AdapterExecutionResult["skillActivations"]): NormalizedSkillActivation[] {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  const result: NormalizedSkillActivation[] = [];
+  for (const activation of value) {
+    const skillKey = normalizeSkillActivationKey(activation?.skillKey);
+    if (!skillKey) continue;
+    const skillName = normalizeSkillActivationKey(activation.skillName) ?? skillKey;
+    const source = normalizeSkillActivationKey(activation.source) ?? "adapter";
+    const parsedActivatedAt = activation.activatedAt ? new Date(activation.activatedAt) : null;
+    result.push({
+      skillKey,
+      skillName,
+      source,
+      activatedAt: parsedActivatedAt && !Number.isNaN(parsedActivatedAt.getTime()) ? parsedActivatedAt : new Date(),
+    });
+  }
+  return result;
+}
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -7813,6 +7847,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
+      const skillActivations = normalizeAdapterSkillActivations(adapterResult.skillActivations);
+      if (skillActivations.length > 0) {
+        await db.insert(heartbeatRunSkillEvents).values(
+          skillActivations.map((activation) => ({
+            companyId: run.companyId,
+            runId: run.id,
+            agentId: run.agentId,
+            skillKey: activation.skillKey,
+            skillName: activation.skillName,
+            source: activation.source,
+            activatedAt: activation.activatedAt,
+          })),
+        );
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -9974,4 +10022,3 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
   };
 }
-

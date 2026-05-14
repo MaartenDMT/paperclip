@@ -14,11 +14,33 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
+type ParsedSkillActivation = {
+  skillKey: string;
+  skillName: string;
+  source: "claude";
+};
+
+function readSkillName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function extractClaudeSkillActivation(block: Record<string, unknown>): ParsedSkillActivation | null {
+  if (asString(block.type, "") !== "tool_use") return null;
+  if (!/^skill$/i.test(asString(block.name, "").trim())) return null;
+  const input = parseObject(block.input);
+  const skillName = readSkillName(input.skill ?? input.skill_name ?? input.name);
+  if (!skillName) return null;
+  return { skillKey: skillName, skillName, source: "claude" };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  const skillActivations: ParsedSkillActivation[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -40,6 +62,8 @@ export function parseClaudeStreamJson(stdout: string) {
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
         const block = entry as Record<string, unknown>;
+        const skillActivation = extractClaudeSkillActivation(block);
+        if (skillActivation) skillActivations.push(skillActivation);
         if (asString(block.type, "") === "text") {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
@@ -62,6 +86,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      skillActivations,
     };
   }
 
@@ -82,6 +107,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    skillActivations,
   };
 }
 

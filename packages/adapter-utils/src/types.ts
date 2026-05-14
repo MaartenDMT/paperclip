@@ -89,6 +89,12 @@ export interface AdapterExecutionResult {
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  skillActivations?: Array<{
+    skillKey: string;
+    skillName?: string | null;
+    activatedAt?: string | null;
+    source?: string | null;
+  }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {

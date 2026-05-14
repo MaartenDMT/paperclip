@@ -824,6 +824,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       },
+      skillActivations: attempt.parsed.skillActivations,
       summary: attempt.parsed.summary,
       clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
     };

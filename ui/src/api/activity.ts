@@ -1,4 +1,4 @@
-import type { ActivityEvent, RunLivenessState } from "@paperclipai/shared";
+import type { ActivityEvent, HeartbeatRunSkillActivation, RunLivenessState } from "@paperclipai/shared";
 import { api } from "./client";
 
 export type { RunLivenessState } from "@paperclipai/shared";
@@ -44,6 +44,7 @@ export interface RunForIssue {
     acquiredAt: string | Date;
     releasedAt: string | Date | null;
   } | null;
+  skillActivations?: HeartbeatRunSkillActivation[];
 }
 
 export interface IssueForRun {

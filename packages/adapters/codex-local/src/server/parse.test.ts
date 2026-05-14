@@ -30,6 +30,7 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: "resume failed",
+      skillActivations: [],
     });
   });
 
@@ -63,7 +64,39 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: null,
+      skillActivations: [],
     });
+  });
+
+  it("extracts explicit Skill tool calls", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_call",
+          name: "Skill",
+          arguments: JSON.stringify({ skill: "paperclip" }),
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_call",
+          name: "Skill",
+          input: { skill_name: "diagnose-why-work-stopped" },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout).skillActivations).toEqual([
+      { skillKey: "paperclip", skillName: "paperclip", source: "codex" },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "codex",
+      },
+    ]);
   });
 });
 

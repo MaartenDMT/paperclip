@@ -6,6 +6,7 @@ import {
   documentRevisions,
   environmentLeases,
   environments,
+  heartbeatRunSkillEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -431,6 +432,35 @@ export function activityService(db: Db) {
       const runIds = runs.map((run) => run.runId);
       if (runIds.length === 0) return runs;
 
+      const skillRows = await db
+        .select({
+          runId: heartbeatRunSkillEvents.runId,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          activatedAt: heartbeatRunSkillEvents.activatedAt,
+          source: heartbeatRunSkillEvents.source,
+        })
+        .from(heartbeatRunSkillEvents)
+        .where(
+          and(
+            eq(heartbeatRunSkillEvents.companyId, companyId),
+            inArray(heartbeatRunSkillEvents.runId, runIds),
+          ),
+        )
+        .orderBy(asc(heartbeatRunSkillEvents.activatedAt), asc(heartbeatRunSkillEvents.id));
+
+      const skillActivationsByRunId = new Map<string, Array<Omit<(typeof skillRows)[number], "runId">>>();
+      for (const row of skillRows) {
+        const existing = skillActivationsByRunId.get(row.runId) ?? [];
+        existing.push({
+          skillKey: row.skillKey,
+          skillName: row.skillName,
+          activatedAt: row.activatedAt,
+          source: row.source,
+        });
+        skillActivationsByRunId.set(row.runId, existing);
+      }
+
       const exhaustionRows = await db
         .select({
           runId: heartbeatRunEvents.runId,
@@ -512,6 +542,7 @@ export function activityService(db: Db) {
               }
             : null,
           retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+          skillActivations: skillActivationsByRunId.get(run.runId) ?? [],
         };
       });
     },

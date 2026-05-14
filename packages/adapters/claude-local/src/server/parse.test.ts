@@ -2,7 +2,41 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
 } from "./parse.js";
+
+describe("parseClaudeStreamJson", () => {
+  it("extracts explicit Skill tool calls", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Skill",
+              input: { skill: "paperclip" },
+            },
+            {
+              type: "tool_use",
+              name: "Skill",
+              input: { skill_name: "diagnose-why-work-stopped" },
+            },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    expect(parseClaudeStreamJson(stdout).skillActivations).toEqual([
+      { skillKey: "paperclip", skillName: "paperclip", source: "claude" },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "claude",
+      },
+    ]);
+  });
+});
 
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {

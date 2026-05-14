@@ -7,6 +7,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunSkillEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -54,10 +55,11 @@ describeEmbeddedPostgres("activity service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-activity-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunSkillEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -212,6 +214,80 @@ describeEmbeddedPostgres("activity service", () => {
       lastUsefulActionAt: new Date("2026-04-18T19:59:00.000Z"),
       nextAction: "Review the completed output.",
     });
+  });
+
+  it("returns skill activations for issue runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(heartbeatRunSkillEvents).values([
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "adapter",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "adapter",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.skillActivations).toEqual([
+      {
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+        source: "adapter",
+      },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+        source: "adapter",
+      },
+    ]);
   });
 
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {

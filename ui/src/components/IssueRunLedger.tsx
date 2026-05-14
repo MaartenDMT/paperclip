@@ -198,6 +198,25 @@ function modelProfileTitle(summary: ModelProfileSummary) {
   return lines.join("\n");
 }
 
+function skillActivationTitle(run: RunForIssue, skillName: string) {
+  const count = run.skillActivations?.filter((activation) => activation.skillName === skillName).length ?? 0;
+  return count > 1
+    ? `Skill activated ${count} times in this run`
+    : "Skill activated in this run";
+}
+
+function uniqueSkillActivationNames(run: RunForIssue) {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const activation of run.skillActivations ?? []) {
+    const name = activation.skillName || activation.skillKey;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names.slice(0, 5);
+}
+
 function readNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -773,6 +792,15 @@ export function IssueRunLedgerContent({
                       </span>
                     );
                   })()}
+                  {uniqueSkillActivationNames(run).map((skillName) => (
+                    <span
+                      key={`skill:${skillName}`}
+                      className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                      title={skillActivationTitle(run, skillName)}
+                    >
+                      {skillName}
+                    </span>
+                  ))}
                   <span className="ml-auto shrink-0">{relativeTime(item.timestamp)}</span>
                 </div>
 
