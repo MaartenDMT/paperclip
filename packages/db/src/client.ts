@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
@@ -9,6 +10,7 @@ import * as schema from "./schema/index.js";
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
+const POSTGRES_STARTUP_READY_TIMEOUT_MS = 15_000;
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
@@ -25,6 +27,14 @@ function quoteIdentifier(value: string): string {
 
 function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+function isPostgresStartupNotReadyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return code === "57P03" || message.toLowerCase().includes("not yet accepting connections");
 }
 
 function splitMigrationStatements(content: string): string[] {
@@ -762,6 +772,25 @@ export async function ensurePostgresDatabase(
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
 
+  const deadline = Date.now() + POSTGRES_STARTUP_READY_TIMEOUT_MS;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await ensurePostgresDatabaseOnce(url, databaseName);
+    } catch (error) {
+      if (!isPostgresStartupNotReadyError(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      attempt += 1;
+      await delay(Math.min(1_000, 100 + attempt * 100));
+    }
+  }
+}
+
+async function ensurePostgresDatabaseOnce(
+  url: string,
+  databaseName: string,
+): Promise<"created" | "exists"> {
   const sql = createUtilitySql(url);
   try {
     const existing = await sql<{ one: number }[]>`
