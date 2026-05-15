@@ -323,4 +323,4 @@ describe("issue update comment wakeups", () => {
       priority: "high",
     });
   }, 20_000);
-  }, 20_000);
+});

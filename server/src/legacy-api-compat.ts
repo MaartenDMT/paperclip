@@ -7,9 +7,7 @@ const LEGACY_HEARTBEAT_READ_ROUTE =
 const LEGACY_HEARTBEAT_WRITE_ROUTE =
   /^\/heartbeat-runs\/[^/]+\/(?:cancel|watchdog-decisions)\/?$/;
 const LEGACY_RUN_READ_ROUTE =
-  /^\/runs\/[^/]+(?:\/(?:events|issues|logs|workspace-operations))?\/?$/;
-const LEGACY_RUN_WRITE_ROUTE =
-  /^\/runs\/[^/]+\/(?:cancel|watchdog-decisions)\/?$/;
+  /^\/runs\/[^/]+(?:\/logs)?\/?$/;
 const LEGACY_AGENT_RUN_ROUTE =
   /^\/agents\/[^/]+\/runs\/[^/]+\/?$/;
 const LEGACY_ISSUE_RUN_ROUTE =
@@ -30,7 +28,7 @@ export function isLegacyApiCompatibilityRequest(req: MinimalRequest): boolean {
   }
 
   if (method === "POST") {
-    return LEGACY_HEARTBEAT_WRITE_ROUTE.test(path) || LEGACY_RUN_WRITE_ROUTE.test(path);
+    return LEGACY_HEARTBEAT_WRITE_ROUTE.test(path);
   }
 
   if (method === "PATCH") {
