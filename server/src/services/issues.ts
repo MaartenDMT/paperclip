@@ -3125,6 +3125,13 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "cancelled") {
         patch.cancelledAt = null;
       }
+      if (issueData.status && (issueData.status === "done" || issueData.status === "cancelled")) {
+        // Terminal issues must never retain stale execution state.
+        patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
+      }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
         // Fix B: also clear the execution lock when leaving in_progress
