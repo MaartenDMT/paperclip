@@ -3300,7 +3300,32 @@ export function agentRoutes(
     );
   }
 
+  async function respondWithHeartbeatRunLog(req: Request, res: Response, runId: string) {
+    const run = await heartbeat.getRunLogAccess(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const offset = Number(req.query.offset ?? 0);
+    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    const result = await heartbeat.readLog(run, {
+      offset: Number.isFinite(offset) ? offset : 0,
+      limitBytes,
+    });
+
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(result);
+  }
+
   router.get("/heartbeat-runs/:runId", async (req, res) => {
+    await respondWithHeartbeatRun(req, res, {
+      runId: req.params.runId as string,
+    });
+  });
+
+  router.get("/runs/:runId", async (req, res) => {
     await respondWithHeartbeatRun(req, res, {
       runId: req.params.runId as string,
     });
@@ -3403,23 +3428,11 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
-    const runId = req.params.runId as string;
-    const run = await heartbeat.getRunLogAccess(runId);
-    if (!run) {
-      res.status(404).json({ error: "Heartbeat run not found" });
-      return;
-    }
-    assertCompanyAccess(req, run.companyId);
+    await respondWithHeartbeatRunLog(req, res, req.params.runId as string);
+  });
 
-    const offset = Number(req.query.offset ?? 0);
-    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes,
-    });
-
-    res.set("Cache-Control", "no-cache, no-store");
-    res.json(result);
+  router.get("/runs/:runId/logs", async (req, res) => {
+    await respondWithHeartbeatRunLog(req, res, req.params.runId as string);
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
