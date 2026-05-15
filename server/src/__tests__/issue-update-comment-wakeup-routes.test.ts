@@ -6,6 +6,7 @@ const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdentifier: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -289,5 +290,37 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
-  });
-});
+  }, 20_000);
+  it("accepts identifier-based PATCH issue routes", async () => {
+    const existing = makeIssue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      identifier: "PC1A2-7",
+    });
+    const updated = {
+      ...existing,
+      priority: "high",
+    };
+    mockIssueService.getByIdentifier.mockResolvedValue(existing);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp()).patch("/api/issues/pc1a2-7").send({
+      priority: "high",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-7");
+    expect(mockIssueService.getById).toHaveBeenCalledWith(existing.id);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        priority: "high",
+      }),
+    );
+    expect(res.body).toMatchObject({
+      id: existing.id,
+      identifier: "PC1A2-7",
+      priority: "high",
+    });
+  }, 20_000);
+  }, 20_000);

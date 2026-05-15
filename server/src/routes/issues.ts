@@ -2526,7 +2526,7 @@ export function issueRoutes(
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
-    const id = req.params.id as string;
+    const id = await resolveIssueRouteId(req.params.id as string);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
