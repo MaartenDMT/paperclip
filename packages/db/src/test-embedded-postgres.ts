@@ -101,7 +101,13 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
 }
 
 function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? (error as any).code : null;
+    if (code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") return;
+    throw error;
+  }
 }
 
 function formatEmbeddedPostgresError(error: unknown): string {
