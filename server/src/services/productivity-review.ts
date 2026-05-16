@@ -194,6 +194,28 @@ function isSoftStopTrigger(trigger: ProductivityReviewTrigger) {
   return trigger === "no_comment_streak" || trigger === "high_churn";
 }
 
+function isConstraintError(error: unknown, constraintName: string) {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const hasConstraint =
+      maybe.constraint === constraintName ||
+      maybe.constraint_name === constraintName ||
+      (typeof maybe.message === "string" && maybe.message.includes(constraintName));
+    if (hasConstraint) return true;
+    current = maybe.cause;
+  }
+  return false;
+}
+
 function formatTrigger(trigger: ProductivityReviewTrigger) {
   if (trigger === "no_comment_streak") return "No-comment streak";
   if (trigger === "high_churn") return "High churn";
@@ -698,13 +720,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         requestDepth: clampIssueRequestDepth(evidence.sourceIssue.requestDepth + 1),
       });
     } catch (error) {
-      const maybe = error as { code?: string; constraint?: string; message?: string };
-      const uniqueConflict = maybe.code === "23505" &&
-        (
-          maybe.constraint === "issues_active_productivity_review_uq" ||
-          typeof maybe.message === "string" && maybe.message.includes("issues_active_productivity_review_uq")
-        );
-      if (!uniqueConflict) throw error;
+      if (!isConstraintError(error, "issues_active_productivity_review_uq")) throw error;
       const raced = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
       if (!raced) throw error;
       return { kind: "existing" as const, reviewIssueId: raced.id };

@@ -337,6 +337,33 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
+  it("coalesces concurrent productivity review creation races", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        productivityReviewService(db).reconcileProductivityReviews({
+          now,
+          companyId: seeded.companyId,
+        }),
+      ),
+    );
+
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
+    expect(results.reduce((sum, result) => sum + result.failed, 0)).toBe(0);
+    expect(results.reduce((sum, result) => sum + result.created, 0)).toBe(1);
+    expect(results.reduce((sum, result) => sum + result.existing, 0)).toBeGreaterThanOrEqual(1);
+  });
+
   it("creates a long-active review without enabling a continuation hold", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
