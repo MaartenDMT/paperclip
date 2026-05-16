@@ -52,6 +52,13 @@ import type {
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
 
+const startupDebugEnabled = process.env.PAPERCLIP_DEBUG_STARTUP === "true";
+
+function startupDebug(message: string) {
+  if (!startupDebugEnabled) return;
+  process.stderr.write(`[paperclip][startup] ${message}\n`);
+}
+
 type BetterAuthSessionUser = {
   id: string;
   email?: string | null;
@@ -90,8 +97,11 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  startupDebug("startServer: begin");
   let config = loadConfig();
+  startupDebug("startServer: config loaded");
   initTelemetry({ enabled: config.telemetryEnabled });
+  startupDebug("startServer: telemetry initialized");
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }
@@ -274,6 +284,7 @@ export async function startServer(): Promise<StartedServer> {
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   if (config.databaseUrl) {
+    startupDebug("startServer: using external postgres");
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
@@ -283,6 +294,7 @@ export async function startServer(): Promise<StartedServer> {
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
+    startupDebug("startServer: using embedded postgres");
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -423,6 +435,7 @@ export async function startServer(): Promise<StartedServer> {
     db = createDb(embeddedConnectionString);
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
+    startupDebug("startServer: embedded postgres ready");
     activeDatabaseConnectionString = embeddedConnectionString;
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
@@ -455,6 +468,7 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  startupDebug(`startServer: listen port resolved to ${listenPort}`);
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -468,9 +482,12 @@ export async function startServer(): Promise<StartedServer> {
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
   if (config.deploymentMode === "local_trusted") {
+    startupDebug("startServer: ensuring local trusted board principal");
     await ensureLocalTrustedBoardPrincipal(db as any);
+    startupDebug("startServer: local trusted board principal ready");
   }
   if (config.deploymentMode === "authenticated") {
+    startupDebug("startServer: initializing authenticated mode");
     const {
       createBetterAuthHandler,
       createBetterAuthInstance,
@@ -502,6 +519,7 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
+    startupDebug("startServer: authenticated mode ready");
   }
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -513,9 +531,11 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  startupDebug("startServer: storage service created");
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
+  startupDebug("startServer: feedback service created");
   const backupSettingsSvc = instanceSettingsService(db);
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
@@ -577,6 +597,9 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  startupDebug("startServer: plugin worker manager created");
+  logger.info({ uiMode }, "Creating Paperclip app");
+  startupDebug("startServer: creating app");
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -602,7 +625,10 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
     pluginWorkerManager,
   });
+  logger.info("Paperclip app created");
+  startupDebug("startServer: app created");
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  startupDebug("startServer: http server created");
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -639,6 +665,7 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
+  startupDebug("startServer: websocket server configured");
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
@@ -791,8 +818,11 @@ export async function startServer(): Promise<StartedServer> {
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
+  startupDebug("startServer: waiting for external adapters");
   await waitForExternalAdapters();
+  startupDebug("startServer: external adapters ready");
 
+  startupDebug("startServer: calling server.listen");
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

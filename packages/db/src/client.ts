@@ -607,7 +607,7 @@ async function discoverMigrationTableSchema(sql: ReturnType<typeof postgres>): P
   return rows[0]?.schemaName ?? null;
 }
 
-export async function inspectMigrations(url: string): Promise<MigrationState> {
+async function inspectMigrationsOnce(url: string): Promise<MigrationState> {
   const sql = createUtilitySql(url);
 
   try {
@@ -664,6 +664,22 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
     };
   } finally {
     await sql.end();
+  }
+}
+
+export async function inspectMigrations(url: string): Promise<MigrationState> {
+  const deadline = Date.now() + POSTGRES_STARTUP_READY_TIMEOUT_MS;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await inspectMigrationsOnce(url);
+    } catch (error) {
+      if (!isPostgresStartupNotReadyError(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      attempt += 1;
+      await delay(Math.min(1_000, 100 + attempt * 100));
+    }
   }
 }
 

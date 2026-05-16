@@ -1574,6 +1574,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        blockedByIssueIds: relations.blockedBy.map((relation) => relation.id),
         blockedBy: relations.blockedBy,
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
@@ -1671,6 +1672,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const blockedByIssueIds = relations.blockedBy.map((relation) => relation.id);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -1684,6 +1686,7 @@ export function issueRoutes(
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
+      blockedByIssueIds,
       project: project ?? null,
       goal: goal ?? null,
       mentionedProjects,
@@ -2856,6 +2859,7 @@ export function issueRoutes(
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
+        blockedByIssueIds: updatedRelations.blockedBy.map((relation) => relation.id),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };

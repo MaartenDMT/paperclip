@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,6 +69,32 @@ describe("shouldRecoverEmbeddedPostgresStartError", () => {
 });
 
 describe("startEmbeddedPostgresWithRecovery", () => {
+  it("keeps postmaster.pid in place while the recorded pid is still running", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, `${process.pid}\n`);
+
+    try {
+      let startCalls = 0;
+      const instance = {
+        async start() {
+          startCalls += 1;
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [],
+      });
+
+      expect(startCalls).toBe(1);
+      expect(readFileSync(postmasterPidFile, "utf8")).toContain(String(process.pid));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("terminates the stale process tree and retries once for Windows shared-memory leftovers", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
     const postmasterPidFile = path.join(tempDir, "postmaster.pid");

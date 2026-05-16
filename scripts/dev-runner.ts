@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -38,6 +39,9 @@ const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
+const require = createRequire(import.meta.url);
+const tsxCliPath = require.resolve("tsx/cli");
+const serverRoot = path.join(repoRoot, "server");
 
 const watchedDirectories = [
   "cli",
@@ -202,6 +206,21 @@ if (existingRunner) {
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+
+function createPnpmSpawnOptions(
+  options: {
+    stdio?: "inherit" | ["ignore", "pipe", "pipe"];
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+  } = {},
+) {
+  return {
+    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+    env: options.env ?? process.env,
+    cwd: options.cwd,
+  } as const;
+}
+
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
 let pendingMigrations: string[] = [];
@@ -386,9 +405,7 @@ async function runPnpm(args: string[], options: {
 } = {}) {
   return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const spawned = spawn(pnpmBin, args, {
-      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-      env: options.env ?? process.env,
-      cwd: options.cwd,
+      ...createPnpmSpawnOptions(options),
       shell: process.platform === "win32",
     });
 
@@ -594,11 +611,22 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const command =
+    mode === "watch"
+      ? {
+          command: process.execPath,
+          args: [tsxCliPath, path.join(serverRoot, "scripts", "dev-watch.ts"), ...forwardedArgs],
+          cwd: serverRoot,
+        }
+      : {
+          command: process.execPath,
+          args: [tsxCliPath, path.join(serverRoot, "src", "index.ts"), ...forwardedArgs],
+          cwd: serverRoot,
+        };
   child = spawn(
-    pnpmBin,
-    ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    command.command,
+    command.args,
+    createPnpmSpawnOptions({ stdio: "inherit", env, cwd: command.cwd }),
   );
 
   childExitPromise = new Promise((resolve, reject) => {

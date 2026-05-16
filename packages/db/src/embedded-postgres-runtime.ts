@@ -199,7 +199,8 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   findCandidateProcessPids?: (dataDir: string) => Promise<number[]>;
 }): Promise<void> {
   const stalePid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false });
-  if (existsSync(input.postmasterPidFile)) {
+  const runningPid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile);
+  if (!runningPid && existsSync(input.postmasterPidFile)) {
     rmSync(input.postmasterPidFile, { force: true });
   }
 

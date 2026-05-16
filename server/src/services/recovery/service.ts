@@ -1835,8 +1835,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const nestedRecoverySuppressed = isStrandedIssueRecoveryIssue(input.issue);
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const hasExplicitBlockerPath = blockerIds.length > 0;
     let recoveryIssue: typeof issues.$inferSelect | null = null;
-    if (!nestedRecoverySuppressed) {
+    if (!nestedRecoverySuppressed && !hasExplicitBlockerPath) {
       recoveryIssue = await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
         previousStatus: input.previousStatus,
@@ -1845,7 +1847,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
       : blockerIds;
@@ -1883,6 +1884,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
         `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
         "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+      ].join("\n");
+    } else if (hasExplicitBlockerPath) {
+      recoveryLine = [
+        "",
+        "- Recovery issue: none created because this issue already has an unresolved first-class blocker path.",
+        "- Next action: resolve or replace the existing blocker relation; Paperclip will not add a duplicate recovery wrapper blocker.",
       ].join("\n");
     } else {
       recoveryLine = [

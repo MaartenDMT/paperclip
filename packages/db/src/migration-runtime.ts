@@ -33,6 +33,14 @@ export type MigrationConnection = {
   stop: () => Promise<void>;
 };
 
+function isPostgresStartupNotReadyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return code === "57P03" || message.toLowerCase().includes("not yet accepting connections");
+}
+
 async function isPortInUse(port: number): Promise<boolean> {
   return await new Promise((resolve) => {
     const server = createServer();
@@ -108,12 +116,21 @@ async function ensureEmbeddedPostgresConnection(
   if (runningPid) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-      source: `embedded-postgres@${port}`,
-      stop: async () => {},
-    };
+    try {
+      await ensurePostgresDatabase(adminConnectionString, "paperclip");
+      return {
+        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+        source: `embedded-postgres@${port}`,
+        stop: async () => {},
+      };
+    } catch (error) {
+      if (!isPostgresStartupNotReadyError(error)) {
+        throw error;
+      }
+      process.emitWarning(
+        `Embedded PostgreSQL process ${runningPid} on port ${port} is stuck during startup; attempting recovery restart.`,
+      );
+    }
   }
 
   const instance = new EmbeddedPostgres({

@@ -143,6 +143,7 @@ export async function createApp(
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
+  logger.info({ uiMode: opts.uiMode }, "Initializing Paperclip app");
   const app = express();
 
   app.use(express.json({
@@ -378,6 +379,10 @@ export async function createApp(
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
+    logger.info(
+      { uiRoot, hmrPort },
+      "Starting Vite dev middleware (may take a while on NTFS workspaces)",
+    );
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
@@ -397,6 +402,7 @@ export async function createApp(
       uiRoot,
       brandHtml: applyUiBranding,
     });
+    logger.info("Vite dev middleware ready");
     const renderViteHtml = viteHtmlRenderer;
 
     if (fs.existsSync(publicUiRoot)) {
@@ -418,6 +424,7 @@ export async function createApp(
   }
 
   app.use(errorHandler);
+  logger.info("Paperclip app routes ready");
 
   jobCoordinator.start();
   scheduler.start();
