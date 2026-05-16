@@ -207,7 +207,7 @@ if (existingRunner) {
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
-function createPnpmSpawnOptions(
+function createSpawnOptions(
   options: {
     stdio?: "inherit" | ["ignore", "pipe", "pipe"];
     env?: NodeJS.ProcessEnv;
@@ -405,7 +405,7 @@ async function runPnpm(args: string[], options: {
 } = {}) {
   return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const spawned = spawn(pnpmBin, args, {
-      ...createPnpmSpawnOptions(options),
+      ...createSpawnOptions(options),
       shell: process.platform === "win32",
     });
 
@@ -437,16 +437,52 @@ async function runPnpm(args: string[], options: {
   });
 }
 
+async function runNode(args: string[], options: {
+  stdio?: "inherit" | ["ignore", "pipe", "pipe"];
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+} = {}) {
+  return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const spawned = spawn(process.execPath, args, createSpawnOptions(options));
+
+    const stdoutBuffer = createCapturedOutputBuffer();
+    const stderrBuffer = createCapturedOutputBuffer();
+
+    if (spawned.stdout) {
+      spawned.stdout.on("data", (chunk) => {
+        stdoutBuffer.append(chunk);
+      });
+    }
+    if (spawned.stderr) {
+      spawned.stderr.on("data", (chunk) => {
+        stderrBuffer.append(chunk);
+      });
+    }
+
+    spawned.on("error", reject);
+    spawned.on("exit", (code, signal) => {
+      const stdout = stdoutBuffer.finish();
+      const stderr = stderrBuffer.finish();
+      resolve({
+        code: code ?? 0,
+        signal,
+        stdout: stdout.text,
+        stderr: stderr.text,
+      });
+    });
+  });
+}
+
 async function getMigrationStatusPayload() {
-  const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
-    { env },
+  const status = await runNode(
+    [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+    { env, cwd: repoRoot },
   );
   if (status.code !== 0) {
     process.stderr.write(
       status.stderr ||
         status.stdout ||
-        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+        `[paperclip] Command failed with code ${status.code}: node ${toRelativePath(tsxCliPath)} packages/db/src/migration-status.ts --json\n`,
     );
     process.exit(status.code);
   }
@@ -626,7 +662,7 @@ async function startServerChild() {
   child = spawn(
     command.command,
     command.args,
-    createPnpmSpawnOptions({ stdio: "inherit", env, cwd: command.cwd }),
+    createSpawnOptions({ stdio: "inherit", env, cwd: command.cwd }),
   );
 
   childExitPromise = new Promise((resolve, reject) => {
