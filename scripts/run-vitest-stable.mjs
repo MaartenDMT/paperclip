@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -24,13 +24,20 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/authz-company-access.test.ts",
   "server/src/__tests__/companies-route-path-guard.test.ts",
   "server/src/__tests__/company-portability.test.ts",
+  "server/src/__tests__/company-search-service.test.ts",
+  "server/src/__tests__/company-skills-service.test.ts",
   "server/src/__tests__/costs-service.test.ts",
+  "server/src/__tests__/documents-service.test.ts",
+  "server/src/__tests__/environment-runtime.test.ts",
+  "server/src/__tests__/environment-service.test.ts",
   "server/src/__tests__/express5-auth-wildcard.test.ts",
   "server/src/__tests__/health-dev-server-token.test.ts",
   "server/src/__tests__/health.test.ts",
   "server/src/__tests__/heartbeat-dependency-scheduling.test.ts",
   "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts",
+  "server/src/__tests__/heartbeat-list.test.ts",
   "server/src/__tests__/heartbeat-process-recovery.test.ts",
+  "server/src/__tests__/heartbeat-runtime-state.test.ts",
   "server/src/__tests__/invite-accept-existing-member.test.ts",
   "server/src/__tests__/invite-accept-gateway-defaults.test.ts",
   "server/src/__tests__/invite-accept-replay.test.ts",
@@ -40,14 +47,57 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/issues-checkout-wakeup.test.ts",
   "server/src/__tests__/issues-service.test.ts",
   "server/src/__tests__/opencode-local-adapter-environment.test.ts",
+  "server/src/__tests__/issue-thread-interactions-service.test.ts",
+  "server/src/__tests__/plugin-managed-skills.test.ts",
   "server/src/__tests__/project-routes-env.test.ts",
   "server/src/__tests__/redaction.test.ts",
+  "server/src/__tests__/routine-run-telemetry.test.ts",
   "server/src/__tests__/routines-e2e.test.ts",
+  "server/src/__tests__/routines-service.test.ts",
 ]);
 let invocationIndex = 0;
 const serializedModeName = "serialized";
 const generalModeName = "general";
 const allModeName = "all";
+const windowsServerTimeoutArgs = process.platform === "win32"
+  ? [
+      "--testTimeout=60000",
+      "--hookTimeout=180000",
+      "--teardownTimeout=120000",
+      "--no-file-parallelism",
+      "--maxWorkers=1",
+    ]
+  : [];
+const windowsCliTimeoutArgs = process.platform === "win32"
+  ? [
+      "--testTimeout=120000",
+      "--hookTimeout=120000",
+      "--teardownTimeout=120000",
+      "--no-file-parallelism",
+      "--maxWorkers=1",
+    ]
+  : [];
+
+function pnpmInvocationArgs(args) {
+  if (process.env.npm_execpath) {
+    return {
+      command: process.execPath,
+      args: [process.env.npm_execpath, ...args],
+    };
+  }
+
+  if (process.platform === "win32") {
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", "pnpm", ...args],
+    };
+  }
+
+  return {
+    command: "pnpm",
+    args,
+  };
+}
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -72,12 +122,17 @@ function toServerPath(file) {
   return path.relative(serverRoot, file).split(path.sep).join("/");
 }
 
-function isRouteOrAuthzTest(file) {
-  if (routeTestPattern.test(file)) {
+function isEmbeddedPostgresServerTest(file) {
+  return readFileSync(file, "utf8").includes("startEmbeddedPostgresTestDatabase");
+}
+
+function isSerializedServerTest(file) {
+  const repoPath = toRepoPath(file);
+  if (routeTestPattern.test(repoPath)) {
     return true;
   }
 
-  return additionalSerializedServerTests.has(file);
+  return additionalSerializedServerTests.has(repoPath) || isEmbeddedPostgresServerTest(file);
 }
 
 function fail(message) {
@@ -216,7 +271,8 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const pnpm = pnpmInvocationArgs(["exec", "vitest", "run", ...args]);
+  const result = spawnSync(pnpm.command, pnpm.args, {
     cwd: repoRoot,
     env,
     stdio: "inherit",
@@ -233,11 +289,12 @@ function runVitest(args, label) {
 function runGeneralSuites(routeTests) {
   const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
   for (const project of nonServerProjects) {
-    runVitest(["--project", project], `non-server project ${project}`);
+    const projectArgs = project === "paperclipai" ? windowsCliTimeoutArgs : [];
+    runVitest(["--project", project, ...projectArgs], `non-server project ${project}`);
   }
 
   runVitest(
-    ["--project", "@paperclipai/server", ...excludeRouteArgs],
+    ["--project", "@paperclipai/server", ...windowsServerTimeoutArgs, ...excludeRouteArgs],
     `server suites excluding ${routeTests.length} serialized suites`,
   );
 }
@@ -253,6 +310,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
       [
         "--project",
         "@paperclipai/server",
+        ...windowsServerTimeoutArgs,
         routeTest.repoPath,
         "--pool=forks",
         "--poolOptions.forks.isolate=true",
@@ -263,7 +321,8 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
 }
 
 const routeTests = walk(serverTestsDir)
-  .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
+  .filter((file) => file.endsWith(".test.ts"))
+  .filter((file) => isSerializedServerTest(file))
   .map((file) => ({
     repoPath: toRepoPath(file),
     serverPath: toServerPath(file),

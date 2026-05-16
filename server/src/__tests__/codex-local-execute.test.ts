@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -72,22 +77,27 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return runChildProcess(
-        `sandbox-run-${counter}`,
-        input.command,
-        input.args ?? [],
-        {
-          cwd: input.cwd ?? process.cwd(),
-          env: input.env ?? {},
-          stdin: input.stdin,
-          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-          graceSec: 5,
-          onLog: input.onLog ?? (async () => {}),
-          onSpawn: input.onSpawn
-            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-            : undefined,
-        },
-      );
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(
+          `sandbox-run-${counter}`,
+          target.command,
+          target.args,
+          {
+            cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+            env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+            stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+            graceSec: 5,
+            onLog: input.onLog ?? (async () => {}),
+            onSpawn: input.onSpawn
+              ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+              : undefined,
+          },
+        );
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -372,7 +382,9 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.codexHome).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home"));
+      expect(capture.codexHome?.replaceAll("\\", "/")).toBe(
+        path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home").replaceAll("\\", "/"),
+      );
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
       expect(capture.paperclipApiBridgeMode).toBe("queue_v1");

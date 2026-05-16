@@ -7,10 +7,16 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+import {
+  resolveTestCommand,
+  translateTestPosixShellArgs,
+  withTestPosixShellPath,
+} from "./test-posix-shell.js";
 
 const execFile = promisify(execFileCallback);
+const describeLocalPosixSandbox = process.platform === "win32" ? describe.skip : describe;
 
-describe("command managed runtime", () => {
+describeLocalPosixSandbox("command managed runtime", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
@@ -51,13 +57,12 @@ describe("command managed runtime", () => {
       }): Promise<RunProcessResult> => {
         calls.push({ ...input });
         const startedAt = new Date().toISOString();
-        const env = {
+        const env = withTestPosixShellPath({
           ...process.env,
           ...input.env,
-        };
-        const command =
-          input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
-        const args = [...(input.args ?? [])];
+        });
+        const command = resolveTestCommand(input.command);
+        let args = [...(input.args ?? [])];
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
@@ -67,6 +72,7 @@ describe("command managed runtime", () => {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
           args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
         }
+        args = translateTestPosixShellArgs(args);
         try {
           const result = await execFile(command, args, {
             cwd: input.cwd,
@@ -163,12 +169,12 @@ describe("command managed runtime", () => {
         calls.push({ ...input });
         const startedAt = new Date().toISOString();
         try {
-          const result = await execFile(input.command === "sh" ? "/bin/sh" : input.command, input.args ?? [], {
+          const result = await execFile(resolveTestCommand(input.command), translateTestPosixShellArgs(input.args ?? []), {
             cwd: input.cwd,
-            env: {
+            env: withTestPosixShellPath({
               ...process.env,
               ...input.env,
-            },
+            }),
             maxBuffer: 32 * 1024 * 1024,
             timeout: input.timeoutMs,
           });

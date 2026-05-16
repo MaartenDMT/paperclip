@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
@@ -62,6 +62,24 @@ function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
+  if (process.platform === "win32" && typeof running.child.pid === "number" && running.child.pid > 0) {
+    const args = ["/PID", String(running.child.pid), "/T", "/F"];
+    try {
+      const killer = spawn("taskkill", args, {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.on("error", () => {
+        if (!running.child.killed) {
+          running.child.kill(signal);
+        }
+      });
+      killer.unref();
+      return;
+    } catch {
+      // Fall back to Node's direct child signal below.
+    }
+  }
   if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
     try {
       process.kill(-running.processGroupId, signal);
@@ -1214,7 +1232,7 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
       process.platform === "win32"
         ? hasExtension
           ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+          : [path.join(dir, command), ...exts.map((ext) => path.join(dir, `${command}${ext}`))]
         : [path.join(dir, command)];
     for (const candidate of candidates) {
       if (await pathExists(candidate)) return candidate;
@@ -1255,6 +1273,45 @@ export function sanitizeSshRemoteEnv(
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
   return path.join(fallbackRoot, "System32", "cmd.exe");
+}
+
+function resolveWindowsBashShell(): string {
+  const candidates = [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "D:\\Program Files\\Git\\bin\\bash.exe",
+    "D:\\msys64\\usr\\bin\\bash.exe",
+    "C:\\msys64\\usr\\bin\\bash.exe",
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return "bash";
+}
+
+async function resolveWindowsShebangSpawnTarget(
+  executable: string,
+  args: string[],
+): Promise<SpawnTarget | null> {
+  if (path.extname(executable)) return null;
+
+  let firstLine = "";
+  try {
+    const contents = await fs.readFile(executable, "utf8");
+    firstLine = contents.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  } catch {
+    return null;
+  }
+
+  if (!firstLine.startsWith("#!")) return null;
+  const normalized = firstLine.toLowerCase();
+  if (/\b(?:node|nodejs)\b/.test(normalized)) {
+    return { command: process.execPath, args: [executable, ...args] };
+  }
+  if (/\b(?:bash|sh|zsh)\b/.test(normalized)) {
+    return { command: resolveWindowsBashShell(), args: [executable, ...args] };
+  }
+  return null;
 }
 
 async function resolveSpawnTarget(
@@ -1306,6 +1363,9 @@ async function resolveSpawnTarget(
       args: ["/d", "/s", "/c", commandLine],
     };
   }
+
+  const shebangTarget = await resolveWindowsShebangSpawnTarget(executable, args);
+  if (shebangTarget) return shebangTarget;
 
   return { command: executable, args };
 }

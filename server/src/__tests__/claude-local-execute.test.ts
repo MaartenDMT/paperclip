@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
 import { execute } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
@@ -180,22 +185,27 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return runChildProcess(
-        `sandbox-run-${counter}`,
-        input.command,
-        input.args ?? [],
-        {
-          cwd: input.cwd ?? process.cwd(),
-          env: input.env ?? {},
-          stdin: input.stdin,
-          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-          graceSec: 5,
-          onLog: input.onLog ?? (async () => {}),
-          onSpawn: input.onSpawn
-            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-            : undefined,
-        },
-      );
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(
+          `sandbox-run-${counter}`,
+          target.command,
+          target.args,
+          {
+            cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+            env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+            stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+            graceSec: 5,
+            onLog: input.onLog ?? (async () => {}),
+            onSpawn: input.onSpawn
+              ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+              : undefined,
+          },
+        );
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -590,6 +600,7 @@ describe("claude execute", () => {
           command: "claude",
           cwd: workspace,
           env: {
+            CLAUDE_CONFIG_DIR: claudeConfigDir,
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
@@ -682,7 +693,9 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));
+      expect(capture.claudeConfigDir.replaceAll("\\", "/")).toBe(
+        path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config").replaceAll("\\", "/"),
+      );
       expect(capture.claudeConfigEntries).toContain("settings.json");
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(capture.paperclipApiKey).not.toBe("run-jwt-token");

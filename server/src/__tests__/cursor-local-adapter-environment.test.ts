@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
 import { testEnvironment } from "@paperclipai/adapter-cursor-local/server";
 
 async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): Promise<string> {
@@ -68,17 +73,22 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return await runChildProcess(`cursor-sandbox-env-${counter}`, input.command, input.args ?? [], {
-        cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
-        stdin: input.stdin,
-        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-        graceSec: 5,
-        onLog: input.onLog ?? (async () => {}),
-        onSpawn: input.onSpawn
-          ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-          : undefined,
-      });
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(`cursor-sandbox-env-${counter}`, target.command, target.args, {
+          cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+          env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+          onSpawn: input.onSpawn
+            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+            : undefined,
+        });
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -186,10 +196,11 @@ describe("cursor environment diagnostics", () => {
       `paperclip-cursor-sandbox-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const homeDir = path.join(root, "home");
-    const remoteCwd = path.join(root, "workspace");
+    const remoteCwd = `/tmp/${path.basename(root)}/workspace`;
+    const localRemoteCwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(localRemoteCwd, { recursive: true });
     await writeFakeCursorAgentCommand(cursorAgentPath);
 
     const previousHome = process.env.HOME;
@@ -216,14 +227,14 @@ describe("cursor environment diagnostics", () => {
         },
       });
 
-      expect(result.status).toBe("pass");
+      expect(result.status, JSON.stringify(result.checks, null, 2)).toBe("pass");
       const capture = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as {
         command: string;
         argv: string[];
         path: string;
       };
       expect(capture.command).toBe(cursorAgentPath);
-      expect(capture.path.split(":")[0]).toBe(path.join(homeDir, ".local", "bin"));
+      expect(capture.path).toContain(`/tmp/${path.basename(root)}/home/.local/bin`);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -10,8 +10,14 @@ import {
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
+import {
+  resolveTestPosixShell,
+  translateWindowsPathsForTestPosixShell,
+  withTestPosixShellPath,
+} from "./test-posix-shell.js";
 
 const execFile = promisify(execFileCallback);
+const itLocalPosixSandbox = process.platform === "win32" ? it.skip : it;
 
 describe("sandbox managed runtime", () => {
   const cleanupDirs: string[] = [];
@@ -49,7 +55,7 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
+  itLocalPosixSandbox("syncs workspace and assets through a provider-neutral sandbox client", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-managed-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -84,7 +90,8 @@ describe("sandbox managed runtime", () => {
         await rm(remotePath, { recursive: true, force: true });
       },
       run: async (command) => {
-        await execFile("sh", ["-c", command], {
+        await execFile(resolveTestPosixShell("sh"), ["-c", translateWindowsPathsForTestPosixShell(command)], {
+          env: withTestPosixShellPath(),
           maxBuffer: 32 * 1024 * 1024,
         });
       },

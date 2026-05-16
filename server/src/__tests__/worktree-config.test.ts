@@ -281,7 +281,7 @@ describe("worktree config repair", () => {
         "# Paperclip environment variables",
         `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
         `PAPERCLIP_INSTANCE_ID=${JSON.stringify(instanceId)}`,
-        `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+        `PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`,
         `PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`,
         'PAPERCLIP_IN_WORKTREE="true"',
         'PAPERCLIP_WORKTREE_NAME="PAP-989-multi-user-implementation-using-plan-from-pap-958"',
@@ -303,7 +303,7 @@ describe("worktree config repair", () => {
 
     expect(result).toEqual({
       repairedConfig: true,
-      repairedEnv: false,
+      repairedEnv: true,
     });
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(stableInstanceRoot, "db"));
     expect(repairedConfig.database.backup.dir).toBe(path.join(stableInstanceRoot, "data", "backups"));

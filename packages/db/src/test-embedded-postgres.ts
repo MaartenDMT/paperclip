@@ -100,8 +100,25 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   return { dataDir, port, instance };
 }
 
-function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await fs.promises.rm(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 39) {
+        console.warn(
+          `Unable to remove embedded Postgres test directory after retries: ${formatEmbeddedPostgresError(error)}`,
+        );
+        return;
+      }
+      await delay(250);
+    }
+  }
 }
 
 function formatEmbeddedPostgresError(error: unknown): string {
@@ -126,7 +143,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
     };
   } finally {
     await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await cleanupEmbeddedPostgresTestDirs(dataDir);
   }
 }
 
@@ -140,29 +157,38 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
-  const { dataDir, port, instance } = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+  const maxAttempts = process.platform === "win32" ? 3 : 1;
 
-  try {
-    await instance.initialise();
-    await instance.start();
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const { dataDir, port, instance } = await createEmbeddedPostgresTestInstance(tempDirPrefix);
 
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-    await applyPendingMigrations(connectionString);
+    try {
+      await instance.initialise();
+      await instance.start();
 
-    return {
-      connectionString,
-      cleanup: async () => {
-        await instance.stop().catch(() => {});
-        cleanupEmbeddedPostgresTestDirs(dataDir);
-      },
-    };
-  } catch (error) {
-    await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
-    throw new Error(
-      `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
-    );
+      const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+      await ensurePostgresDatabase(adminConnectionString, "paperclip");
+      const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+      await applyPendingMigrations(connectionString);
+
+      return {
+        connectionString,
+        cleanup: async () => {
+          await instance.stop().catch(() => {});
+          await cleanupEmbeddedPostgresTestDirs(dataDir);
+        },
+      };
+    } catch (error) {
+      await instance.stop().catch(() => {});
+      await cleanupEmbeddedPostgresTestDirs(dataDir);
+      if (attempt === maxAttempts) {
+        throw new Error(
+          `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
+        );
+      }
+      await delay(500);
+    }
   }
+
+  throw new Error("Failed to start embedded PostgreSQL test database.");
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeVaultIssueLinks,
+  prepareGraphifyCompactCorpus,
   sanitizeGraphReportWikilinks,
 } from "../services/lifecycle-hooks/vault-memory-hook.ts";
 
@@ -80,5 +81,41 @@ describe("vault memory output sanitation", () => {
 
     expect(sanitizeGraphReportWikilinks(vault)).toBe(0);
     await expect(fs.readFile(report, "utf8")).resolves.toBe("- [[_COMMUNITY_Community 0|Community 0]]\n");
+  });
+});
+
+describe("graphify compact corpus", () => {
+  it("copies vault markdown into a compact corpus without generated graphify output", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    const issueFile = path.join(vault, "issues", "REA-252.md");
+    const largeBody = `# REA-252\n\n${"older note\n".repeat(300)}\n## Latest\n${"newer note\n".repeat(300)}`;
+    await fs.writeFile(issueFile, largeBody, "utf8");
+    await fs.writeFile(path.join(vault, "graphify-out", "GRAPH_REPORT.md"), "# Generated\n", "utf8");
+
+    const result = prepareGraphifyCompactCorpus(vault, corpus, 2_000);
+
+    expect(result.files).toBe(1);
+    expect(result.truncated).toBe(1);
+    expect(result.written).toBe(1);
+    await expect(fs.readFile(path.join(corpus, "issues", "REA-252.md"), "utf8")).resolves.toContain(
+      "graphify compact corpus omitted middle of large note",
+    );
+    await expect(fs.stat(path.join(corpus, "graphify-out", "GRAPH_REPORT.md"))).rejects.toThrow();
+  });
+
+  it("does not rewrite unchanged compact corpus files", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000)).toMatchObject({
+      files: 1,
+      written: 1,
+    });
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000)).toMatchObject({
+      files: 1,
+      written: 0,
+    });
   });
 });

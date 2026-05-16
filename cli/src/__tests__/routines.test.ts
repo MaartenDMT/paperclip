@@ -19,6 +19,7 @@ import { disableAllRoutinesInConfig } from "../commands/routines.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const embeddedPostgresTestTimeoutMs = process.platform === "win32" ? 120_000 : 20_000;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -98,7 +99,7 @@ describeEmbeddedPostgres("disableAllRoutinesInConfig", () => {
     tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-routines-cli-config-"));
     configPath = path.join(tempRoot, "config.json");
     writeTestConfig(configPath, tempRoot, tempDb.connectionString);
-  }, 20_000);
+  }, embeddedPostgresTestTimeoutMs);
 
   afterEach(async () => {
     await db.delete(routines);

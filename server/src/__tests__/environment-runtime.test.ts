@@ -116,7 +116,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     stopDb = started.stop;
     db = createDb(started.connectionString);
     runtime = environmentRuntimeService(db);
-  });
+  }, process.platform === "win32" ? 60_000 : 10_000);
 
   afterEach(async () => {
     while (fixtureRoots.length > 0) {

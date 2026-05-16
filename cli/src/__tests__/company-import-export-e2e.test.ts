@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,36 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
+
+function cliInvocation(repoRoot: string, args: string[]): { command: string; args: string[] } {
+  return {
+    command: process.execPath,
+    args: [
+      path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "cli.mjs"),
+      path.join(repoRoot, "cli", "src", "index.ts"),
+      ...args,
+    ],
+  };
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeTempRoot(root: string) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await fs.promises.rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 39) {
+        console.warn(`Unable to remove company import/export e2e temp root after retries: ${String(error)}`);
+        return;
+      }
+      await delay(250);
+    }
+  }
+}
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -213,7 +243,7 @@ async function runCliJson<T>(
   opts: TestPaperclipEnv & { apiBase?: string; includeConfigArg?: boolean },
 ) {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-  const cliArgs = ["--silent", "paperclipai", ...args];
+  const cliArgs = [...args];
   if (opts.apiBase) {
     cliArgs.push("--api-base", opts.apiBase);
   }
@@ -221,9 +251,10 @@ async function runCliJson<T>(
     cliArgs.push("--config", opts.configPath);
   }
   cliArgs.push("--json");
+  const cli = cliInvocation(repoRoot, cliArgs);
   const result = await execFileAsync(
-    "pnpm",
-    cliArgs,
+    cli.command,
+    cli.args,
     {
       cwd: repoRoot,
       env: createCliEnv(opts),
@@ -244,7 +275,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < 90_000) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -295,9 +326,10 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
+    const cli = cliInvocation(repoRoot, ["run", "--config", configPath]);
     const child = spawn(
-      "pnpm",
-      ["paperclipai", "run", "--config", configPath],
+      cli.command,
+      cli.args,
       {
         cwd: repoRoot,
         env: createServerEnv(configPath, port, tempDb.connectionString, {
@@ -317,15 +349,15 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
     await tempDb?.cleanup();
     if (tempRoot) {
-      rmSync(tempRoot, { recursive: true, force: true });
+      await removeTempRoot(tempRoot);
     }
-  });
+  }, 20_000);
 
   it("exports a company package and imports it into new and existing companies", async () => {
     expect(serverProcess).not.toBeNull();
@@ -612,5 +644,5 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(importedFromZip.company.action).toBe("created");
     expect(importedFromZip.agents.some((agent) => agent.action === "created")).toBe(true);
-  }, 90_000);
+  }, 180_000);
 });

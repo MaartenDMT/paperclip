@@ -1676,6 +1676,15 @@ export function companySkillService(db: Db) {
     return rows.map((row) => toCompanySkill(row));
   }
 
+  async function listFullFromStore(companyId: string): Promise<CompanySkill[]> {
+    const rows = await db
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId))
+      .orderBy(asc(companySkills.name), asc(companySkills.key));
+    return rows.map((row) => toCompanySkill(row));
+  }
+
   async function listReferenceTargets(companyId: string): Promise<SkillReferenceTarget[]> {
     const rows = await db
       .select({
@@ -2167,7 +2176,7 @@ export function companySkillService(db: Db) {
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
   ): Promise<PaperclipSkillEntry[]> {
-    const skills = await listFull(companyId);
+    const skills = await listFullFromStore(companyId);
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {

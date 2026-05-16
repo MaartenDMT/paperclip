@@ -18,12 +18,18 @@ import {
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
 import type { RunProcessResult } from "./server-utils.js";
+import {
+  resolveTestCommand,
+  translateTestPosixShellArgs,
+  withTestPosixShellPath,
+} from "./test-posix-shell.js";
 
 const execFile = promisify(execFileCallback);
 
 describe("sandbox callback bridge", () => {
   const cleanupDirs: string[] = [];
   const cleanupFns: Array<() => Promise<void>> = [];
+  const itLocalPosixSandbox = process.platform === "win32" ? it.skip : it;
 
   function createExecRunner() {
     return {
@@ -36,13 +42,12 @@ describe("sandbox callback bridge", () => {
         timeoutMs?: number;
       }): Promise<RunProcessResult> => {
         const startedAt = new Date().toISOString();
-        const env = {
+        const env = withTestPosixShellPath({
           ...process.env,
           ...input.env,
-        };
-        const command =
-          input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
-        const args = [...(input.args ?? [])];
+        });
+        const command = resolveTestCommand(input.command);
+        let args = [...(input.args ?? [])];
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
@@ -52,6 +57,7 @@ describe("sandbox callback bridge", () => {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
           args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
         }
+        args = translateTestPosixShellArgs(args);
         try {
           const result = await execFile(command, args, {
             cwd: input.cwd,
@@ -114,7 +120,7 @@ describe("sandbox callback bridge", () => {
     }
   });
 
-  it("round-trips localhost bridge requests over the sandbox queue without forwarding the bridge token", async () => {
+  itLocalPosixSandbox("round-trips localhost bridge requests over the sandbox queue without forwarding the bridge token", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
     cleanupDirs.push(rootDir);
 
@@ -469,7 +475,7 @@ describe("sandbox callback bridge", () => {
     }
   });
 
-  it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
+  itLocalPosixSandbox("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
     cleanupDirs.push(rootDir);
 
@@ -561,7 +567,7 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
-  it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
+  itLocalPosixSandbox("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
     cleanupDirs.push(rootDir);
 
@@ -643,7 +649,7 @@ describe("sandbox callback bridge", () => {
     });
   });
 
-  it("returns a 502 when the host response times out", async () => {
+  itLocalPosixSandbox("returns a 502 when the host response times out", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-timeout-"));
     cleanupDirs.push(rootDir);
 
@@ -695,7 +701,7 @@ describe("sandbox callback bridge", () => {
     });
   });
 
-  it("returns a 502 for malformed host response files", async () => {
+  itLocalPosixSandbox("returns a 502 for malformed host response files", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-malformed-response-"));
     cleanupDirs.push(rootDir);
 
@@ -756,7 +762,7 @@ describe("sandbox callback bridge", () => {
     });
   });
 
-  it("reuses an already-uploaded bridge entrypoint when the remote file hash matches", async () => {
+  itLocalPosixSandbox("reuses an already-uploaded bridge entrypoint when the remote file hash matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-"));
     cleanupDirs.push(rootDir);
 

@@ -36,6 +36,20 @@ const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 // don't burn external API quota. Override with PAPERCLIP_GRAPHIFY_BACKEND.
 const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
 const GRAPHIFY_MODEL = process.env.PAPERCLIP_GRAPHIFY_MODEL || "qwen3.5:9b";
+const GRAPHIFY_CORPUS_MODE = process.env.PAPERCLIP_GRAPHIFY_CORPUS_MODE || "compact";
+const GRAPHIFY_CORPUS_DIR =
+  process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
+  path.join(VAULT, ".graphify-corpus");
+const GRAPHIFY_MAX_DOC_BYTES = Number(
+  process.env.PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES || 80_000,
+);
+const GRAPHIFY_TOKEN_BUDGET = Number(
+  process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
+    (GRAPHIFY_BACKEND === "ollama" ? 12_000 : 60_000),
+);
+const GRAPHIFY_API_TIMEOUT_SECONDS = Number(
+  process.env.PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS || 900,
+);
 // Periodic refresh: extract the vault into a fresh graph every N ms regardless
 // of run activity. Predictable load, no per-run trigger means no shell spam.
 const GRAPHIFY_INTERVAL_MS = Number(
@@ -77,7 +91,21 @@ const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
 let graphifyInFlight = false;
 let graphifyTimer: NodeJS.Timeout | null = null;
 
-function walkMarkdownFiles(root: string, out: string[] = []): string[] {
+const GRAPHIFY_EXCLUDED_DIRS = new Set([
+  ".git",
+  ".graphify-corpus",
+  ".obsidian",
+  ".trash",
+  "graphify-out",
+  "node_modules",
+]);
+const DEFAULT_WALK_EXCLUDED_DIRS = new Set([".git", "node_modules", ".trash"]);
+
+function walkMarkdownFiles(
+  root: string,
+  out: string[] = [],
+  excludedDirs: Set<string> = DEFAULT_WALK_EXCLUDED_DIRS,
+): string[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
@@ -88,13 +116,17 @@ function walkMarkdownFiles(root: string, out: string[] = []): string[] {
   for (const entry of entries) {
     const fullPath = path.join(root, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".trash") continue;
-      walkMarkdownFiles(fullPath, out);
+      if (excludedDirs.has(entry.name)) continue;
+      walkMarkdownFiles(fullPath, out, excludedDirs);
       continue;
     }
     if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) out.push(fullPath);
   }
   return out;
+}
+
+function walkGraphifySourceMarkdownFiles(root: string): string[] {
+  return walkMarkdownFiles(root, [], GRAPHIFY_EXCLUDED_DIRS);
 }
 
 function slash(value: string): string {
@@ -185,6 +217,103 @@ function sanitizeVaultMemoryOutputs(): void {
   }
 }
 
+function safePositiveInt(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+
+  const headBudget = Math.max(4_000, Math.floor(maxBytes * 0.35));
+  const tailBudget = Math.max(4_000, maxBytes - headBudget - 500);
+  const charsPerByteFloor = 4;
+  let head = value.slice(0, Math.floor(headBudget / charsPerByteFloor));
+  while (Buffer.byteLength(head, "utf8") > headBudget) head = head.slice(0, -1);
+
+  let tail = value.slice(-Math.floor(tailBudget / charsPerByteFloor));
+  while (Buffer.byteLength(tail, "utf8") > tailBudget) tail = tail.slice(1);
+
+  return [
+    head.trimEnd(),
+    "",
+    `<!-- graphify compact corpus omitted middle of large note; original size ${Buffer.byteLength(value, "utf8")} bytes -->`,
+    "",
+    tail.trimStart(),
+  ].join("\n");
+}
+
+function writeFileIfChanged(file: string, body: string): boolean {
+  try {
+    if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === body) return false;
+  } catch {
+    // Fall through and rewrite; compact corpus writes are best-effort.
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body, "utf8");
+  return true;
+}
+
+function removeStaleCorpusFiles(corpusRoot: string, desiredRelPaths: Set<string>): number {
+  let removed = 0;
+  const root = path.resolve(corpusRoot);
+  for (const file of walkMarkdownFiles(corpusRoot)) {
+    const rel = slash(path.relative(corpusRoot, file));
+    if (desiredRelPaths.has(rel)) continue;
+    const resolved = path.resolve(file);
+    if (!resolved.startsWith(root + path.sep)) continue;
+    try {
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    } catch {
+      // Best-effort cleanup; stale compact notes are less harmful than hook failure.
+    }
+  }
+  return removed;
+}
+
+export function prepareGraphifyCompactCorpus(
+  vaultRoot: string,
+  corpusRoot: string,
+  maxDocBytes = GRAPHIFY_MAX_DOC_BYTES,
+): { files: number; truncated: number; written: number; removed: number } {
+  const byteLimit = safePositiveInt(maxDocBytes, 80_000);
+  const desired = new Set<string>();
+  let files = 0;
+  let truncated = 0;
+  let written = 0;
+
+  for (const source of walkGraphifySourceMarkdownFiles(vaultRoot)) {
+    const rel = slash(path.relative(vaultRoot, source));
+    if (rel.startsWith("../") || path.isAbsolute(rel)) continue;
+    desired.add(rel);
+    files += 1;
+
+    let body: string;
+    try {
+      body = fs.readFileSync(source, "utf8");
+    } catch {
+      continue;
+    }
+
+    const compact = truncateUtf8(body, byteLimit);
+    if (compact !== body) truncated += 1;
+    if (writeFileIfChanged(path.join(corpusRoot, rel), compact)) written += 1;
+  }
+
+  const removed = removeStaleCorpusFiles(corpusRoot, desired);
+  return { files, truncated, written, removed };
+}
+
+function graphifyExtractTarget(): string | null {
+  if (GRAPHIFY_CORPUS_MODE === "vault") return VAULT;
+  try {
+    prepareGraphifyCompactCorpus(VAULT, GRAPHIFY_CORPUS_DIR);
+    return GRAPHIFY_CORPUS_DIR;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fire-and-forget `graphify extract <vault>` to refresh the agent-memory
  * knowledge graph. Driven by a periodic timer (not per-run) so server load is
@@ -196,6 +325,8 @@ function runGraphifyExtract(): void {
   if (!GRAPHIFY_BIN_RESOLVED) return; // graphify not installed — silently skip
   if (graphifyInFlight) return;
   if (!fs.existsSync(VAULT)) return; // vault missing — nothing to index
+  const extractTarget = graphifyExtractTarget();
+  if (!extractTarget) return;
   graphifyInFlight = true;
   try {
     // `extract` has built-in caching, so only new/changed files are re-processed.
@@ -206,19 +337,31 @@ function runGraphifyExtract(): void {
       GRAPHIFY_BIN_RESOLVED,
       [
         "extract",
-        VAULT,
+        extractTarget,
         "--backend",
         GRAPHIFY_BACKEND,
         "--model",
         GRAPHIFY_MODEL,
+        "--token-budget",
+        String(safePositiveInt(GRAPHIFY_TOKEN_BUDGET, 12_000)),
         "--max-concurrency",
         "1",
+        "--api-timeout",
+        String(safePositiveInt(GRAPHIFY_API_TIMEOUT_SECONDS, 900)),
+        "--out",
+        VAULT,
         "--no-cluster",
       ],
       {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
+        env: {
+          ...process.env,
+          ...(GRAPHIFY_BACKEND === "ollama" && !process.env.OLLAMA_API_KEY
+            ? { OLLAMA_API_KEY: "local" }
+            : {}),
+        },
       },
     );
     child.on("error", () => {

@@ -11,9 +11,10 @@ const {
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
+  runAdapterExecutionTargetProcess,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]) => {
+  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[], _options?: unknown) => {
     if (args.includes("models")) {
       return {
         exitCode: 0,
@@ -53,6 +54,10 @@ const {
     exitCode: 0,
   })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
+  runAdapterExecutionTargetProcess: vi.fn(
+    async (_runId: string, _executionTarget: unknown, command: string, args: string[], options: unknown) =>
+      runChildProcess(_runId, command, args, options as never),
+  ),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
@@ -94,6 +99,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   );
   return {
     ...actual,
+    runAdapterExecutionTargetProcess,
     startAdapterExecutionTargetPaperclipBridge,
   };
 });
@@ -200,26 +206,28 @@ describe("opencode remote execution", () => {
       expect.stringContaining(".claude/skills"),
       expect.anything(),
     );
-    const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+    const runCall = runAdapterExecutionTargetProcess.mock.calls.find(
+      (entry) => Array.isArray(entry[3]) && entry[3].includes("run"),
+    ) as
+      | [string, unknown, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    const modelProbeCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("models")) as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+    const modelProbeCall = runAdapterExecutionTargetProcess.mock.calls.find(
+      (entry) => Array.isArray(entry[3]) && entry[3].includes("models"),
+    ) as
+      | [string, unknown, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    expect(modelProbeCall?.[2]).toEqual(["models"]);
-    // The model probe runs after the runtime workspace is prepared (so XDG
-    // points at the managed subdirectory) but the SSH session targets the
-    // original target remoteCwd — the per-run subdirectory is layered
-    // underneath via XDG/runtime config rather than by switching the cwd.
-    expect(modelProbeCall?.[3].env.XDG_CONFIG_HOME).toBe(
+    expect(modelProbeCall?.[3]).toEqual(["models"]);
+    // The model probe runs after the runtime workspace is prepared, so XDG and
+    // the target cwd both point at the managed per-run runtime directory.
+    expect(modelProbeCall?.[4].env.XDG_CONFIG_HOME).toBe(
       `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
     );
-    expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect((modelProbeCall?.[1] as { remoteCwd?: string } | undefined)?.remoteCwd).toBe(managedRemoteWorkspace);
     const call = runCall as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, unknown, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
-    expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+    expect(call?.[4].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(JSON.parse(call?.[4].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
         cwd: managedRemoteWorkspace,
@@ -232,16 +240,16 @@ describe("opencode remote execution", () => {
         repoRef: "feature/other",
       },
     ]);
-    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
-    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-    expect(call?.[3].env.XDG_CONFIG_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`);
-    expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
+    expect(call?.[4].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[4].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+    expect(call?.[4].env.XDG_CONFIG_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`);
+    expect((call?.[1] as { remoteCwd?: string } | undefined)?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
-    runChildProcess.mockImplementationOnce(async () => ({
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
       exitCode: 0,
       signal: null,
       timedOut: false,
@@ -298,8 +306,8 @@ describe("opencode remote execution", () => {
       }),
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
 
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    expect((runChildProcess.mock.calls[0]?.[2] as string[] | undefined) ?? []).toEqual(["models"]);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect((runAdapterExecutionTargetProcess.mock.calls[0]?.[3] as string[] | undefined) ?? []).toEqual(["models"]);
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 
@@ -360,10 +368,12 @@ describe("opencode remote execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
-      | [string, string, string[]]
+    const call = runAdapterExecutionTargetProcess.mock.calls.find(
+      (entry) => Array.isArray(entry[3]) && entry[3].includes("run"),
+    ) as
+      | [string, unknown, string, string[]]
       | undefined;
-    expect(call?.[2]).toContain("--session");
-    expect(call?.[2]).toContain("session-123");
+    expect(call?.[3]).toContain("--session");
+    expect(call?.[3]).toContain("session-123");
   });
 });

@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
 
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
@@ -88,17 +93,22 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return await runChildProcess(`cursor-sandbox-execute-${counter}`, input.command, input.args ?? [], {
-        cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
-        stdin: input.stdin,
-        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-        graceSec: 5,
-        onLog: input.onLog ?? (async () => {}),
-        onSpawn: input.onSpawn
-          ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-          : undefined,
-      });
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(`cursor-sandbox-execute-${counter}`, target.command, target.args, {
+          cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+          env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+          onSpawn: input.onSpawn
+            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+            : undefined,
+        });
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -284,6 +294,7 @@ describe("cursor execute", () => {
           command: commandPath,
           cwd: workspace,
           model: "auto",
+          env: { HOME: root },
           paperclipRuntimeSkills: [
             {
               name: "paperclip",
@@ -378,7 +389,7 @@ describe("cursor execute", () => {
         path: string;
       };
       expect(capture.command).toBe(cursorAgentPath);
-      expect(capture.path.split(":")[0]).toBe(path.join(homeDir, ".local", "bin"));
+      expect(capture.path).toContain(`/tmp/${path.basename(root)}/home/.local/bin`);
       expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

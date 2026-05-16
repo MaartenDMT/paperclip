@@ -12,7 +12,7 @@ import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISK_CACHE_TTL_MS = 60 * 60 * 1000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
 const DISK_CACHE_SCHEMA_VERSION = 1;
 
 type DiskCacheEntry = { expiresAt: number; models: AdapterModel[] };
@@ -76,7 +76,7 @@ const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel
 // In-flight de-dup: when multiple agents probe simultaneously, only the first
 // kicks off the external `opencode models` invocation; the rest await the same
 // promise. Prevents concurrent SQLite migrations against opencode.db (the root
-// cause of 20s timeouts when many idle agents wake at once).
+// cause of discovery timeouts when many idle agents wake at once).
 const inflightDiscovery = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);

@@ -112,8 +112,9 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function cursorSkillsHome(): string {
-  return path.join(os.homedir(), ".cursor", "skills");
+function cursorSkillsHome(env?: Record<string, unknown>): string {
+  const configuredHome = asString(env?.HOME, "").trim();
+  return path.join(configuredHome || os.homedir(), ".cursor", "skills");
 }
 
 async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
@@ -228,13 +229,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  const envConfig = parseObject(config.env);
   if (!executionTargetIsRemote) {
     await ensureCursorSkillsInjected(onLog, {
       skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+      skillsHome: cursorSkillsHome(envConfig),
     });
   }
 
-  const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   let env: Record<string, string> = { ...buildPaperclipEnv(agent) };

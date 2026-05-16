@@ -16,7 +16,7 @@ async function main() {
       if (!names.has(table)) return null;
       try {
         const rows = await sql.unsafe(`SELECT count(*)::int AS c FROM "${table}" ${where}`);
-        return (rows[0] as { c: number }).c;
+        return (rows[0] as unknown as { c: number }).c;
       } catch (e) {
         return `ERR ${(e as Error).message.slice(0, 60)}`;
       }

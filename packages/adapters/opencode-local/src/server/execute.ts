@@ -74,7 +74,8 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
-const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 60;
+const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
 async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
@@ -87,9 +88,13 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   graceSec: number;
 }) {
   const model = requireOpenCodeModelId(input.model);
+  const defaultProbeTimeoutSec =
+    input.executionTarget.kind === "remote" && input.executionTarget.transport === "sandbox"
+      ? REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC
+      : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
   const probeTimeoutSec = input.timeoutSec > 0
-    ? Math.min(input.timeoutSec, REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC)
-    : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
+    ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
+    : defaultProbeTimeoutSec;
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -399,6 +404,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    if (executionTargetIsRemote && runtimeExecutionTarget) {
+      await ensureRemoteOpenCodeModelConfiguredAndAvailable({
+        runId,
+        executionTarget: runtimeExecutionTarget,
+        command,
+        model,
+        cwd,
+        env: preparedRuntimeConfig.env,
+        timeoutSec,
+        graceSec,
+      });
+    }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,

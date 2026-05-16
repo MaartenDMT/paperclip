@@ -13,11 +13,12 @@ import {
 const cleanups: Array<() => Promise<void> | void> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const embeddedPostgresTestTimeoutMs = process.platform === "win32" ? 120_000 : 60_000;
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   cleanups.push(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
   return dir;
 }
@@ -178,7 +179,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await restoreSql.end();
       }
     },
-    60_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -306,7 +307,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await restoreSql.end();
       }
     },
-    60_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -351,6 +352,6 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await restoreSql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 });

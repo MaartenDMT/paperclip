@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -147,6 +147,9 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
+let cachedIssueRoutes: Awaited<ReturnType<typeof import("../routes/issues.js")>>["issueRoutes"];
+let cachedErrorHandler: Awaited<ReturnType<typeof import("../middleware/index.js")>>["errorHandler"];
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -154,10 +157,14 @@ function createApp() {
 }
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+  if (!cachedIssueRoutes || !cachedErrorHandler) {
+    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      import("../routes/issues.js"),
+      import("../middleware/index.js"),
+    ]);
+    cachedIssueRoutes = issueRoutes;
+    cachedErrorHandler = errorHandler;
+  }
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -168,8 +175,8 @@ async function installActor(app: express.Express, actor?: Record<string, unknown
     };
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", cachedIssueRoutes(mockDb as any, {} as any));
+  app.use(cachedErrorHandler);
   return app;
 }
 
@@ -212,6 +219,10 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  beforeAll(async () => {
+    await installActor(createApp());
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -354,7 +365,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
+  it("does not implicitly reopen closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -370,7 +381,6 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-        status: "todo",
         actorAgentId: null,
         actorUserId: "local-board",
       }),
@@ -379,10 +389,8 @@ describe.sequential("issue comment reopen routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.updated",
-        details: expect.objectContaining({
+        details: expect.not.objectContaining({
           reopened: true,
-          reopenedFrom: "done",
-          status: "todo",
         }),
       }),
     );

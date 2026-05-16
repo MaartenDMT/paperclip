@@ -54,6 +54,7 @@ const ORIGINAL_ENV = { ...process.env };
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const embeddedPostgresTestTimeoutMs = process.platform === "win32" ? 120_000 : 20_000;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -417,7 +418,7 @@ describe("worktree helpers", () => {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();
     }
-  }, 20_000);
+  }, embeddedPostgresTestTimeoutMs);
 
   it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
@@ -600,7 +601,7 @@ describe("worktree helpers", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    30000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
@@ -776,7 +777,7 @@ describe("worktree helpers", () => {
         }),
       ).toMatchObject({
         cwd: worktreeRoot,
-        homeDir: "/tmp/paperclip-worktrees",
+        homeDir: path.resolve("/tmp/paperclip-worktrees"),
         instanceId: "pap-1132-chat",
       });
     } finally {
@@ -882,7 +883,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, embeddedPostgresTestTimeoutMs);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -966,29 +967,32 @@ describe("worktree helpers", () => {
   });
 
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
-    expect(
-      rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip",
-      }),
-    ).toBe("/Users/example/paperclip-pr-432");
+    const sourceRepoRoot = path.resolve(path.join(path.sep, "Users", "example", "paperclip"));
+    const targetRepoRoot = path.resolve(path.join(path.sep, "Users", "example", "paperclip-pr-432"));
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip/packages/db",
+        sourceRepoRoot,
+        targetRepoRoot,
+        workspaceCwd: sourceRepoRoot,
       }),
-    ).toBe("/Users/example/paperclip-pr-432/packages/db");
+    ).toBe(targetRepoRoot);
+
+    expect(
+      rebindWorkspaceCwd({
+        sourceRepoRoot,
+        targetRepoRoot,
+        workspaceCwd: path.join(sourceRepoRoot, "packages", "db"),
+      }),
+    ).toBe(path.join(targetRepoRoot, "packages", "db"));
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/other-project",
+        sourceRepoRoot: path.resolve(path.join(path.sep, "Users", "example", "paperclip")),
+        targetRepoRoot: path.resolve(path.join(path.sep, "Users", "example", "paperclip-pr-432")),
+        workspaceCwd: path.resolve(path.join(path.sep, "Users", "example", "other-project")),
       }),
     ).toBeNull();
   });
@@ -1033,7 +1037,9 @@ describe("worktree helpers", () => {
         copied: true,
       });
       expect(fs.readFileSync(targetHookPath, "utf8")).toBe("#!/usr/bin/env bash\nexit 0\n");
-      expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      }
       expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
     } finally {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
@@ -1181,7 +1187,7 @@ describe("worktree helpers", () => {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, embeddedPostgresTestTimeoutMs);
 });
 
 describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
@@ -1316,5 +1322,5 @@ describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();
     }
-  }, 20_000);
+  }, embeddedPostgresTestTimeoutMs);
 });

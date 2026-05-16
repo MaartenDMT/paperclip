@@ -129,6 +129,29 @@ async function prepareCodexHelloProbe(input: {
     const probeHome = input.targetIsRemote
       ? `/tmp/paperclip-codex-probe-${input.runId}`
       : path.join(os.tmpdir(), `paperclip-codex-probe-${input.runId}`);
+    if (!input.targetIsRemote && process.platform === "win32") {
+      const wrapper = [
+        "const fs = require('node:fs');",
+        "const cp = require('node:child_process');",
+        "const home = process.env.CODEX_HOME;",
+        "fs.mkdirSync(home, { recursive: true });",
+        "fs.writeFileSync(require('node:path').join(home, 'auth.json'), process.env._PAPERCLIP_CODEX_AUTH_JSON, { mode: 0o600 });",
+        "delete process.env._PAPERCLIP_CODEX_AUTH_JSON;",
+        "const child = cp.spawn(process.argv[1], process.argv.slice(2), { stdio: 'inherit', shell: true, env: process.env });",
+        "child.on('exit', (code, signal) => { fs.rmSync(home, { recursive: true, force: true }); if (signal) process.kill(process.pid, signal); else process.exit(code ?? 1); });",
+        "child.on('error', (error) => { fs.rmSync(home, { recursive: true, force: true }); console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });",
+      ].join("\n");
+      return {
+        command: process.execPath,
+        args: ["-e", wrapper, input.command, ...input.args],
+        env: {
+          ...input.env,
+          CODEX_HOME: probeHome,
+          _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+        },
+        cleanup,
+      };
+    }
     return {
       command: "sh",
       args: [

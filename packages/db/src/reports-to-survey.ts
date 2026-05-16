@@ -1,6 +1,13 @@
 import postgres from "postgres";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
+type AgentReportRow = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  parent: string | null;
+};
+
 async function main() {
   const r = await resolveMigrationConnection();
   const sql = postgres(r.connectionString, { max: 1 });
@@ -26,11 +33,11 @@ async function main() {
     console.log(`Populated: ${(populated[0] as any).c}/${(total[0] as any).c}`);
 
     // Build a parent->children mini-tree
-    const rows = await sql.unsafe<{ id: string; name: string | null; role: string | null; parent: string | null }[]>(
+    const rows = Array.from(await sql.unsafe<AgentReportRow[]>(
       `SELECT id, name, role, "${candidate}" AS parent FROM agents`,
-    );
+    ));
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const children = new Map<string | null, typeof rows>();
+    const children = new Map<string | null, AgentReportRow[]>();
     for (const r of rows) {
       const arr = children.get(r.parent) ?? [];
       arr.push(r);

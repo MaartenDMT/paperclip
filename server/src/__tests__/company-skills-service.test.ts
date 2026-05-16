@@ -29,7 +29,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-service-");
     db = createDb(tempDb.connectionString);
     svc = companySkillService(db);
-  }, 20_000);
+  }, process.platform === "win32" ? 60_000 : 20_000);
 
   afterEach(async () => {
     await db.delete(companySkills);
@@ -95,5 +95,41 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       status: 404,
       message: "Company not found",
     });
+  });
+
+  it("lists runtime skill entries from stored rows without pruning missing local paths", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const missingSkillDir = path.join(os.tmpdir(), `paperclip-missing-skill-${randomUUID()}`);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/stored-skill`,
+      slug: "stored-skill",
+      name: "Stored Skill",
+      markdown: "# Stored Skill\n",
+      sourceType: "local_path",
+      sourceLocator: missingSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+
+    const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+
+    expect(entries).toContainEqual(expect.objectContaining({
+      key: `company/${companyId}/stored-skill`,
+      source: path.resolve(missingSkillDir),
+      required: false,
+    }));
   });
 });

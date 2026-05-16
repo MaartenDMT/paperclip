@@ -229,6 +229,11 @@ const PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP = Math.max(
   0,
   Number.parseInt(process.env.PAPERCLIP_PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP ?? "", 10) || 2,
 );
+const LOCAL_AGENT_PRE_SPAWN_STALE_MS = 2 * 60 * 1000;
+const HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX = Math.max(
+  1,
+  Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 5)),
+);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -4616,7 +4621,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           executionLockedAt: now,
           updatedAt: now,
         })
-        .where(eq(issues.id, issue.id));
+        .where(and(
+          eq(issues.id, issue.id),
+          noActiveRoutineExecutionConflict({
+            companyId: run.companyId,
+            issueId: issue.id,
+          }),
+        ));
 
       await tx
         .update(heartbeatRuns)
@@ -5929,6 +5940,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  async function reapStalePreSpawnRunsForAgent(agent: typeof agents.$inferSelect) {
+    if (!agent.adapterType.endsWith("_local")) return 0;
+    const staleBefore = new Date(Date.now() - LOCAL_AGENT_PRE_SPAWN_STALE_MS);
+    const rows = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date(),
+        error: "Cancelled because the local adapter did not spawn a process before the startup timeout",
+        errorCode: "local_agent_pre_spawn_stale",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agent.id),
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.processPid),
+          isNull(heartbeatRuns.processStartedAt),
+          isNull(heartbeatRuns.lastOutputAt),
+          lt(heartbeatRuns.startedAt, staleBefore),
+        ),
+      )
+      .returning({ id: heartbeatRuns.id });
+    if (rows.length > 0) {
+      logger.warn(
+        {
+          agentId: agent.id,
+          agentName: agent.name,
+          adapterType: agent.adapterType,
+          runIds: rows.map((row) => row.id),
+        },
+        "cancelled stale local agent pre-spawn runs",
+      );
+    }
+    return rows.length;
+  }
+
+  function noActiveRoutineExecutionConflict(input: {
+    companyId: string;
+    issueId: string;
+  }) {
+    return sql`not exists (
+      select 1
+      from issues target
+      join issues other
+        on other.company_id = target.company_id
+       and other.origin_kind = 'routine_execution'
+       and other.origin_id = target.origin_id
+       and other.origin_fingerprint = target.origin_fingerprint
+       and other.id <> target.id
+       and other.hidden_at is null
+       and other.execution_run_id is not null
+       and other.status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+      where target.id = ${input.issueId}
+        and target.company_id = ${input.companyId}
+        and target.origin_kind = 'routine_execution'
+    )`;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6064,6 +6142,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
 
       if (!lockedIssue) {
+        const issueAssignee = await db
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (issueAssignee && issueAssignee.assigneeAgentId !== claimed.agentId) {
+          return claimed;
+        }
+
         const reason =
           "Cancelled because another open routine execution issue for the same routine already owns the active execution lock";
         const finishedAt = new Date();
@@ -6892,8 +6980,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
+      await reapStalePreSpawnRunsForAgent(agent);
+      const globalRunningCount = await countRunningRuns();
+      if (globalRunningCount >= HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX) {
+        logger.debug(
+          { agentId, globalRunningCount, maxGlobalRunningRuns: HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX },
+          "skipping queued-run start because global heartbeat concurrency is full",
+        );
+        return [];
+      }
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const availableSlots = Math.max(
+        0,
+        Math.min(
+          policy.maxConcurrentRuns - runningCount,
+          HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX - globalRunningCount,
+        ),
+      );
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -7287,7 +7390,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
+      // Heartbeats are on the critical path for agent startup. Materializing
+      // missing remote skill files here can block runs before a log/PID exists.
+      materializeMissing: false,
+    });
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
@@ -8586,7 +8693,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: now,
           })
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.assigneeAgentId, deferredAgent.id),
+            noActiveRoutineExecutionConflict({
+              companyId: issue.companyId,
+              issueId: issue.id,
+            }),
+          ));
 
         return {
           kind: "promoted" as const,
@@ -9179,7 +9293,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   executionLockedAt: new Date(),
                   updatedAt: new Date(),
                 })
-                .where(eq(issues.id, issue.id));
+                .where(and(
+                  eq(issues.id, issue.id),
+                  noActiveRoutineExecutionConflict({
+                    companyId: issue.companyId,
+                    issueId: issue.id,
+                  }),
+                ));
             }
           }
         }

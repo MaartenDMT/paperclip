@@ -291,7 +291,7 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
-  it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
+  it("kills descendant processes on timeout", async () => {
     let descendantPid: number | null = null;
 
     const result = await runChildProcess(

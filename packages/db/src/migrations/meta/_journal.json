@@ -610,6 +610,13 @@
       "when": 1778080002000,
       "tag": "0086_cancelled_by_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1778874266887,
+      "tag": "0087_heartbeat_runs_company_created_idx",
+      "breakpoints": true
     }
   ]
 }

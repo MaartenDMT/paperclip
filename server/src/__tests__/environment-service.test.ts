@@ -27,7 +27,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     stopDb = started.stop;
     db = createDb(started.connectionString);
     svc = environmentService(db);
-  });
+  }, process.platform === "win32" ? 60_000 : 10_000);
 
   afterEach(async () => {
     await db.delete(environmentLeases);

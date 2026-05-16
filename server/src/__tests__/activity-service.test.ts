@@ -284,14 +284,12 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.skillActivations).toEqual([
       {
-        runId,
         skillKey: "paperclip",
         skillName: "paperclip",
         source: "SkillUse",
         activatedAt: new Date("2026-04-18T20:00:00.000Z"),
       },
       {
-        runId,
         skillKey: "diagnose-why-work-stopped",
         skillName: "diagnose-why-work-stopped",
         source: "SkillUse",
