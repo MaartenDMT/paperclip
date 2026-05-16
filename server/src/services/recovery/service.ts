@@ -1649,6 +1649,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
     if (!updated) return null;
 
+    await removeStrandedRecoveryBlockerFromSource(input.issue);
+
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     await issuesSvc.addComment(
       input.issue.id,
@@ -1684,6 +1686,56 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return updated;
+  }
+
+  async function removeStrandedRecoveryBlockerFromSource(recoveryIssue: typeof issues.$inferSelect) {
+    const sourceIssueId = readNonEmptyString(recoveryIssue.originId);
+    if (!sourceIssueId) return false;
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, recoveryIssue.companyId), eq(issues.id, sourceIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue || ["done", "cancelled"].includes(sourceIssue.status)) return false;
+
+    const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
+    const recoveryWasBlocker = blockerIds.includes(recoveryIssue.id);
+    if (!recoveryWasBlocker && (sourceIssue.status !== "blocked" || blockerIds.length > 0)) return false;
+
+    const nextBlockerIds = recoveryWasBlocker
+      ? blockerIds.filter((blockerId) => blockerId !== recoveryIssue.id)
+      : blockerIds;
+    const nextStatus = sourceIssue.status === "blocked" && nextBlockerIds.length === 0
+      ? "todo"
+      : sourceIssue.status;
+    await issuesSvc.update(sourceIssue.id, {
+      blockedByIssueIds: nextBlockerIds,
+      ...(sourceIssue.status !== nextStatus ? { status: nextStatus } : {}),
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.blockers_updated",
+      entityType: "issue",
+      entityId: sourceIssue.id,
+      details: {
+        source: "recovery.reconcile_stranded_recovery_issue",
+        removedRecoveryIssueId: recoveryWasBlocker ? recoveryIssue.id : null,
+        clearedStaleBlockedStatus: !recoveryWasBlocker
+          && sourceIssue.status === "blocked"
+          && blockerIds.length === 0,
+        remainingBlockerIssueIds: nextBlockerIds,
+        status: nextStatus,
+        previousStatus: sourceIssue.status,
+      },
+    });
+
+    return true;
   }
 
   async function existingBlockerIssueIds(companyId: string, issueId: string) {

@@ -2149,6 +2149,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     expect(blockerRelations).toHaveLength(0);
 
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([]);
+
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
@@ -2587,7 +2595,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
-    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([]);
   });
 
   it("keeps repeated recovery failures on the same canonical recovery issue", async () => {
@@ -2673,7 +2687,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
     expect(nestedRecoveries).toHaveLength(0);
-    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
