@@ -98,9 +98,25 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { logger } from "../middleware/logger.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+function startRouteTiming(route: string, base: Record<string, unknown> = {}) {
+  const startedAt = Date.now();
+  return (details: Record<string, unknown> = {}) => {
+    logger.info(
+      {
+        route,
+        durationMs: Date.now() - startedAt,
+        ...base,
+        ...details,
+      },
+      "heartbeat endpoint timing",
+    );
+  };
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -2908,6 +2924,8 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
+    await heartbeat.cancelActiveForAgent(id);
+    await heartbeat.drainActiveRunExecutions({ agentId: id });
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -3188,13 +3206,35 @@ export function agentRoutes(
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const cursorMode = req.query.page === "cursor";
+    const finishTiming = startRouteTiming("GET /companies/:companyId/heartbeat-runs", {
+      companyId,
+      agentId,
+      page: cursorMode ? "cursor" : "legacy",
+    });
+
+    if (cursorMode) {
+      const result = await heartbeat.list(companyId, {
+        agentId,
+        limit,
+        cursorCreatedAt: typeof req.query.cursorCreatedAt === "string" ? req.query.cursorCreatedAt : null,
+        cursorId: typeof req.query.cursorId === "string" ? req.query.cursorId : null,
+        page: "cursor",
+      }) as { runs: unknown[]; nextCursor: unknown | null };
+      finishTiming({ rowCount: result.runs.length, hasNextCursor: Boolean(result.nextCursor) });
+      res.json(result);
+      return;
+    }
+
     const runs = await heartbeat.list(companyId, agentId, limit);
+    finishTiming({ rowCount: runs.length });
     res.json(runs);
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const finishTiming = startRouteTiming("GET /companies/:companyId/live-runs", { companyId });
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -3264,17 +3304,21 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      const result = await Promise.all(rows.map(async (run) => ({
         ...run,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      })));
+      finishTiming({ liveCount: liveRuns.length, rowCount: result.length, paddedCount: recentRuns.length });
+      res.json(result);
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    const result = await Promise.all(liveRuns.map(async (run) => ({
       ...run,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    })));
+    finishTiming({ liveCount: liveRuns.length, rowCount: result.length, paddedCount: 0 });
+    res.json(result);
   });
 
   async function respondWithHeartbeatRun(req: Request, res: Response, input: {
@@ -3301,12 +3345,22 @@ export function agentRoutes(
   }
 
   async function respondWithHeartbeatRunLog(req: Request, res: Response, runId: string) {
+    const finishTiming = startRouteTiming("GET /heartbeat-runs/:runId/log", { runId });
     const run = await heartbeat.getRunLogAccess(runId);
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
     assertCompanyAccess(req, run.companyId);
+
+    const metadataOnly = req.query.metadataOnly === "true" || req.query.metadataOnly === "1";
+    if (metadataOnly) {
+      const result = await heartbeat.statLog(run);
+      res.set("Cache-Control", "no-cache, no-store");
+      finishTiming({ metadataOnly: true, bytes: result.bytes });
+      res.json(result);
+      return;
+    }
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -3316,6 +3370,11 @@ export function agentRoutes(
     });
 
     res.set("Cache-Control", "no-cache, no-store");
+    finishTiming({
+      metadataOnly: false,
+      bytes: Buffer.byteLength(result.content, "utf8"),
+      nextOffset: result.nextOffset ?? null,
+    });
     res.json(result);
   }
 
@@ -3407,6 +3466,7 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
     const runId = req.params.runId as string;
+    const finishTiming = startRouteTiming("GET /heartbeat-runs/:runId/events", { runId });
     const run = await heartbeat.getRun(runId);
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
@@ -3424,6 +3484,7 @@ export function agentRoutes(
         payload: redactEventPayload(event.payload),
       }, currentUserRedactionOptions),
     );
+    finishTiming({ eventCount: redactedEvents.length });
     res.json(redactedEvents);
   });
 

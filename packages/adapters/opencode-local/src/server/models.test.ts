@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
+  isExternalGatewayModelId,
   listOpenCodeModels,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
@@ -18,6 +19,7 @@ describe("openCode models", () => {
 
   afterEach(async () => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES;
     await resetOpenCodeModelsDiskCacheForTests();
     delete process.env.PAPERCLIP_OPENCODE_MODELS_CACHE_PATH;
     resetOpenCodeModelsCacheForTests();
@@ -54,6 +56,36 @@ describe("openCode models", () => {
         model: "openai/gpt-5",
       }),
     ).rejects.toThrow("Failed to start command");
+  });
+
+  it("skips discovery for known external gateway models", async () => {
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    for (const model of [
+      "openrouter/anthropic/claude-sonnet-4",
+      "zai-coding-plan/glm-4.7",
+      "zai/glm-4.7",
+      "manifest/openai/gpt-4o-mini",
+    ]) {
+      await expect(
+        ensureOpenCodeModelConfiguredAndAvailable({ model }),
+      ).resolves.toEqual([{ id: model, label: model }]);
+    }
+  });
+
+  it("recognizes default and operator-configured gateway prefixes", async () => {
+    expect(isExternalGatewayModelId("manifest/openai/gpt-4o-mini")).toBe(true);
+    expect(isExternalGatewayModelId("openrouter/anthropic/claude-sonnet-4")).toBe(true);
+    expect(isExternalGatewayModelId("openai/gpt-5")).toBe(false);
+
+    process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES = " portkey/ , litellm/ ";
+    expect(isExternalGatewayModelId("portkey/openai/gpt-5")).toBe(true);
+    expect(isExternalGatewayModelId("litellm/anthropic/claude-sonnet-4")).toBe(true);
+    expect(isExternalGatewayModelId("manifest/openai/gpt-4o-mini")).toBe(true);
+
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({ model: "portkey/openai/gpt-5" }),
+    ).resolves.toEqual([{ id: "portkey/openai/gpt-5", label: "portkey/openai/gpt-5" }]);
   });
 
   it("uses disk cache when present so subprocess is not invoked", async () => {

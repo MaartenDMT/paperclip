@@ -14,6 +14,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
+  statLog: vi.fn(),
   wakeup: vi.fn(),
 }));
 
@@ -233,6 +234,12 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+    mockHeartbeatService.statLog.mockResolvedValue({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      bytes: 1234,
+    });
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -340,10 +347,33 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("uses run log stat metadata for metadata-only polling", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?metadataOnly=true"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.statLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      bytes: 1234,
+    });
+  });
+
   it("exposes agent-scoped run detail aliases for run monitoring consumers", async () => {
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get(`/api/agents/agent-1/runs/run-1`),
+      (baseUrl) => request(baseUrl).get(`/api/agents/${routeAgentId}/runs/run-1`),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -377,7 +407,7 @@ describe("agent live run routes", () => {
     });
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get(`/api/agents/agent-1/runs/run-1`),
+      (baseUrl) => request(baseUrl).get(`/api/agents/${routeAgentId}/runs/run-1`),
     );
 
     expect(res.status).toBe(404);

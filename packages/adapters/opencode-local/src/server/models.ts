@@ -15,6 +15,13 @@ const MODELS_DISK_CACHE_TTL_MS = 60 * 60 * 1000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
 const DISK_CACHE_SCHEMA_VERSION = 1;
 
+const DEFAULT_GATEWAY_PREFIXES = [
+  "openrouter/",
+  "zai-coding-plan/",
+  "zai/",
+  "manifest/",
+] as const;
+
 type DiskCacheEntry = { expiresAt: number; models: AdapterModel[] };
 type DiskCacheFile = { version: number; entries: Record<string, DiskCacheEntry> };
 
@@ -70,6 +77,21 @@ function resolveOpenCodeCommand(input: unknown): string {
       ? process.env.PAPERCLIP_OPENCODE_COMMAND.trim()
       : "opencode";
   return asString(input, envOverride);
+}
+
+function resolveGatewayPrefixes(): string[] {
+  const extra =
+    typeof process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES === "string"
+      ? process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : [];
+  return [...new Set([...DEFAULT_GATEWAY_PREFIXES, ...extra])];
+}
+
+export function isExternalGatewayModelId(model: string): boolean {
+  return resolveGatewayPrefixes().some((prefix) => model.startsWith(prefix));
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
@@ -267,6 +289,10 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+
+  if (isExternalGatewayModelId(model)) {
+    return [{ id: model, label: model }];
+  }
 
   const models = await discoverOpenCodeModelsCached({
     command: input.command,

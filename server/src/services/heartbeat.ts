@@ -143,7 +143,12 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import {
+  ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  recoveryService,
+} from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -209,7 +214,7 @@ export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
-} from "./recovery/service.js";
+};
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
@@ -241,6 +246,15 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+
+type ActiveRunExecution = {
+  runId: string;
+  agentId: string;
+  companyId: string;
+  promise: Promise<void>;
+};
+
+const activeRunExecutions = new Map<string, ActiveRunExecution>();
 
 type NormalizedSkillActivation = {
   skillKey: string;
@@ -2261,7 +2275,10 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; criticallySilentDetachedChild?: boolean }) {
+  if (options?.criticallySilentDetachedChild && run.processPid) {
+    return `Process lost -- child pid ${run.processPid} was still alive after the server lost its in-memory handle, but the run was critically silent and the process was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -2397,7 +2414,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -6739,8 +6755,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      let criticallySilentDetachedCleanup = false;
       if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+        const silenceStartedAt = run.lastOutputAt ?? run.processStartedAt ?? null;
+        const criticallySilent =
+          silenceStartedAt !== null &&
+          now.getTime() - new Date(silenceStartedAt).getTime() >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+        if (criticallySilent) {
+          criticallySilentDetachedCleanup = true;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        } else if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
@@ -6758,7 +6785,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
-        continue;
+        if (!criticallySilentDetachedCleanup) continue;
       }
 
       let descendantOnlyCleanup = false;
@@ -6783,7 +6810,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (!!run.processPid || !!run.processGroupId) &&
         (run.processLossRetryCount ?? 0) < 1 &&
         !retryCapReached;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        criticallySilentDetachedCleanup
+          ? { criticallySilentDetachedChild: true }
+          : descendantOnlyCleanup
+            ? { descendantOnly: true }
+            : undefined,
+      );
       const retrySuppressionMessage = retryCapReached
         ? `; process_lost retry cap reached for this agent/issue (${PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP} per ${Math.round(PROCESS_LOSS_RETRY_WINDOW_MS / 60_000)}m)`
         : "";
@@ -6838,6 +6872,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(criticallySilentDetachedCleanup ? { criticallySilentDetachedCleanup: true } : {}),
           ...(retryCapReached ? {
             processLossRetryCap: PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP,
             processLossRetryWindowMs: PROCESS_LOSS_RETRY_WINDOW_MS,
@@ -7052,8 +7087,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        });
+        activeRunExecutions.set(claimedRun.id, {
+          runId: claimedRun.id,
+          agentId: claimedRun.agentId,
+          companyId: claimedRun.companyId,
+          promise: execution,
         });
       }
       return claimedRuns;
@@ -7073,9 +7114,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       run = claimed;
     }
-
-    activeRunExecutions.add(run.id);
-
     try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -8491,6 +8529,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .update(issues)
           .set({
             executionRunId: null,
+            checkoutRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
             updatedAt: new Date(),
@@ -9850,6 +9889,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return runs.length;
   }
 
+  async function drainActiveRunExecutions(filter: {
+    agentId?: string;
+    companyId?: string;
+    runId?: string;
+  } = {}) {
+    const matching = Array.from(activeRunExecutions.values()).filter((execution) => {
+      if (filter.runId && execution.runId !== filter.runId) return false;
+      if (filter.agentId && execution.agentId !== filter.agentId) return false;
+      if (filter.companyId && execution.companyId !== filter.companyId) return false;
+      return true;
+    });
+
+    await Promise.allSettled(matching.map((execution) => execution.promise));
+    return matching.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -9878,86 +9933,141 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  type HeartbeatRunListOptions = {
+    agentId?: string;
+    limit?: number;
+    cursorCreatedAt?: string | Date | null;
+    cursorId?: string | null;
+    page: "cursor";
+  };
+
+  type HeartbeatRunListPage = {
+    runs: any[];
+    nextCursor: { createdAt: string; id: string } | null;
+  };
+
+  async function listRuns(companyId: string, agentId?: string, limit?: number): Promise<any[]>;
+  async function listRuns(companyId: string, options: HeartbeatRunListOptions): Promise<HeartbeatRunListPage>;
+  async function listRuns(
+    companyId: string,
+    agentIdOrOptions?: string | HeartbeatRunListOptions,
+    legacyLimit?: number,
+  ): Promise<any[] | HeartbeatRunListPage> {
+    const options: {
+      agentId?: string;
+      limit?: number;
+      cursorCreatedAt?: string | Date | null;
+      cursorId?: string | null;
+      page?: "cursor";
+    } = typeof agentIdOrOptions === "object" && agentIdOrOptions !== null
+      ? agentIdOrOptions
+      : { agentId: agentIdOrOptions, limit: legacyLimit };
+    const pageMode = options.page === "cursor";
+    const safeLimit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+    const cursorDate = options.cursorCreatedAt ? new Date(options.cursorCreatedAt) : null;
+    const cursorFilter = pageMode && options.cursorId && cursorDate && !Number.isNaN(cursorDate.getTime())
+      ? or(
+          lt(heartbeatRuns.createdAt, cursorDate),
+          and(eq(heartbeatRuns.createdAt, cursorDate), lt(heartbeatRuns.id, options.cursorId)),
+        )
+      : undefined;
+    const filters = [
+      eq(heartbeatRuns.companyId, companyId),
+      ...(options.agentId ? [eq(heartbeatRuns.agentId, options.agentId)] : []),
+      ...(cursorFilter ? [cursorFilter] : []),
+    ];
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    const query = db
+      .select(
+        safeForLegacyEncoding
+          ? {
+              ...heartbeatRunListColumns,
+              error: sql<string | null>`NULL`.as("error"),
+              ...heartbeatRunListContextColumns,
+            }
+          : {
+              ...heartbeatRunListColumns,
+              ...heartbeatRunListContextColumns,
+              ...heartbeatRunListResultColumns,
+            },
+      )
+      .from(heartbeatRuns)
+      .where(and(...filters))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+
+    const queryLimit = pageMode ? safeLimit + 1 : options.limit;
+    const rows = queryLimit ? await query.limit(queryLimit) : await query;
+    const hasMore = pageMode && rows.length > safeLimit;
+    const rowsForReturn = hasMore ? rows.slice(0, safeLimit) : rows;
+    const runs = rowsForReturn.map((row) => {
+      const {
+        contextIssueId,
+        contextTaskId,
+        contextTaskKey,
+        contextCommentId,
+        contextWakeCommentId,
+        contextWakeReason,
+        contextWakeSource,
+        contextWakeTriggerDetail,
+        resultSummary,
+        resultResult,
+        resultMessage,
+        resultError,
+        resultTotalCostUsd,
+        resultCostUsd,
+        resultCostUsdCamel,
+        ...rest
+      } = row as typeof row & {
+        resultSummary?: string | null;
+        resultResult?: string | null;
+        resultMessage?: string | null;
+        resultError?: string | null;
+        resultTotalCostUsd?: string | null;
+        resultCostUsd?: string | null;
+        resultCostUsdCamel?: string | null;
+      };
+
+      return {
+        ...rest,
+        contextSnapshot: summarizeHeartbeatRunContextSnapshot({
+          issueId: contextIssueId,
+          taskId: contextTaskId,
+          taskKey: contextTaskKey,
+          commentId: contextCommentId,
+          wakeCommentId: contextWakeCommentId,
+          wakeReason: contextWakeReason,
+          wakeSource: contextWakeSource,
+          wakeTriggerDetail: contextWakeTriggerDetail,
+        }),
+        resultJson: safeForLegacyEncoding
+          ? null
+          : summarizeHeartbeatRunListResultJson({
+              summary: resultSummary,
+              result: resultResult,
+              message: resultMessage,
+              error: resultError,
+              totalCostUsd: resultTotalCostUsd,
+              costUsd: resultCostUsd,
+              costUsdCamel: resultCostUsdCamel,
+            }),
+      };
+    });
+    if (!pageMode) return runs;
+
+    const lastRow = rowsForReturn[rowsForReturn.length - 1];
+    return {
+      runs,
+      nextCursor: hasMore && lastRow
+        ? {
+            createdAt: lastRow.createdAt instanceof Date ? lastRow.createdAt.toISOString() : String(lastRow.createdAt),
+            id: lastRow.id,
+          }
+        : null,
+    };
+  }
+
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
-      const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
-      const query = db
-        .select(
-          safeForLegacyEncoding
-            ? {
-                ...heartbeatRunListColumns,
-                error: sql<string | null>`NULL`.as("error"),
-                ...heartbeatRunListContextColumns,
-              }
-            : {
-                ...heartbeatRunListColumns,
-                ...heartbeatRunListContextColumns,
-                ...heartbeatRunListResultColumns,
-              },
-        )
-        .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
-        .orderBy(desc(heartbeatRuns.createdAt));
-
-      const rows = limit ? await query.limit(limit) : await query;
-      return rows.map((row) => {
-        const {
-          contextIssueId,
-          contextTaskId,
-          contextTaskKey,
-          contextCommentId,
-          contextWakeCommentId,
-          contextWakeReason,
-          contextWakeSource,
-          contextWakeTriggerDetail,
-          resultSummary,
-          resultResult,
-          resultMessage,
-          resultError,
-          resultTotalCostUsd,
-          resultCostUsd,
-          resultCostUsdCamel,
-          ...rest
-        } = row as typeof row & {
-          resultSummary?: string | null;
-          resultResult?: string | null;
-          resultMessage?: string | null;
-          resultError?: string | null;
-          resultTotalCostUsd?: string | null;
-          resultCostUsd?: string | null;
-          resultCostUsdCamel?: string | null;
-        };
-
-        return {
-          ...rest,
-          contextSnapshot: summarizeHeartbeatRunContextSnapshot({
-            issueId: contextIssueId,
-            taskId: contextTaskId,
-            taskKey: contextTaskKey,
-            commentId: contextCommentId,
-            wakeCommentId: contextWakeCommentId,
-            wakeReason: contextWakeReason,
-            wakeSource: contextWakeSource,
-            wakeTriggerDetail: contextWakeTriggerDetail,
-          }),
-          resultJson: safeForLegacyEncoding
-            ? null
-            : summarizeHeartbeatRunListResultJson({
-                summary: resultSummary,
-                result: resultResult,
-                message: resultMessage,
-                error: resultError,
-                totalCostUsd: resultTotalCostUsd,
-                costUsd: resultCostUsd,
-                costUsdCamel: resultCostUsdCamel,
-              }),
-        };
-      });
-    },
+    list: listRuns,
 
     getRun,
 
@@ -10088,6 +10198,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
+    statLog: async (
+      runOrLookup: string | {
+        id: string;
+        companyId: string;
+        logStore: string | null;
+        logRef: string | null;
+      },
+    ) => {
+      const run = typeof runOrLookup === "string" ? await getRunLogAccess(runOrLookup) : runOrLookup;
+      const runId = typeof runOrLookup === "string" ? runOrLookup : runOrLookup.id;
+      if (!run) throw notFound("Heartbeat run not found");
+      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+
+      const result = await runLogStore.stat({
+        store: run.logStore as "local_file",
+        logRef: run.logRef,
+      });
+
+      return {
+        runId,
+        store: run.logStore,
+        logRef: run.logRef,
+        ...result,
+      };
+    },
+
     invoke: async (
       agentId: string,
       source: "timer" | "assignment" | "on_demand" | "automation" = "on_demand",
@@ -10189,6 +10325,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+
+    drainActiveRunExecutions,
 
     cancelBudgetScopeWork,
 

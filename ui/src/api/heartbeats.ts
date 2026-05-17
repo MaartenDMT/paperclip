@@ -70,6 +70,31 @@ export interface WatchdogDecisionInput {
   snoozedUntil?: string | null;
 }
 
+export interface HeartbeatRunListCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface HeartbeatRunListPage {
+  runs: HeartbeatRun[];
+  nextCursor: HeartbeatRunListCursor | null;
+}
+
+export interface HeartbeatRunLog {
+  runId: string;
+  store: string;
+  logRef: string;
+  content: string;
+  nextOffset?: number;
+}
+
+export interface HeartbeatRunLogMetadata {
+  runId: string;
+  store: string;
+  logRef: string;
+  bytes: number;
+}
+
 export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
@@ -78,15 +103,31 @@ export const heartbeatsApi = {
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
   },
+  listPage: (
+    companyId: string,
+    options?: { agentId?: string; limit?: number; cursor?: HeartbeatRunListCursor | null },
+  ) => {
+    const searchParams = new URLSearchParams();
+    searchParams.set("page", "cursor");
+    if (options?.agentId) searchParams.set("agentId", options.agentId);
+    if (options?.limit) searchParams.set("limit", String(options.limit));
+    if (options?.cursor) {
+      searchParams.set("cursorCreatedAt", options.cursor.createdAt);
+      searchParams.set("cursorId", options.cursor.id);
+    }
+    return api.get<HeartbeatRunListPage>(`/companies/${companyId}/heartbeat-runs?${searchParams.toString()}`);
+  },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
   events: (runId: string, afterSeq = 0, limit = 200) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ),
   log: (runId: string, offset = 0, limitBytes = 256000) =>
-    api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+    api.get<HeartbeatRunLog>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
+  logMetadata: (runId: string) =>
+    api.get<HeartbeatRunLogMetadata>(`/heartbeat-runs/${runId}/log?metadataOnly=true`),
   workspaceOperations: (runId: string) =>
     api.get<WorkspaceOperation[]>(`/heartbeat-runs/${runId}/workspace-operations`),
   workspaceOperationLog: (operationId: string, offset = 0, limitBytes = 256000) =>

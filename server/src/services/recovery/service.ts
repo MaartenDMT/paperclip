@@ -101,6 +101,11 @@ type RecoveryWakeup = (
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
+function activeRunOutputWatchdogEnabled(): boolean {
+  const raw = process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG?.trim().toLowerCase();
+  return raw !== "false" && raw !== "off" && raw !== "0";
+}
+
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
@@ -1238,7 +1243,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
-    if (process.env.PAPERCLIP_ACTIVE_RUN_OUTPUT_WATCHDOG !== "on") {
+    if (!activeRunOutputWatchdogEnabled()) {
       return {
         scanned: 0,
         created: 0,

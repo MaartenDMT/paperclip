@@ -6,6 +6,16 @@ type ParsedSkillActivation = {
   source: "opencode";
 };
 
+const TERMINAL_STEP_REASONS = new Set([
+  "stop",
+  "done",
+  "complete",
+  "completed",
+  "finish",
+  "finished",
+  "end",
+]);
+
 function readSkillName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -112,6 +122,20 @@ export function parseOpenCodeJsonl(stdout: string) {
     toolErrors,
     skillActivations,
   };
+}
+
+export function hasOpenCodeTerminalResult(output: { stdout: string; stderr?: string }): boolean {
+  for (const rawLine of output.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    if (asString(event.type, "") !== "step_finish") continue;
+    const part = parseObject(event.part);
+    const reason = asString(part.reason, "").trim().toLowerCase();
+    if (TERMINAL_STEP_REASONS.has(reason)) return true;
+  }
+  return false;
 }
 
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {

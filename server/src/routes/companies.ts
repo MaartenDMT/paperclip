@@ -23,6 +23,7 @@ import {
   feedbackService,
   logActivity,
 } from "../services/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
@@ -34,6 +35,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const heartbeat = heartbeatService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -401,6 +403,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await heartbeat.cancelBudgetScopeWork({ scopeType: "company", companyId, scopeId: companyId });
+    await heartbeat.drainActiveRunExecutions({ companyId });
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

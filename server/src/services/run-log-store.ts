@@ -21,6 +21,10 @@ export interface RunLogReadResult {
   nextOffset?: number;
 }
 
+export interface RunLogStatResult {
+  bytes: number;
+}
+
 export interface RunLogFinalizeSummary {
   bytes: number;
   sha256?: string;
@@ -34,6 +38,7 @@ export interface RunLogStore {
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
+  stat(handle: RunLogHandle): Promise<RunLogStatResult>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
 }
 
@@ -143,6 +148,16 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const offset = opts?.offset ?? 0;
       const limitBytes = opts?.limitBytes ?? 256_000;
       return readFileRange(absPath, offset, limitBytes);
+    },
+
+    async stat(handle) {
+      if (handle.store !== "local_file") {
+        throw notFound("Run log not found");
+      }
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (!stat) throw notFound("Run log not found");
+      return { bytes: stat.size };
     },
   };
 }

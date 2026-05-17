@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
+    "preflight:workspace-links": "tsx scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
@@ -26,7 +26,7 @@
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
-    "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
+    "paperclipai": "tsx cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",

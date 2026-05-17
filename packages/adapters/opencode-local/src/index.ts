@@ -6,6 +6,8 @@ export const label = "OpenCode (local)";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g opencode-ai";
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC = 6 * 60 * 60;
+export const DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC = 30;
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -61,8 +63,11 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
+- timeoutSec (number, optional): run timeout in seconds; defaults to 21600 (6h)
+- disableRunTimeout (boolean, optional): set true to allow unbounded runs
 - graceSec (number, optional): SIGTERM grace period in seconds
+- terminalResultCleanupGraceSec (number, optional): after terminal OpenCode output is observed, wait this many seconds before terminating a still-running process; defaults to 30
+- disableTerminalResultCleanup (boolean, optional): set true to disable terminal-output cleanup
 
 Notes:
 - OpenCode supports multiple providers and models. Use \

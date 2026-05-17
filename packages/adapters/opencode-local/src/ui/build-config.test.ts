@@ -1,21 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexLocalConfig } from "./build-config.js";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import { DEFAULT_CODEX_LOCAL_TIMEOUT_SEC } from "../index.js";
+import {
+  DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC,
+  DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC,
+} from "../index.js";
+import { buildOpenCodeLocalConfig } from "./build-config.js";
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
   return {
-    adapterType: "codex_local",
+    adapterType: "opencode_local",
     cwd: "",
     instructionsFilePath: "",
     promptTemplate: "",
-    model: "gpt-5.4",
+    model: "openai/gpt-5.2-codex",
     thinkingEffort: "",
     chrome: false,
     dangerouslySkipPermissions: true,
     search: false,
     fastMode: false,
-    dangerouslyBypassSandbox: true,
+    dangerouslyBypassSandbox: false,
     command: "",
     args: "",
     extraArgs: "",
@@ -36,21 +39,13 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
   };
 }
 
-describe("buildCodexLocalConfig", () => {
-  it("persists the fastMode toggle into adapter config", () => {
-    const config = buildCodexLocalConfig(
-      makeValues({
-        search: true,
-        fastMode: true,
-      }),
-    );
-
-    expect(config).toMatchObject({
-      model: "gpt-5.4",
-      timeoutSec: DEFAULT_CODEX_LOCAL_TIMEOUT_SEC,
-      search: true,
-      fastMode: true,
-      dangerouslyBypassApprovalsAndSandbox: true,
+describe("buildOpenCodeLocalConfig", () => {
+  it("uses bounded runtime and terminal cleanup defaults", () => {
+    expect(buildOpenCodeLocalConfig(makeValues())).toMatchObject({
+      model: "openai/gpt-5.2-codex",
+      timeoutSec: DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC,
+      terminalResultCleanupGraceSec: DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC,
+      graceSec: 20,
     });
   });
 });

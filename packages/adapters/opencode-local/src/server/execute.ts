@@ -25,6 +25,7 @@ import {
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -43,14 +44,18 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { hasOpenCodeTerminalResult, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC,
+  DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +81,12 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 60;
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
+
+function resolveRunTimeoutSec(config: Record<string, unknown>): number {
+  if (asBoolean(config.disableRunTimeout, false)) return 0;
+  const timeoutSec = asNumber(config.timeoutSec, DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC);
+  return timeoutSec > 0 ? timeoutSec : DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC;
+}
 
 async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
@@ -304,8 +315,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const timeoutSec = asNumber(config.timeoutSec, 0);
+    const timeoutSec = resolveRunTimeoutSec(config);
     const graceSec = asNumber(config.graceSec, 20);
+    const terminalResultCleanupGraceSec = asNumber(
+      config.terminalResultCleanupGraceSec,
+      DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC,
+    );
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
@@ -564,6 +579,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onLog,
+        terminalResultCleanup: asBoolean(config.disableTerminalResultCleanup, false)
+          ? undefined
+          : {
+            graceMs: Math.max(0, terminalResultCleanupGraceSec) * 1000,
+            hasTerminalResult: hasOpenCodeTerminalResult,
+          },
       });
       return {
         proc,

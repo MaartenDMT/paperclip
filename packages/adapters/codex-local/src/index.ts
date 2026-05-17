@@ -6,6 +6,7 @@ export const label = "Codex (local)";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
+export const DEFAULT_CODEX_LOCAL_TIMEOUT_SEC = 6 * 60 * 60;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
 
@@ -79,7 +80,8 @@ Core fields:
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
+- timeoutSec (number, optional): run timeout in seconds; defaults to 21600 (6h)
+- disableRunTimeout (boolean, optional): set true to allow unbounded runs
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:

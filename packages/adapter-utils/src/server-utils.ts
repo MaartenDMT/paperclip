@@ -277,11 +277,6 @@ export function appendWithByteCap(prev: string, chunk: string, cap = MAX_CAPTURE
   return buffer.subarray(start).toString("utf8");
 }
 
-function resumeReadable(readable: { resume: () => unknown; destroyed?: boolean } | null | undefined) {
-  if (!readable || readable.destroyed) return;
-  readable.resume();
-}
-
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
   const parts = dottedPath.split(".");
   let cursor: unknown = obj;
@@ -2067,13 +2062,61 @@ export async function runChildProcess(
         let timedOut = false;
         let stdout = "";
         let stderr = "";
-        let logChain: Promise<void> = Promise.resolve();
+        const logQueue: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+        let logQueueBytes = 0;
+        let logDrainPromise: Promise<void> | null = null;
+        let droppedLogBytes = 0;
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+
+        const drainLogQueue = async () => {
+          while (logQueue.length > 0) {
+            const entry = logQueue.shift()!;
+            logQueueBytes -= Buffer.byteLength(entry.chunk, "utf8");
+            try {
+              await opts.onLog(entry.stream, entry.chunk);
+            } catch (err) {
+              onLogError(err, runId, `failed to append ${entry.stream} log chunk`);
+            } finally {
+              maybeArmTerminalResultCleanup();
+            }
+          }
+          if (droppedLogBytes > 0) {
+            const dropped = droppedLogBytes;
+            droppedLogBytes = 0;
+            try {
+              await opts.onLog(
+                "stderr",
+                `[paperclip] Dropped ${dropped} byte(s) of live process log output because logging fell behind; captured stdout/stderr remains capped separately.\n`,
+              );
+            } catch (err) {
+              onLogError(err, runId, "failed to append process log drop notice");
+            }
+          }
+        };
+
+        const scheduleLog = (stream: "stdout" | "stderr", chunk: string) => {
+          const chunkBytes = Buffer.byteLength(chunk, "utf8");
+          if (logQueueBytes + chunkBytes <= MAX_CAPTURE_BYTES) {
+            logQueue.push({ stream, chunk });
+            logQueueBytes += chunkBytes;
+          } else {
+            droppedLogBytes += chunkBytes;
+          }
+          if (!logDrainPromise) {
+            logDrainPromise = (async () => {
+              do {
+                await drainLogQueue();
+              } while (logQueue.length > 0 || droppedLogBytes > 0);
+            })().finally(() => {
+              logDrainPromise = null;
+            });
+          }
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2130,35 +2173,17 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
-          const readable = child.stdout;
-          if (!readable) return;
-          readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          scheduleLog("stdout", text);
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
-          const readable = child.stderr;
-          if (!readable) return;
-          readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          scheduleLog("stderr", text);
         });
 
         const stdin = child.stdin;
@@ -2192,7 +2217,7 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
-          void logChain.finally(() => {
+          void (logDrainPromise ?? Promise.resolve()).then(() => drainLogQueue()).finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
               .finally(() => {

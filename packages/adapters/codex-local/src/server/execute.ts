@@ -21,6 +21,7 @@ import {
 import {
   asString,
   asNumber,
+  asBoolean,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -46,7 +47,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { DEFAULT_CODEX_LOCAL_TIMEOUT_SEC, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -195,6 +196,12 @@ function fallbackModeUsesSaferInvocation(mode: CodexTransientFallbackMode | null
 
 function fallbackModeUsesFreshSession(mode: CodexTransientFallbackMode | null): boolean {
   return mode === "fresh_session" || mode === "fresh_session_safer_invocation";
+}
+
+function resolveRunTimeoutSec(config: Record<string, unknown>): number {
+  if (asBoolean(config.disableRunTimeout, false)) return 0;
+  const timeoutSec = asNumber(config.timeoutSec, DEFAULT_CODEX_LOCAL_TIMEOUT_SEC);
+  return timeoutSec > 0 ? timeoutSec : DEFAULT_CODEX_LOCAL_TIMEOUT_SEC;
 }
 
 function buildCodexTransientHandoffNote(input: {
@@ -519,7 +526,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = resolveRunTimeoutSec(config);
   const graceSec = asNumber(config.graceSec, 20);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);

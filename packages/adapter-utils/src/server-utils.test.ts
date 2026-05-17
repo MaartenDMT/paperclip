@@ -9,6 +9,7 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  MAX_CAPTURE_BYTES,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -289,6 +290,33 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("hello from stdin");
     expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
+  });
+
+  it("keeps draining child output while asynchronous logging is behind", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const chunk = 'x'.repeat(65536);",
+          "for (let i = 0; i < 32; i += 1) process.stdout.write(chunk);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 2,
+        graceSec: 1,
+        onLog: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(MAX_CAPTURE_BYTES);
   });
 
   it("kills descendant processes on timeout", async () => {

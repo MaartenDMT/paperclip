@@ -49,6 +49,13 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+vi.mock("../services/heartbeat.js", () => ({
+  heartbeatService: () => ({
+    cancelBudgetScopeWork: vi.fn(),
+    drainActiveRunExecutions: vi.fn(),
+  }),
+}));
+
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
   return {

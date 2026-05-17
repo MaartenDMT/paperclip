@@ -38,6 +38,13 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
 }));
 
+vi.mock("../services/heartbeat.js", () => ({
+  heartbeatService: () => ({
+    cancelBudgetScopeWork: vi.fn(),
+    drainActiveRunExecutions: vi.fn(),
+  }),
+}));
+
 describe("company routes malformed issue path guard", () => {
   it("returns a clear error when companyId is missing for issues list path", async () => {
     const app = express();
