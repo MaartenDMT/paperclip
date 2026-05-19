@@ -259,6 +259,29 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return routeTests.filter((_, index) => index % shardCount === shardIndex);
 }
 
+function chunkArgsByLength(fixedArgs, variableArgs, maxLength = process.platform === "win32" ? 6_000 : 60_000) {
+  const chunks = [];
+  let current = [];
+  let currentLength = fixedArgs.join(" ").length;
+
+  for (const arg of variableArgs) {
+    const nextLength = currentLength + arg.length + 1;
+    if (current.length > 0 && nextLength > maxLength) {
+      chunks.push(current);
+      current = [];
+      currentLength = fixedArgs.join(" ").length;
+    }
+    current.push(arg);
+    currentLength += arg.length + 1;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
 function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
@@ -286,17 +309,23 @@ function runVitest(args, label) {
   }
 }
 
-function runGeneralSuites(routeTests) {
-  const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
+function runGeneralSuites(routeTests, generalServerTests) {
   for (const project of nonServerProjects) {
     const projectArgs = project === "paperclipai" ? windowsCliTimeoutArgs : [];
     runVitest(["--project", project, ...projectArgs], `non-server project ${project}`);
   }
 
-  runVitest(
-    ["--project", "@paperclipai/server", ...windowsServerTimeoutArgs, ...excludeRouteArgs],
-    `server suites excluding ${routeTests.length} serialized suites`,
+  const fixedServerArgs = ["--project", "@paperclipai/server", ...windowsServerTimeoutArgs];
+  const serverChunks = chunkArgsByLength(
+    fixedServerArgs,
+    generalServerTests.map((test) => test.repoPath),
   );
+  serverChunks.forEach((chunk, index) => {
+    runVitest(
+      [...fixedServerArgs, ...chunk],
+      `server suites excluding ${routeTests.length} serialized suites (${index + 1}/${serverChunks.length})`,
+    );
+  });
 }
 
 function runSerializedSuites(routeTests, shardIndex, shardCount) {
@@ -328,6 +357,15 @@ const routeTests = walk(serverTestsDir)
     serverPath: toServerPath(file),
   }))
   .sort((a, b) => a.repoPath.localeCompare(b.repoPath));
+const routeTestPaths = new Set(routeTests.map((test) => test.repoPath));
+const generalServerTests = walk(serverTestsDir)
+  .filter((file) => file.endsWith(".test.ts"))
+  .map((file) => ({
+    repoPath: toRepoPath(file),
+    serverPath: toServerPath(file),
+  }))
+  .filter((file) => !routeTestPaths.has(file.repoPath))
+  .sort((a, b) => a.repoPath.localeCompare(b.repoPath));
 
 const options = parseCliOptions(process.argv.slice(2));
 if (options.dryRun) {
@@ -352,7 +390,7 @@ if (options.dryRun) {
 }
 
 if (options.mode === generalModeName || options.mode === allModeName) {
-  runGeneralSuites(routeTests);
+  runGeneralSuites(routeTests, generalServerTests);
 }
 
 if (options.mode === serializedModeName || options.mode === allModeName) {

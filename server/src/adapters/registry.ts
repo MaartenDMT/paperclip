@@ -76,6 +76,37 @@ import {
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
 import {
+  detectModel as kimiDetectModel,
+  execute as kimiExecute,
+  testEnvironment as kimiTestEnvironment,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+  modelProfiles as kimiModelProfiles,
+} from "@paperclipai/adapter-kimi-local";
+import {
+  detectModel as minimaxDetectModel,
+  execute as minimaxExecute,
+  getQuotaWindows as minimaxGetQuotaWindows,
+  testEnvironment as minimaxTestEnvironment,
+} from "@paperclipai/adapter-minimax-local/server";
+import {
+  agentConfigurationDoc as minimaxAgentConfigurationDoc,
+  models as minimaxModels,
+  modelProfiles as minimaxModelProfiles,
+} from "@paperclipai/adapter-minimax-local";
+import {
+  detectModel as copilotLocalDetectModel,
+  execute as copilotLocalExecute,
+  testEnvironment as copilotLocalTestEnvironment,
+} from "@paperclipai/adapter-copilot-local/server";
+import {
+  agentConfigurationDoc as copilotLocalAgentConfigurationDoc,
+  models as copilotLocalModels,
+  modelProfiles as copilotLocalModelProfiles,
+} from "@paperclipai/adapter-copilot-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -345,6 +376,61 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  models: kimiModels,
+  modelProfiles: kimiModelProfiles,
+  detectModel: kimiDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "kimi");
+    const canSelfInstall = !hasPathSeparator(command) && command === "kimi";
+    return {
+      command,
+      detectCommand: command,
+      installCommand: canSelfInstall
+        ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then if command -v uv >/dev/null 2>&1; then uv tool install --python 3.13 kimi-cli; else curl -LsSf https://code.kimi.com/install.sh | bash; fi; fi`
+        : null,
+    };
+  },
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
+const minimaxLocalAdapter: ServerAdapterModule = {
+  type: "minimax_local",
+  execute: minimaxExecute,
+  testEnvironment: minimaxTestEnvironment,
+  models: minimaxModels,
+  modelProfiles: minimaxModelProfiles,
+  detectModel: minimaxDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "mmx", "mmx-cli"),
+  agentConfigurationDoc: minimaxAgentConfigurationDoc,
+  getQuotaWindows: minimaxGetQuotaWindows,
+};
+
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotLocalExecute,
+  testEnvironment: copilotLocalTestEnvironment,
+  models: copilotLocalModels,
+  modelProfiles: copilotLocalModelProfiles,
+  detectModel: copilotLocalDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: copilotLocalAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -482,6 +568,9 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    kimiLocalAdapter,
+    minimaxLocalAdapter,
+    copilotLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,

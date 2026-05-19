@@ -1123,12 +1123,26 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
-    try {
-      requireOpenCodeModelId(adapterConfig.model);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (adapterType === "opencode_local") {
+      try {
+        requireOpenCodeModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+      return;
+    }
+
+    if (adapterType === "copilot_local") {
+      const model = asNonEmptyString(adapterConfig.model);
+      if (!model) return;
+      const supportedModels = await listAdapterModels(adapterType);
+      const supportedModelIds = new Set(supportedModels.map((entry) => entry.id));
+      if (supportedModelIds.size > 0 && !supportedModelIds.has(model)) {
+        throw unprocessable(
+          `Unsupported model "${model}" for copilot_local. Supported models: ${Array.from(supportedModelIds).join(", ")}`,
+        );
+      }
     }
   }
 
@@ -3411,7 +3425,8 @@ export function agentRoutes(
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
-    const run = await heartbeat.cancelRun(runId);
+    const suppressFollowUp = req.body?.suppressFollowUp === true;
+    const run = await heartbeat.cancelRun(runId, { suppressFollowUp });
 
     if (run) {
       await logActivity(db, {
@@ -3421,7 +3436,7 @@ export function agentRoutes(
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
-        details: { agentId: run.agentId },
+        details: { agentId: run.agentId, suppressFollowUp },
       });
     }
 

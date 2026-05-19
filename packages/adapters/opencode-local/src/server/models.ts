@@ -17,8 +17,6 @@ const DISK_CACHE_SCHEMA_VERSION = 1;
 
 const DEFAULT_GATEWAY_PREFIXES = [
   "openrouter/",
-  "zai-coding-plan/",
-  "zai/",
   "manifest/",
 ] as const;
 

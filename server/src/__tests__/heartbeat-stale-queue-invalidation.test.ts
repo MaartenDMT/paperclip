@@ -363,6 +363,157 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("promotes a deferred wake for the new assignee after cancelling a stale reassigned run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned todo task",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_children_completed",
+      invocationSource: "automation",
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: runId,
+        executionAgentNameKey: "originalcoder",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    mockAdapterExecute.mockImplementation(async (context) => {
+      if (context?.runId !== runId) {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date(), executionRunId: null })
+          .where(eq(issues.id, issueId));
+      }
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Promoted run completed the reassigned issue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const deferredWakeupRequestId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeupRequestId,
+      companyId,
+      agentId: replacementAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: {
+        issueId,
+        mutation: "update",
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          taskKey: issueId,
+          wakeReason: "issue_assigned",
+          wakeSource: "assignment",
+          wakeTriggerDetail: "system",
+          source: "issue.update",
+        },
+      },
+      status: "deferred_issue_execution",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const deferred = await db
+        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      return Boolean(deferred?.runId) && deferred?.status !== "deferred_issue_execution";
+    });
+
+    const [oldRun, deferred] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(oldRun).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(deferred?.reason).toBe("issue_execution_promoted");
+    expect(deferred?.status).not.toBe("deferred_issue_execution");
+    expect(deferred?.runId).toEqual(expect.any(String));
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, deferred!.runId!))
+        .then((rows) => rows[0] ?? null);
+      return Boolean(run && run.status !== "queued" && run.status !== "running");
+    });
+
+    const promotedRun = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, deferred!.runId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(promotedRun?.agentId).toBe(replacementAgentId);
+    expect(promotedRun?.status).toBe("succeeded");
+    expect(promotedRun?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "issue_assigned",
+      source: "issue.update",
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
@@ -735,6 +886,24 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       agentId,
       issueId,
       wakeReason: "issue_assigned",
+    });
+
+    mockAdapterExecute.mockImplementation(async (context) => {
+      if (context?.runId === runId) {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date(), executionRunId: null })
+          .where(eq(issues.id, issueId));
+      }
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Baseline run completed the issue.",
+        provider: "test",
+        model: "test-model",
+      };
     });
 
     await heartbeat.resumeQueuedRuns();

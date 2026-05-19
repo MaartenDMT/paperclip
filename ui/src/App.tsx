@@ -25,6 +25,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
+import { ProviderQuotas } from "./pages/ProviderQuotas";
 import { Activity } from "./pages/Activity";
 import { Operations } from "./pages/Operations";
 import { Inbox } from "./pages/Inbox";
@@ -124,6 +125,7 @@ function boardRoutes() {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
+      <Route path="provider-quotas" element={<ProviderQuotas />} />
       <Route path="activity" element={<Activity />} />
       <Route path="operations" element={<Operations />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
@@ -297,6 +299,7 @@ export function App() {
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="operations" element={<UnprefixedBoardRedirect />} />
+          <Route path="provider-quotas" element={<UnprefixedBoardRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />

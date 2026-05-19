@@ -58,11 +58,15 @@ describe("logger translateTime respects TZ environment variable", () => {
 
     expect(mockTransport).toHaveBeenCalledOnce();
     const { targets } = mockTransport.mock.calls[0][0] as {
-      targets: Array<{ options: Record<string, unknown> }>;
+      targets: Array<{ target: string; options: Record<string, unknown> }>;
     };
     for (const target of targets) {
       expect(target.options.translateTime).toBe("SYS:HH:MM:ss");
     }
+    const fileTarget = targets.find((target) => target.target.endsWith("rotating-log-transport.cjs"));
+    expect(String(fileTarget?.options.destination).replace(/\\/g, "/")).toBe("/tmp/paperclip-test-logs/server.log");
+    expect(fileTarget?.options.maxBytes).toBe(50 * 1024 * 1024);
+    expect(fileTarget?.options.maxFiles).toBe(30);
   });
 
   it("SYS: prefix produces timezone-sensitive output: UTC epoch formats differently under UTC vs UTC+8", () => {

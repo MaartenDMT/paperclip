@@ -5,6 +5,9 @@ import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
+import { kimiLocalUIAdapter } from "./kimi-local";
+import { minimaxLocalUIAdapter } from "./minimax-local";
+import { copilotLocalUIAdapter } from "./copilot-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
@@ -56,6 +59,9 @@ function registerBuiltInUIAdapters() {
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
+    kimiLocalUIAdapter,
+    minimaxLocalUIAdapter,
+    copilotLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,

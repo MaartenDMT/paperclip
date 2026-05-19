@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("buildPaperclipTaskMarkdown", () => {
   it("adds planning directives for assignment and comment task context", () => {
@@ -76,6 +80,24 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
+  });
+
+  it("uses the configured graphify binary in memory search instructions", () => {
+    vi.stubEnv("PAPERCLIP_GRAPHIFY_BIN", "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe");
+
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Use graph memory",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain(
+      "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe query",
+    );
+    expect(assignment).not.toContain("`graphify query");
   });
 });
 

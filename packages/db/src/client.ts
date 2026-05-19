@@ -10,7 +10,10 @@ import * as schema from "./schema/index.js";
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
-const POSTGRES_STARTUP_READY_TIMEOUT_MS = 15_000;
+const POSTGRES_STARTUP_READY_TIMEOUT_MS = Math.max(
+  15_000,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_STARTUP_READY_TIMEOUT_MS ?? "", 10) || 60_000,
+);
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
@@ -34,7 +37,14 @@ function isPostgresStartupNotReadyError(error: unknown): boolean {
     ? String((error as { code?: unknown }).code ?? "")
     : "";
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return code === "57P03" || message.toLowerCase().includes("not yet accepting connections");
+  return (
+    code === "57P03" ||
+    code === "ECONNREFUSED" ||
+    code === "CONNECT_TIMEOUT" ||
+    message.toLowerCase().includes("not yet accepting connections") ||
+    message.toLowerCase().includes("connect econnrefused") ||
+    message.toLowerCase().includes("connect_timeout")
+  );
 }
 
 function splitMigrationStatements(content: string): string[] {

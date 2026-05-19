@@ -2160,6 +2160,14 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
 }) {
+  const graphifyCommand = () => {
+    const configured = process.env.PAPERCLIP_GRAPHIFY_BIN?.trim();
+    if (!configured) return "graphify";
+    if (/^[A-Za-z]:[\\/][^\s"`]+$/.test(configured) || /^[^\s"`]+$/.test(configured)) {
+      return configured;
+    }
+    return `"${configured.replaceAll('"', '\\"')}"`;
+  };
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
     const longestBacktickRun = Math.max(
@@ -2221,11 +2229,11 @@ export function buildPaperclipTaskMarkdown(input: {
       "",
       "Searching prior memory (BEFORE you start work):",
       "- The vault is indexed by graphify into a knowledge graph (A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json) connecting every note across issues and agents.",
-      `- Search related past notes: \`graphify query "<your question>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
-      `- Find shortest path between two concepts: \`graphify path "<concept-a>" "<concept-b>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
-      `- Explain a single node in plain language: \`graphify explain "<node-id>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Search related past notes: \`${graphifyCommand()} query "<your question>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Find shortest path between two concepts: \`${graphifyCommand()} path "<concept-a>" "<concept-b>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
+      `- Explain a single node in plain language: \`${graphifyCommand()} explain "<node-id>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
       `- Always check the graph for prior work on this issue (\`${issueCode}\`), related issues, and agents who touched the same area before re-discovering known facts.`,
-      "- The graph auto-refreshes after every heartbeat; queries reflect the latest agent writes within ~5 minutes.",
+      "- The graph refreshes on the configured background interval after successful heartbeats arm the memory hook; default freshness is about 15 minutes.",
     );
   }
   lines.push("", "Use this task context as the current assignment.");
@@ -5966,15 +5974,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reapStalePreSpawnRunsForAgent(agent: typeof agents.$inferSelect) {
     if (!agent.adapterType.endsWith("_local")) return 0;
+    const now = new Date();
     const staleBefore = new Date(Date.now() - LOCAL_AGENT_PRE_SPAWN_STALE_MS);
     const rows = await db
       .update(heartbeatRuns)
       .set({
         status: "cancelled",
-        finishedAt: new Date(),
+        finishedAt: now,
         error: "Cancelled because the local adapter did not spawn a process before the startup timeout",
         errorCode: "local_agent_pre_spawn_stale",
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(
         and(
@@ -5986,8 +5995,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           lt(heartbeatRuns.startedAt, staleBefore),
         ),
       )
-      .returning({ id: heartbeatRuns.id });
+      .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId });
     if (rows.length > 0) {
+      const wakeupRequestIds = rows
+        .map((row) => row.wakeupRequestId)
+        .filter((id): id is string => Boolean(id));
+      if (wakeupRequestIds.length > 0) {
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Cancelled because the linked local adapter run did not spawn before the startup timeout",
+            updatedAt: now,
+          })
+          .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+      }
+      await finalizeAgentStatus(agent.id, "cancelled");
       logger.warn(
         {
           agentId: agent.id,
@@ -5999,6 +6023,114 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     }
     return rows.length;
+  }
+
+  function wakeupStatusForTerminalRunStatus(status: string) {
+    if (status === "succeeded") return "completed";
+    return status;
+  }
+
+  async function reconcilePersistedHeartbeatRuntimeState() {
+    const now = new Date();
+    const preSpawnStaleBefore = new Date(now.getTime() - LOCAL_AGENT_PRE_SPAWN_STALE_MS);
+
+    const terminalClaimedWakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        runStatus: heartbeatRuns.status,
+        runFinishedAt: heartbeatRuns.finishedAt,
+        runError: heartbeatRuns.error,
+      })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "claimed"),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      );
+
+    for (const wakeup of terminalClaimedWakeups) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: wakeupStatusForTerminalRunStatus(wakeup.runStatus),
+          finishedAt: wakeup.runFinishedAt ?? now,
+          error: wakeup.runError ?? null,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeup.id));
+    }
+
+    const stalePreSpawnAgentRows = await db
+      .select({ agent: agents })
+      .from(agents)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.processPid),
+          isNull(heartbeatRuns.processStartedAt),
+          isNull(heartbeatRuns.lastOutputAt),
+          lt(heartbeatRuns.startedAt, preSpawnStaleBefore),
+        ),
+      );
+    let stalePreSpawnRuns = 0;
+    const reapedStalePreSpawnAgentIds = new Set<string>();
+    for (const { agent } of stalePreSpawnAgentRows) {
+      if (reapedStalePreSpawnAgentIds.has(agent.id)) continue;
+      reapedStalePreSpawnAgentIds.add(agent.id);
+      stalePreSpawnRuns += await reapStalePreSpawnRunsForAgent(agent);
+    }
+
+    const orphanedQueuedWakeups = await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: "Cancelled stale queued wakeup without a linked heartbeat run",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          lt(agentWakeupRequests.requestedAt, new Date(now.getTime() - LOCAL_AGENT_PRE_SPAWN_STALE_MS)),
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
+
+    const staleRunningAgents = await db
+      .update(agents)
+      .set({ status: "idle", updatedAt: now })
+      .where(
+        and(
+          eq(agents.status, "running"),
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns}
+            where ${heartbeatRuns.agentId} = ${agents.id}
+              and ${heartbeatRuns.status} in ('queued', 'running')
+          )`,
+        ),
+      )
+      .returning({ id: agents.id });
+
+    const result = {
+      terminalClaimedWakeups: terminalClaimedWakeups.length,
+      stalePreSpawnRuns,
+      orphanedQueuedWakeups: orphanedQueuedWakeups.length,
+      staleRunningAgents: staleRunningAgents.length,
+    };
+    if (
+      result.terminalClaimedWakeups > 0 ||
+      result.stalePreSpawnRuns > 0 ||
+      result.orphanedQueuedWakeups > 0 ||
+      result.staleRunningAgents > 0
+    ) {
+      logger.warn(result, "reconciled persisted heartbeat runtime state");
+    }
+    return result;
   }
 
   function noActiveRoutineExecutionConflict(input: {
@@ -6453,6 +6585,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    if (staleness.errorCode === "issue_assignee_changed") {
+      await releaseIssueExecutionAndPromote(cancelled);
+    }
 
     return cancelled;
   }
@@ -8484,7 +8620,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options: { suppressFollowUp?: boolean } = {},
+  ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -8535,6 +8674,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
+      }
+
+      if (options.suppressFollowUp) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            error: "Cancelled with follow-up suppression",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.runId} is null`,
+            ),
+          );
+        return { kind: "released" as const };
       }
 
       while (true) {
@@ -9789,7 +9948,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelIssueFollowUpRuns(
+    sourceRun: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    reason: string,
+  ) {
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, sourceRun.companyId),
+          sql`${heartbeatRuns.id} <> ${sourceRun.id}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+        ),
+      );
+
+    for (const run of runs) {
+      const agent = await getAgent(run.agentId);
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(),
+        error: reason,
+        errorCode: "cancelled",
+        ...(agent ? {
+          resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "cancelled",
+            errorMessage: reason,
+          }),
+        } : {}),
+      });
+
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: new Date(),
+        error: reason,
+      });
+
+      if (cancelled) {
+        await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "run cancelled with follow-up suppression",
+        });
+        await releaseIssueExecutionAndPromote(cancelled, { suppressFollowUp: true });
+      }
+
+      runningProcesses.delete(run.id);
+      await finalizeAgentStatus(run.agentId, "cancelled");
+    }
+
+    return runs.length;
+  }
+
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: { suppressFollowUp?: boolean } = {},
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
@@ -9834,12 +10065,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "warn",
         message: "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressFollowUp: options.suppressFollowUp,
+      });
+      if (options.suppressFollowUp) {
+        const issueId = readNonEmptyString(parseObject(cancelled.contextSnapshot).issueId);
+        if (issueId) {
+          await cancelIssueFollowUpRuns(cancelled, issueId, "Cancelled with follow-up suppression");
+        }
+      }
     }
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!options.suppressFollowUp) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 
@@ -10245,6 +10486,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+    reconcilePersistedHeartbeatRuntimeState,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
@@ -10322,7 +10564,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, options?: { suppressFollowUp?: boolean }) => cancelRunInternal(runId, "Cancelled by control plane", options),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 

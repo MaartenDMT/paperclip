@@ -8,6 +8,7 @@ import { ActiveAgentsPanel } from "./ActiveAgentsPanel";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
+  cancel: vi.fn(),
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -47,6 +48,11 @@ vi.mock("./transcript/useLiveRunTranscripts", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+if (!globalThis.PointerEvent) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).PointerEvent = MouseEvent;
+}
 
 async function flushReact() {
   await act(async () => {
@@ -123,6 +129,7 @@ describe("ActiveAgentsPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
     mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
   });
 
@@ -227,6 +234,63 @@ describe("ActiveAgentsPanel", () => {
       expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
       expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers stop and cancel-entirely actions from each live run menu", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([createRun(1)]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const moreButton = document.body.querySelector('button[aria-label="More actions for run run-1"]');
+    expect(moreButton).not.toBeNull();
+
+    await act(async () => {
+      moreButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const stopRun = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((item) => item.textContent?.includes("Stop run"));
+    expect(stopRun).toBeTruthy();
+    await act(async () => {
+      stopRun?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-1");
+
+    await act(async () => {
+      moreButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const cancelRun = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((item) => item.textContent?.includes("Cancel run"));
+    expect(cancelRun).toBeTruthy();
+    await act(async () => {
+      cancelRun?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-1", { suppressFollowUp: true });
 
     await act(async () => {
       root.unmount();

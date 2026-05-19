@@ -5,6 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_EMBEDDED_POSTGRES_START_TIMEOUT_MS = 60_000;
+const MAX_EMBEDDED_POSTGRES_START_RECOVERY_ATTEMPTS = 2;
 
 type EmbeddedPostgresInstance = {
   start(): Promise<void>;
@@ -14,7 +16,15 @@ function isPidRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "EPERM"
+    ) {
+      return true;
+    }
     return false;
   }
 }
@@ -190,6 +200,67 @@ async function waitForEmbeddedPostgresProcessCleanup(
   }
 }
 
+function resolveStartTimeoutMs(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_EMBEDDED_POSTGRES_START_TIMEOUT_MS;
+}
+
+async function startWithTimeout(
+  instance: EmbeddedPostgresInstance,
+  timeoutMs: number,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      instance.start(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`embedded PostgreSQL start timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function cleanupEmbeddedPostgresCandidates(input: {
+  postmasterPidFile: string;
+  stalePid: number | null;
+  terminateProcessTree: (pid: number) => Promise<boolean>;
+  findCandidateProcessPids: (dataDir: string) => Promise<number[]>;
+}): Promise<{ candidatePids: number[]; terminatedAny: boolean }> {
+  const dataDir = path.dirname(input.postmasterPidFile);
+  const candidatePids = new Set<number>();
+  if (input.stalePid) {
+    candidatePids.add(input.stalePid);
+  }
+  for (const pid of await input.findCandidateProcessPids(dataDir)) {
+    candidatePids.add(pid);
+  }
+
+  let terminatedAny = false;
+  for (const pid of candidatePids) {
+    const terminated = await input.terminateProcessTree(pid);
+    terminatedAny ||= terminated;
+  }
+  if (existsSync(input.postmasterPidFile)) {
+    rmSync(input.postmasterPidFile, { force: true });
+  }
+  if (terminatedAny) {
+    await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
+  }
+
+  return {
+    candidatePids: Array.from(candidatePids),
+    terminatedAny,
+  };
+}
+
 export async function startEmbeddedPostgresWithRecovery(input: {
   instance: EmbeddedPostgresInstance;
   postmasterPidFile: string;
@@ -197,52 +268,51 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   onRecovered?: (message: string) => void;
   terminateProcessTree?: (pid: number) => Promise<boolean>;
   findCandidateProcessPids?: (dataDir: string) => Promise<number[]>;
+  startTimeoutMs?: number;
 }): Promise<void> {
-  const stalePid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false });
+  const initialStalePid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false });
   const runningPid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile);
   if (!runningPid && existsSync(input.postmasterPidFile)) {
     rmSync(input.postmasterPidFile, { force: true });
   }
+  const startTimeoutMs =
+    input.startTimeoutMs ?? resolveStartTimeoutMs(process.env.PAPERCLIP_EMBEDDED_POSTGRES_START_TIMEOUT_MS);
+  const findCandidateProcessPids =
+    input.findCandidateProcessPids ?? findEmbeddedPostgresProcessPidsForDataDir;
+  const terminateProcessTree = input.terminateProcessTree ?? terminatePidTree;
+  for (let recoveryAttempt = 0; ; recoveryAttempt += 1) {
+    try {
+      await startWithTimeout(input.instance, startTimeoutMs);
+      return;
+    } catch (error) {
+      const recentLogs = input.getRecentLogs();
+      const timedOut = error instanceof Error && error.message.includes("start timed out");
+      if (!timedOut && !shouldRecoverEmbeddedPostgresStartError(error, recentLogs)) {
+        throw error;
+      }
+      if (recoveryAttempt >= MAX_EMBEDDED_POSTGRES_START_RECOVERY_ATTEMPTS) {
+        throw error;
+      }
 
-  try {
-    await input.instance.start();
-    return;
-  } catch (error) {
-    const recentLogs = input.getRecentLogs();
-    if (!shouldRecoverEmbeddedPostgresStartError(error, recentLogs)) {
-      throw error;
-    }
+      const cleanup = await cleanupEmbeddedPostgresCandidates({
+        postmasterPidFile: input.postmasterPidFile,
+        stalePid:
+          recoveryAttempt === 0
+            ? initialStalePid ?? readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false })
+            : readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false }),
+        findCandidateProcessPids,
+        terminateProcessTree,
+      });
+      if (cleanup.candidatePids.length === 0) {
+        throw error;
+      }
+      if (!cleanup.terminatedAny) {
+        throw error;
+      }
 
-    const dataDir = path.dirname(input.postmasterPidFile);
-    const candidatePids = new Set<number>();
-    if (stalePid) {
-      candidatePids.add(stalePid);
+      input.onRecovered?.(
+        `Recovered embedded PostgreSQL startup by terminating stale postgres process tree(s): ${cleanup.candidatePids.join(", ")}.`,
+      );
     }
-    const findCandidateProcessPids =
-      input.findCandidateProcessPids ?? findEmbeddedPostgresProcessPidsForDataDir;
-    for (const pid of await findCandidateProcessPids(dataDir)) {
-      candidatePids.add(pid);
-    }
-    if (candidatePids.size === 0) {
-      throw error;
-    }
-
-    let terminatedAny = false;
-    for (const pid of candidatePids) {
-      const terminated = await (input.terminateProcessTree ?? terminatePidTree)(pid);
-      terminatedAny ||= terminated;
-    }
-    if (existsSync(input.postmasterPidFile)) {
-      rmSync(input.postmasterPidFile, { force: true });
-    }
-    if (!terminatedAny) {
-      throw error;
-    }
-
-    await waitForEmbeddedPostgresProcessCleanup(dataDir, findCandidateProcessPids);
-    input.onRecovered?.(
-      `Recovered embedded PostgreSQL startup by terminating stale postgres process tree(s): ${Array.from(candidatePids).join(", ")}.`,
-    );
-    await input.instance.start();
   }
 }

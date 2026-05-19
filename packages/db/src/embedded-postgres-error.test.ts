@@ -1,12 +1,17 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
+  readEmbeddedPostgresPostmasterPid,
   shouldRecoverEmbeddedPostgresStartError,
   startEmbeddedPostgresWithRecovery,
 } from "./embedded-postgres-runtime.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("formatEmbeddedPostgresError", () => {
   it("adds a shared-memory hint when initdb logs expose the real cause", () => {
@@ -65,6 +70,44 @@ describe("shouldRecoverEmbeddedPostgresStartError", () => {
         "FATAL:  data directory has wrong ownership",
       ]),
     ).toBe(false);
+  });
+});
+
+describe("readEmbeddedPostgresPostmasterPid", () => {
+  it("treats EPERM from pid probing as a live process", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      vi.spyOn(process, "kill").mockImplementation((() => {
+        const error = new Error("operation not permitted") as Error & { code: string };
+        error.code = "EPERM";
+        throw error;
+      }) as typeof process.kill);
+
+      expect(readEmbeddedPostgresPostmasterPid(postmasterPidFile)).toBe(4242);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still treats missing pids as not running", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      vi.spyOn(process, "kill").mockImplementation((() => {
+        const error = new Error("missing process") as Error & { code: string };
+        error.code = "ESRCH";
+        throw error;
+      }) as typeof process.kill);
+
+      expect(readEmbeddedPostgresPostmasterPid(postmasterPidFile)).toBeNull();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -172,6 +215,91 @@ describe("startEmbeddedPostgresWithRecovery", () => {
 
       expect(startCalls).toBe(2);
       expect(terminatedPids).toEqual([54321]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers when start hangs after writing a stale postmaster.pid", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+
+    try {
+      let startCalls = 0;
+      const terminatedPids: number[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls === 1) {
+            writeFileSync(postmasterPidFile, "4242\n");
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [],
+        findCandidateProcessPids: async () => [],
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          return true;
+        },
+        startTimeoutMs: 5,
+      });
+
+      expect(startCalls).toBe(2);
+      expect(terminatedPids).toEqual([4242]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries recovery more than once when cleanup reveals a second stale postgres pid", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      let startCalls = 0;
+      const terminatedPids: number[] = [];
+      let discoveryCalls = 0;
+      const recoveredMessages: string[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls === 1) {
+            throw new Error("startup failed");
+          }
+          if (startCalls === 2) {
+            writeFileSync(postmasterPidFile, "4343\n");
+            throw new Error("startup failed");
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [
+          "FATAL:  pre-existing shared memory block is still in use",
+          "HINT:  Check if there are any old server processes still running, and terminate them.",
+        ],
+        findCandidateProcessPids: async () => {
+          discoveryCalls += 1;
+          return discoveryCalls === 2 ? [4343] : [];
+        },
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          return true;
+        },
+        onRecovered: (message) => recoveredMessages.push(message),
+      });
+
+      expect(startCalls).toBe(3);
+      expect(terminatedPids).toEqual([4242, 4343]);
+      expect(recoveredMessages).toHaveLength(2);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

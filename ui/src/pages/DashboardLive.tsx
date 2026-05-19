@@ -7,6 +7,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 
 const DASHBOARD_LIVE_RUN_LIMIT = 50;
+const DASHBOARD_LIVE_TRANSCRIPT_LIMIT = 12;
 
 export function DashboardLive() {
   const { selectedCompanyId, companies } = useCompany();
@@ -58,6 +59,7 @@ export function DashboardLive() {
         emptyMessage="No active or recent agent runs."
         queryScope="dashboard-live"
         showMoreLink={false}
+        transcriptLimit={DASHBOARD_LIVE_TRANSCRIPT_LIMIT}
       />
     </div>
   );

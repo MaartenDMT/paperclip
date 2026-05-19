@@ -16,10 +16,12 @@ const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
 function cliInvocation(repoRoot: string, args: string[]): { command: string; args: string[] } {
+  const workspaceTsx = path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "cli.mjs");
+  const rootTsx = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
   return {
     command: process.execPath,
     args: [
-      path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "cli.mjs"),
+      existsSync(workspaceTsx) ? workspaceTsx : rootTsx,
       path.join(repoRoot, "cli", "src", "index.ts"),
       ...args,
     ],

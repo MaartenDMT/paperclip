@@ -50,6 +50,9 @@ const GRAPHIFY_TOKEN_BUDGET = Number(
 const GRAPHIFY_API_TIMEOUT_SECONDS = Number(
   process.env.PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS || 900,
 );
+const GRAPHIFY_LOCK_STALE_MS = Number(
+  process.env.PAPERCLIP_GRAPHIFY_LOCK_STALE_MS || 6 * 60 * 60 * 1000,
+);
 // Periodic refresh: extract the vault into a fresh graph every N ms regardless
 // of run activity. Predictable load, no per-run trigger means no shell spam.
 const GRAPHIFY_INTERVAL_MS = Number(
@@ -57,6 +60,11 @@ const GRAPHIFY_INTERVAL_MS = Number(
 );
 // Set PAPERCLIP_GRAPHIFY_DISABLE=1 to turn off auto-refresh entirely.
 const GRAPHIFY_DISABLED = process.env.PAPERCLIP_GRAPHIFY_DISABLE === "1";
+const GRAPHIFY_LOCK_DIR =
+  process.env.PAPERCLIP_GRAPHIFY_LOCK_DIR ||
+  path.join(VAULT, ".graphify-extract.lock");
+const GRAPHIFY_GRAPH_FILE = "graph.json";
+const GRAPHIFY_GRAPH_BACKUP_FILE = "graph.last-good.json";
 
 /**
  * Resolve the graphify executable to an absolute path ONCE at module load.
@@ -90,6 +98,21 @@ function resolveGraphifyBin(): string | null {
 const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
 let graphifyInFlight = false;
 let graphifyTimer: NodeJS.Timeout | null = null;
+
+interface GraphifyExtractLock {
+  dir: string;
+  owner: string;
+}
+
+interface GraphifyExtractLockMetadata {
+  owner?: string;
+  pid?: number | null;
+  parentPid?: number | null;
+  startedAt?: string;
+  target?: string;
+  vault?: string;
+  command?: string[];
+}
 
 const GRAPHIFY_EXCLUDED_DIRS = new Set([
   ".git",
@@ -217,8 +240,180 @@ function sanitizeVaultMemoryOutputs(): void {
   }
 }
 
+function graphifyGraphFile(vaultRoot: string): string {
+  return path.join(vaultRoot, "graphify-out", GRAPHIFY_GRAPH_FILE);
+}
+
+function graphifyGraphBackupFile(vaultRoot: string): string {
+  return path.join(vaultRoot, "graphify-out", GRAPHIFY_GRAPH_BACKUP_FILE);
+}
+
+function readGraphNodeCount(file: string): number | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { nodes?: unknown };
+    return Array.isArray(parsed.nodes) ? parsed.nodes.length : null;
+  } catch {
+    return null;
+  }
+}
+
+function backupGraphifyGraphIfUseful(vaultRoot: string): boolean {
+  const graphFile = graphifyGraphFile(vaultRoot);
+  const nodeCount = readGraphNodeCount(graphFile);
+  if (nodeCount == null || nodeCount <= 0) return false;
+  try {
+    fs.mkdirSync(path.dirname(graphifyGraphBackupFile(vaultRoot)), { recursive: true });
+    fs.copyFileSync(graphFile, graphifyGraphBackupFile(vaultRoot));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function validateGraphifyGraphOutput(vaultRoot: string): {
+  nodeCount: number | null;
+  sourceFiles: number;
+  restoredBackup: boolean;
+} {
+  const graphFile = graphifyGraphFile(vaultRoot);
+  const nodeCount = readGraphNodeCount(graphFile);
+  const sourceFiles = walkGraphifySourceMarkdownFiles(vaultRoot).length;
+  if (nodeCount != null && nodeCount > 0) {
+    backupGraphifyGraphIfUseful(vaultRoot);
+    return { nodeCount, sourceFiles, restoredBackup: false };
+  }
+
+  const backupFile = graphifyGraphBackupFile(vaultRoot);
+  const backupNodeCount = readGraphNodeCount(backupFile);
+  if (sourceFiles > 0 && backupNodeCount != null && backupNodeCount > 0) {
+    try {
+      fs.copyFileSync(backupFile, graphFile);
+      return { nodeCount, sourceFiles, restoredBackup: true };
+    } catch {
+      return { nodeCount, sourceFiles, restoredBackup: false };
+    }
+  }
+
+  return { nodeCount, sourceFiles, restoredBackup: false };
+}
+
 function safePositiveInt(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function safePositiveMs(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function isProcessAlive(pid: number | null | undefined): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return code === "EPERM";
+  }
+}
+
+function readGraphifyExtractLockMetadata(
+  lockDir: string,
+): GraphifyExtractLockMetadata | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(lockDir, "metadata.json"), "utf8"),
+    ) as GraphifyExtractLockMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function lockDirectoryAgeMs(lockDir: string): number | null {
+  try {
+    return Date.now() - fs.statSync(lockDir).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function graphifyExtractLockIsStale(lockDir: string, staleMs: number): boolean {
+  const metadata = readGraphifyExtractLockMetadata(lockDir);
+  const startedAt = metadata?.startedAt ? Date.parse(metadata.startedAt) : Number.NaN;
+  const ageMs = Number.isFinite(startedAt)
+    ? Date.now() - startedAt
+    : lockDirectoryAgeMs(lockDir);
+  const ageIsStale = ageMs == null || ageMs >= staleMs;
+
+  if (metadata?.pid) {
+    return !isProcessAlive(metadata.pid) || ageIsStale;
+  }
+  if (metadata?.parentPid && isProcessAlive(metadata.parentPid) && !ageIsStale) {
+    return false;
+  }
+  return ageIsStale;
+}
+
+export function tryAcquireGraphifyExtractLock(
+  lockDir = GRAPHIFY_LOCK_DIR,
+  staleMs = GRAPHIFY_LOCK_STALE_MS,
+): GraphifyExtractLock | null {
+  const owner = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const create = (): GraphifyExtractLock | null => {
+    try {
+      fs.mkdirSync(lockDir);
+      const lock = { dir: lockDir, owner };
+      writeGraphifyExtractLockMetadata(lock, {
+        owner,
+        pid: null,
+        parentPid: process.pid,
+        startedAt: new Date().toISOString(),
+        vault: VAULT,
+      });
+      return lock;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EEXIST") return null;
+      return null;
+    }
+  };
+
+  const first = create();
+  if (first) return first;
+  if (!graphifyExtractLockIsStale(lockDir, safePositiveMs(staleMs, 6 * 60 * 60 * 1000))) {
+    return null;
+  }
+
+  try {
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  } catch {
+    return null;
+  }
+  return create();
+}
+
+function writeGraphifyExtractLockMetadata(
+  lock: GraphifyExtractLock,
+  metadata: GraphifyExtractLockMetadata,
+): void {
+  try {
+    fs.writeFileSync(
+      path.join(lock.dir, "metadata.json"),
+      JSON.stringify({ ...metadata, owner: lock.owner }, null, 2),
+      "utf8",
+    );
+  } catch {
+    // Best-effort metadata; the lock directory itself is the authoritative lock.
+  }
+}
+
+export function releaseGraphifyExtractLock(lock: GraphifyExtractLock): void {
+  const metadata = readGraphifyExtractLockMetadata(lock.dir);
+  if (metadata?.owner && metadata.owner !== lock.owner) return;
+  try {
+    fs.rmSync(lock.dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup. Stale lock cleanup handles leftovers on later ticks.
+  }
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -327,52 +522,64 @@ function runGraphifyExtract(): void {
   if (!fs.existsSync(VAULT)) return; // vault missing — nothing to index
   const extractTarget = graphifyExtractTarget();
   if (!extractTarget) return;
+  const args = [
+    "extract",
+    extractTarget,
+    "--backend",
+    GRAPHIFY_BACKEND,
+    "--model",
+    GRAPHIFY_MODEL,
+    "--token-budget",
+    String(safePositiveInt(GRAPHIFY_TOKEN_BUDGET, 12_000)),
+    "--max-concurrency",
+    "1",
+    "--api-timeout",
+    String(safePositiveInt(GRAPHIFY_API_TIMEOUT_SECONDS, 900)),
+    "--out",
+    VAULT,
+    "--no-cluster",
+  ];
+  const lock = tryAcquireGraphifyExtractLock();
+  if (!lock) return;
   graphifyInFlight = true;
   try {
+    backupGraphifyGraphIfUseful(VAULT);
     // `extract` has built-in caching, so only new/changed files are re-processed.
     // `--no-cluster` keeps it fast; clustering can be re-run on demand later.
     // `--max-concurrency 1` is required for local LLMs (per graphify CLI docs).
     // No `shell: true` — we resolved the absolute path so cmd.exe is unnecessary.
-    const child = spawn(
-      GRAPHIFY_BIN_RESOLVED,
-      [
-        "extract",
-        extractTarget,
-        "--backend",
-        GRAPHIFY_BACKEND,
-        "--model",
-        GRAPHIFY_MODEL,
-        "--token-budget",
-        String(safePositiveInt(GRAPHIFY_TOKEN_BUDGET, 12_000)),
-        "--max-concurrency",
-        "1",
-        "--api-timeout",
-        String(safePositiveInt(GRAPHIFY_API_TIMEOUT_SECONDS, 900)),
-        "--out",
-        VAULT,
-        "--no-cluster",
-      ],
-      {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-        env: {
-          ...process.env,
-          ...(GRAPHIFY_BACKEND === "ollama" && !process.env.OLLAMA_API_KEY
-            ? { OLLAMA_API_KEY: "local" }
-            : {}),
-        },
+    const child = spawn(GRAPHIFY_BIN_RESOLVED, args, {
+      detached: false,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(GRAPHIFY_BACKEND === "ollama" && !process.env.OLLAMA_API_KEY
+          ? { OLLAMA_API_KEY: "local" }
+          : {}),
       },
-    );
-    child.on("error", () => {
-      graphifyInFlight = false;
     });
-    child.on("exit", () => {
-      sanitizeVaultMemoryOutputs();
+    writeGraphifyExtractLockMetadata(lock, {
+      pid: child.pid ?? null,
+      parentPid: process.pid,
+      startedAt: new Date().toISOString(),
+      target: extractTarget,
+      vault: VAULT,
+      command: [GRAPHIFY_BIN_RESOLVED, ...args],
+    });
+    const finish = () => {
+      releaseGraphifyExtractLock(lock);
       graphifyInFlight = false;
+    };
+    child.on("error", finish);
+    child.on("close", () => {
+      sanitizeVaultMemoryOutputs();
+      validateGraphifyGraphOutput(VAULT);
+      finish();
     });
     child.unref();
   } catch {
+    releaseGraphifyExtractLock(lock);
     graphifyInFlight = false;
   }
 }

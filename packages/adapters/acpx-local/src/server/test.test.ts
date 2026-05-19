@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { testEnvironment } from "./test.js";
 
@@ -18,11 +21,12 @@ afterEach(() => {
 describe("acpx_local environment diagnostics", () => {
   it("does not force healthy default Claude diagnostics to warn", async () => {
     setNodeVersion("v22.12.0");
+    const claudeConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-claude-"));
 
     const result = await testEnvironment({
       adapterType: "acpx_local",
       companyId: "test-company",
-      config: { agent: "claude" },
+      config: { agent: "claude", env: { CLAUDE_CONFIG_DIR: claudeConfigDir } },
     });
 
     expect(result.status).toBe("pass");

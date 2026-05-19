@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
@@ -20,6 +21,17 @@ const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
+const rotatingLogTransport = fileURLToPath(new URL("./rotating-log-transport.cjs", import.meta.url));
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+const maxLogBytes = readPositiveIntEnv("PAPERCLIP_LOG_MAX_BYTES", 50 * 1024 * 1024);
+const maxLogFiles = readPositiveIntEnv("PAPERCLIP_LOG_MAX_FILES", 30);
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -38,8 +50,15 @@ export const logger = pino({
       level: "info",
     },
     {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      target: rotatingLogTransport,
+      options: {
+        ...sharedOpts,
+        colorize: false,
+        destination: logFile,
+        mkdir: true,
+        maxBytes: maxLogBytes,
+        maxFiles: maxLogFiles,
+      },
       level: "debug",
     },
   ],

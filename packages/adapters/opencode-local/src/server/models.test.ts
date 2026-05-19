@@ -62,8 +62,6 @@ describe("openCode models", () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     for (const model of [
       "openrouter/anthropic/claude-sonnet-4",
-      "zai-coding-plan/glm-4.7",
-      "zai/glm-4.7",
       "manifest/openai/gpt-4o-mini",
     ]) {
       await expect(
@@ -75,6 +73,8 @@ describe("openCode models", () => {
   it("recognizes default and operator-configured gateway prefixes", async () => {
     expect(isExternalGatewayModelId("manifest/openai/gpt-4o-mini")).toBe(true);
     expect(isExternalGatewayModelId("openrouter/anthropic/claude-sonnet-4")).toBe(true);
+    expect(isExternalGatewayModelId("zai-coding-plan/glm-4.7")).toBe(false);
+    expect(isExternalGatewayModelId("zai/glm-4.7")).toBe(false);
     expect(isExternalGatewayModelId("openai/gpt-5")).toBe(false);
 
     process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES = " portkey/ , litellm/ ";

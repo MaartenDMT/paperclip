@@ -102,6 +102,13 @@ export function providerDisplayName(provider: string): string {
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",
     google: "Google",
+    minimax: "MiniMax",
+    moonshot: "Moonshot / Kimi",
+    "github-copilot": "GitHub Copilot",
+    opencode: "OpenCode",
+    acpx: "ACPx",
+    pi: "Pi",
+    hermes: "Hermes",
     cursor: "Cursor",
     jetbrains: "JetBrains AI",
   };

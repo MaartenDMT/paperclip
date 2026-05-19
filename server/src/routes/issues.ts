@@ -2849,6 +2849,7 @@ export function issueRoutes(
       ? issueReferencesSvc.diffIssueReferenceSummary(updateReferenceSummaryBefore, updateReferenceSummaryAfter)
       : null;
     let issueResponse: typeof issue & {
+      blockedByIssueIds?: string[];
       blockedBy?: unknown;
       blocks?: unknown;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;

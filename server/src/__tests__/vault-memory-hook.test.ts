@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeVaultIssueLinks,
   prepareGraphifyCompactCorpus,
+  releaseGraphifyExtractLock,
   sanitizeGraphReportWikilinks,
+  tryAcquireGraphifyExtractLock,
+  validateGraphifyGraphOutput,
 } from "../services/lifecycle-hooks/vault-memory-hook.ts";
 
 const cleanupDirs = new Set<string>();
@@ -117,5 +120,77 @@ describe("graphify compact corpus", () => {
       files: 1,
       written: 0,
     });
+  });
+});
+
+describe("graphify extraction lock", () => {
+  it("allows only one holder until the lock is released", async () => {
+    const vault = await tempVault();
+    const lockDir = path.join(vault, ".graphify-extract.lock");
+
+    const first = tryAcquireGraphifyExtractLock(lockDir);
+    expect(first).not.toBeNull();
+    expect(tryAcquireGraphifyExtractLock(lockDir)).toBeNull();
+
+    releaseGraphifyExtractLock(first!);
+    const second = tryAcquireGraphifyExtractLock(lockDir);
+    expect(second).not.toBeNull();
+    releaseGraphifyExtractLock(second!);
+  });
+
+  it("replaces a stale abandoned lock", async () => {
+    const vault = await tempVault();
+    const lockDir = path.join(vault, ".graphify-extract.lock");
+    await fs.mkdir(lockDir);
+    await fs.writeFile(
+      path.join(lockDir, "metadata.json"),
+      JSON.stringify({
+        owner: "abandoned",
+        pid: null,
+        parentPid: null,
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+
+    const lock = tryAcquireGraphifyExtractLock(lockDir, 1);
+    expect(lock).not.toBeNull();
+    const metadata = JSON.parse(
+      await fs.readFile(path.join(lockDir, "metadata.json"), "utf8"),
+    ) as { owner?: string };
+    expect(metadata.owner).toBe(lock!.owner);
+
+    releaseGraphifyExtractLock(lock!);
+  });
+});
+
+describe("graphify graph output validation", () => {
+  it("restores the last useful graph when extraction leaves an empty graph over a non-empty corpus", async () => {
+    const vault = await tempVault();
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+    const graphFile = path.join(vault, "graphify-out", "graph.json");
+    await fs.writeFile(
+      graphFile,
+      JSON.stringify({
+        nodes: [{ id: "rea-1", label: "REA-1" }],
+        edges: [],
+      }),
+      "utf8",
+    );
+
+    expect(validateGraphifyGraphOutput(vault)).toMatchObject({
+      nodeCount: 1,
+      sourceFiles: 1,
+      restoredBackup: false,
+    });
+
+    await fs.writeFile(graphFile, JSON.stringify({ nodes: [], edges: [] }), "utf8");
+
+    expect(validateGraphifyGraphOutput(vault)).toMatchObject({
+      nodeCount: 0,
+      sourceFiles: 1,
+      restoredBackup: true,
+    });
+    await expect(fs.readFile(graphFile, "utf8")).resolves.toContain("rea-1");
   });
 });

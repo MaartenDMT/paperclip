@@ -5,7 +5,7 @@ export const label = "OpenCode (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g opencode-ai";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.3-codex";
 export const DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC = 6 * 60 * 60;
 export const DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC = 30;
 
@@ -19,9 +19,9 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
+  { id: "openai/gpt-5.4-mini", label: "openai/gpt-5.4-mini" },
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "openai/gpt-5.3-codex-spark", label: "openai/gpt-5.3-codex-spark" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [

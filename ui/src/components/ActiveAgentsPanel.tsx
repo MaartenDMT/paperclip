@@ -1,16 +1,23 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
-import { ExternalLink } from "lucide-react";
+import { Ban, Copy, ExternalLink, MoreHorizontal, Square } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -21,6 +28,25 @@ const EMPTY_TRANSCRIPT: TranscriptEntry[] = [];
 
 function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
+}
+
+function transcriptTextForCopy(run: LiveRunForIssue, transcript: TranscriptEntry[]): string {
+  const text = transcript
+    .map((entry) => {
+      if ("text" in entry && typeof entry.text === "string") return entry.text.trim();
+      if (entry.kind === "tool_result") return entry.content.trim();
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (text) return text;
+  return [
+    `Run: ${run.id}`,
+    `Agent: ${run.agentName}`,
+    `Status: ${run.status}`,
+    run.issueId ? `Issue: ${run.issueId}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 interface ActiveAgentsPanelProps {
@@ -34,6 +60,7 @@ interface ActiveAgentsPanelProps {
   emptyMessage?: string;
   queryScope?: string;
   showMoreLink?: boolean;
+  transcriptLimit?: number;
 }
 
 export function ActiveAgentsPanel({
@@ -47,6 +74,7 @@ export function ActiveAgentsPanel({
   emptyMessage = "No recent agent runs.",
   queryScope = "dashboard",
   showMoreLink = true,
+  transcriptLimit,
 }: ActiveAgentsPanelProps) {
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
@@ -55,6 +83,10 @@ export function ActiveAgentsPanel({
 
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
+  const transcriptRuns = useMemo(
+    () => visibleRuns.slice(0, transcriptLimit ?? visibleRuns.length),
+    [transcriptLimit, visibleRuns],
+  );
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const visibleIssueIds = useMemo(
     () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
@@ -80,7 +112,7 @@ export function ActiveAgentsPanel({
   }, [issueQueries]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
-    runs: visibleRuns,
+    runs: transcriptRuns,
     companyId,
     maxChunksPerRun: DASHBOARD_MAX_CHUNKS_PER_RUN,
     logPollIntervalMs: DASHBOARD_LOG_POLL_INTERVAL_MS,
@@ -141,6 +173,11 @@ const AgentRunCard = memo(function AgentRunCard({
   isActive: boolean;
   className?: string;
 }) {
+  const queryClient = useQueryClient();
+  const invalidateRunLists = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  };
+
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -168,12 +205,11 @@ const AgentRunCard = memo(function AgentRunCard({
             </div>
           </div>
 
-          <Link
-            to={`/agents/${run.agentId}/runs/${run.id}`}
-            className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ExternalLink className="h-2.5 w-2.5" />
-          </Link>
+          <RunCardMenu
+            run={run}
+            transcript={transcript}
+            onMutated={invalidateRunLists}
+          />
         </div>
 
         {run.issueId && (
@@ -204,3 +240,73 @@ const AgentRunCard = memo(function AgentRunCard({
     </div>
   );
 });
+
+function RunCardMenu({
+  run,
+  transcript,
+  onMutated,
+}: {
+  run: LiveRunForIssue;
+  transcript: TranscriptEntry[];
+  onMutated: () => void;
+}) {
+  const active = isRunActive(run);
+  const stopRun = useMutation({
+    mutationFn: () => heartbeatsApi.cancel(run.id),
+    onSuccess: onMutated,
+  });
+  const cancelRun = useMutation({
+    mutationFn: () => heartbeatsApi.cancel(run.id, { suppressFollowUp: true }),
+    onSuccess: onMutated,
+  });
+
+  const copyMessage = () => {
+    void navigator.clipboard?.writeText(transcriptTextForCopy(run, transcript));
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`More actions for run ${run.id}`}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/70 bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <MoreHorizontal className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuItem onSelect={copyMessage}>
+          <Copy className="h-4 w-4" />
+          Copy message
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link to={`/agents/${run.agentId}/runs/${run.id}`}>
+            <ExternalLink className="h-4 w-4" />
+            View run
+          </Link>
+        </DropdownMenuItem>
+        {active && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => stopRun.mutate()}
+              disabled={stopRun.isPending || cancelRun.isPending}
+            >
+              <Square className="h-4 w-4" />
+              {stopRun.isPending ? "Stopping..." : "Stop run"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => cancelRun.mutate()}
+              disabled={stopRun.isPending || cancelRun.isPending}
+            >
+              <Ban className="h-4 w-4" />
+              {cancelRun.isPending ? "Cancelling..." : "Cancel run"}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
