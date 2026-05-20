@@ -4,7 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, executionWorkspaces, issueExecutionDecisions, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -46,6 +46,7 @@ import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
+  agentInstructionsService,
   agentService,
   companyService,
   companySearchService,
@@ -791,6 +792,7 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  const instructionsSvc = agentInstructionsService();
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -810,6 +812,55 @@ export function issueRoutes(
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  async function pruneStaleIssueScopedAgentInstructions(
+    companyId: string,
+    input: {
+      sourceIssueId: string;
+      sourceIdentifier: string | null;
+      actor: ReturnType<typeof getActorInfo>;
+    },
+  ) {
+    const [companyAgents, issueRows] = await Promise.all([
+      agentsSvc.list(companyId),
+      db
+        .select({ identifier: issuesTable.identifier, status: issuesTable.status })
+        .from(issuesTable)
+        .where(eq(issuesTable.companyId, companyId)),
+    ]);
+    const issueStatusByIdentifier = Object.fromEntries(
+      issueRows
+        .filter((row) => typeof row.identifier === "string")
+        .map((row) => [row.identifier!.toUpperCase(), row.status]),
+    );
+
+    for (const agent of companyAgents) {
+      const result = await instructionsSvc.pruneStaleIssueScopedFiles(agent, issueStatusByIdentifier);
+      if (result.pruned.length === 0) continue;
+
+      await logActivity(db, {
+        companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "agent.instructions_stale_issue_files_archived",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          source: "issue_terminal_status",
+          sourceIssueId: input.sourceIssueId,
+          sourceIdentifier: input.sourceIdentifier,
+          prunedFiles: result.pruned.map((file) => ({
+            path: file.path,
+            issueIdentifiers: file.issueIdentifiers,
+            issueStatuses: file.issueStatuses,
+            archivedPath: file.archivedPath,
+          })),
+        },
+      });
+    }
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -2870,6 +2921,22 @@ export function issueRoutes(
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
+    }
+
+    if (
+      !["done", "cancelled"].includes(existing.status)
+      && ["done", "cancelled"].includes(issue.status)
+    ) {
+      void pruneStaleIssueScopedAgentInstructions(issue.companyId, {
+        sourceIssueId: issue.id,
+        sourceIdentifier: issue.identifier,
+        actor,
+      }).catch((err) => {
+        logger.warn(
+          { err, issueId: issue.id, companyId: issue.companyId },
+          "failed to prune stale issue-scoped agent instruction files",
+        );
+      });
     }
 
     // Build activity details with previous values for changed fields

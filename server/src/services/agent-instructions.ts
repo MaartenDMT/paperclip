@@ -12,9 +12,12 @@ const PROMPT_KEY = "promptTemplate";
 /** @deprecated Use the managed instructions bundle system instead. */
 const BOOTSTRAP_PROMPT_KEY = "bootstrapPromptTemplate";
 const LEGACY_PROMPT_TEMPLATE_PATH = "promptTemplate.legacy.md";
+const INSTRUCTIONS_ARCHIVE_DIRECTORY_NAME = ".paperclip-instruction-archive";
+const ISSUE_SCOPED_INSTRUCTION_REFERENCE_PATTERN = /REA[-_]\d+/gi;
 const IGNORED_INSTRUCTIONS_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "Desktop.ini"]);
 const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   ".git",
+  INSTRUCTIONS_ARCHIVE_DIRECTORY_NAME,
   ".nox",
   ".pytest_cache",
   ".ruff_cache",
@@ -76,6 +79,21 @@ type BundleState = {
   legacyBootstrapPromptTemplateActive: boolean;
 };
 
+type IssueScopedInstructionFilePruneResult = {
+  path: string;
+  issueIdentifiers: string[];
+  issueStatuses: Record<string, string | null>;
+  archivedPath: string;
+};
+
+type IssueScopedInstructionFileRetainResult = {
+  path: string;
+  issueIdentifiers: string[];
+  issueStatuses: Record<string, string | null>;
+};
+
+type IssueStatusLookup = Record<string, string | null | undefined> | Map<string, string | null | undefined>;
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -109,6 +127,41 @@ function inferLanguage(relativePath: string): string {
 
 function isMarkdown(relativePath: string) {
   return relativePath.toLowerCase().endsWith(".md");
+}
+
+function normalizeIssueIdentifier(candidate: string) {
+  return candidate.toUpperCase().replaceAll("_", "-");
+}
+
+export function extractIssueScopedInstructionIdentifiers(relativePath: string): string[] {
+  const matches = relativePath.match(ISSUE_SCOPED_INSTRUCTION_REFERENCE_PATTERN) ?? [];
+  return [...new Set(matches.map(normalizeIssueIdentifier))];
+}
+
+function readIssueStatus(lookup: IssueStatusLookup, identifier: string) {
+  if (lookup instanceof Map) return lookup.get(identifier) ?? null;
+  return lookup[identifier] ?? null;
+}
+
+function classifyIssueScopedInstructionFile(relativePath: string, issueStatusByIdentifier: IssueStatusLookup) {
+  const issueIdentifiers = extractIssueScopedInstructionIdentifiers(relativePath);
+  if (issueIdentifiers.length === 0) return null;
+
+  const issueStatuses: Record<string, string | null> = {};
+  let hasActiveIssue = false;
+  for (const identifier of issueIdentifiers) {
+    const status = readIssueStatus(issueStatusByIdentifier, identifier);
+    issueStatuses[identifier] = status;
+    if (status && status !== "done" && status !== "cancelled") {
+      hasActiveIssue = true;
+    }
+  }
+
+  return {
+    issueIdentifiers,
+    issueStatuses,
+    stale: !hasActiveIssue,
+  };
 }
 
 function normalizeRelativeFilePath(candidatePath: string): string {
@@ -192,6 +245,22 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
 
   await walk(rootPath, "");
   return output.sort((left, right) => left.localeCompare(right));
+}
+
+async function moveFileToInstructionsArchive(rootPath: string, relativePath: string) {
+  const normalizedPath = normalizeRelativeFilePath(relativePath);
+  const sourcePath = resolvePathWithinRoot(rootPath, normalizedPath);
+  const archiveRun = new Date().toISOString().replace(/[.:]/g, "-");
+  const archiveRoot = path.join(rootPath, INSTRUCTIONS_ARCHIVE_DIRECTORY_NAME, archiveRun);
+  const archivePath = path.resolve(archiveRoot, normalizedPath);
+  const relativeToArchive = path.relative(archiveRoot, archivePath);
+  if (relativeToArchive === ".." || relativeToArchive.startsWith(`..${path.sep}`)) {
+    throw unprocessable("Instructions archive path must stay within the archive root");
+  }
+
+  await fs.mkdir(path.dirname(archivePath), { recursive: true });
+  await fs.rename(sourcePath, archivePath);
+  return archivePath;
 }
 
 async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
@@ -653,6 +722,51 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  async function pruneStaleIssueScopedFiles(
+    agent: AgentLike,
+    issueStatusByIdentifier: IssueStatusLookup,
+  ): Promise<{
+    pruned: IssueScopedInstructionFilePruneResult[];
+    retained: IssueScopedInstructionFileRetainResult[];
+    adapterConfig: Record<string, unknown>;
+  }> {
+    const derived = deriveBundleState(agent);
+    const state = await recoverManagedBundleState(agent, derived);
+    const adapterConfig = state.rootPath ? buildPersistedBundleConfig(derived, state) : derived.config;
+    if (!state.rootPath) {
+      return { pruned: [], retained: [], adapterConfig };
+    }
+
+    const relativePaths = await listFilesRecursive(state.rootPath);
+    const pruned: IssueScopedInstructionFilePruneResult[] = [];
+    const retained: IssueScopedInstructionFileRetainResult[] = [];
+
+    for (const relativePath of relativePaths) {
+      if (relativePath === state.entryFile) continue;
+      const classification = classifyIssueScopedInstructionFile(relativePath, issueStatusByIdentifier);
+      if (!classification) continue;
+
+      if (!classification.stale) {
+        retained.push({
+          path: relativePath,
+          issueIdentifiers: classification.issueIdentifiers,
+          issueStatuses: classification.issueStatuses,
+        });
+        continue;
+      }
+
+      const archivedPath = await moveFileToInstructionsArchive(state.rootPath, relativePath);
+      pruned.push({
+        path: relativePath,
+        issueIdentifiers: classification.issueIdentifiers,
+        issueStatuses: classification.issueStatuses,
+        archivedPath,
+      });
+    }
+
+    return { pruned, retained, adapterConfig };
+  }
+
   async function exportFiles(agent: AgentLike): Promise<{
     files: Record<string, string>;
     entryFile: string;
@@ -728,6 +842,7 @@ export function agentInstructionsService() {
     updateBundle,
     writeFile,
     deleteFile,
+    pruneStaleIssueScopedFiles,
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,

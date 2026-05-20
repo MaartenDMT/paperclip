@@ -667,6 +667,9 @@ describe.sequential("agent skill routes", () => {
         }),
         expect.objectContaining({
           "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
+          "HEARTBEAT.md": expect.stringContaining("Agent Heartbeat Checklist"),
+          "SOUL.md": expect.stringContaining("Agent Persona"),
+          "TOOLS.md": expect.stringContaining("# Tools"),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );

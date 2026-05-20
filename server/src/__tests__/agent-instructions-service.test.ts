@@ -162,6 +162,48 @@ describe("agent instructions service", () => {
     ]);
   });
 
+  it("archives stale issue-scoped files while preserving active issue files", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-stale-issues-");
+    cleanupDirs.add(externalRoot);
+
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA-10-checklist.md"), "done checklist\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA_11_STATUS.md"), "cancelled status\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA-12-active.md"), "active checklist\n", "utf8");
+    await fs.mkdir(path.join(externalRoot, "outputs"), { recursive: true });
+    await fs.writeFile(path.join(externalRoot, "outputs", "summary_REA-13.md"), "missing issue\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "RUNBOOK.md"), "durable notes\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    const result = await svc.pruneStaleIssueScopedFiles(agent, {
+      "REA-10": "done",
+      "REA-11": "cancelled",
+      "REA-12": "blocked",
+    });
+
+    expect(result.pruned.map((file) => file.path).sort()).toEqual([
+      "REA-10-checklist.md",
+      "REA_11_STATUS.md",
+      "outputs/summary_REA-13.md",
+    ]);
+    expect(result.retained.map((file) => file.path)).toEqual(["REA-12-active.md"]);
+    await expect(fs.stat(path.join(externalRoot, "REA-10-checklist.md"))).rejects.toThrow();
+    await expect(fs.stat(path.join(externalRoot, "REA_11_STATUS.md"))).rejects.toThrow();
+    await expect(fs.stat(path.join(externalRoot, "outputs", "summary_REA-13.md"))).rejects.toThrow();
+    await expect(fs.readFile(path.join(externalRoot, "REA-12-active.md"), "utf8")).resolves.toBe("active checklist\n");
+    await expect(fs.readFile(path.join(externalRoot, "RUNBOOK.md"), "utf8")).resolves.toBe("durable notes\n");
+
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "REA-12-active.md", "RUNBOOK.md"]);
+  });
+
   it("recovers a managed bundle from disk when bundle config metadata is missing", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-recover-");
     cleanupDirs.add(paperclipHome);
