@@ -193,6 +193,15 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("built-in minimax_local adapter executes through OpenCode runtime support", () => {
+    const adapter = findActiveServerAdapter("minimax_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.sessionCodec).toBeDefined();
+    expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
+    expect(adapter!.getRuntimeCommandSpec?.({}).command).toBe("opencode");
+    expect(adapter!.getRuntimeCommandSpec?.({ command: "mmx" }).command).toBe("opencode");
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({

@@ -2,19 +2,19 @@ import { describe, expect, it } from "vitest";
 import { buildMiniMaxLocalConfig } from "./index.js";
 
 describe("buildMiniMaxLocalConfig", () => {
-  it("uses minimax_local defaults and parses comma args", () => {
+  it("uses OpenCode-backed minimax_local defaults and parses comma args", () => {
     const config = buildMiniMaxLocalConfig({
       adapterType: "minimax_local",
       cwd: "",
       promptTemplate: "",
-      model: "MiniMax-M2",
+      model: "minimax/MiniMax-M2.7",
       thinkingEffort: "",
       chrome: false,
       dangerouslySkipPermissions: false,
       search: false,
       fastMode: false,
       dangerouslyBypassSandbox: false,
-      command: "mmx",
+      command: "",
       args: "",
       extraArgs: "--json,--verbose",
       envVars: "",
@@ -27,9 +27,10 @@ describe("buildMiniMaxLocalConfig", () => {
     });
 
     expect(config).toMatchObject({
-      model: "MiniMax-M2",
-      command: "mmx",
+      model: "minimax/MiniMax-M2.7",
+      command: "opencode",
       extraArgs: ["--json", "--verbose"],
+      dangerouslySkipPermissions: true,
     });
   });
 });

@@ -207,8 +207,15 @@ async function buildPrompt(input: {
   };
   const wakePrompt = renderPaperclipWakePrompt(input.context.paperclipWake);
   const sessionHandoffNote = asString(input.context.paperclipSessionHandoffMarkdown, "").trim();
+  const taskContextNote = asString(input.context.paperclipTaskMarkdown, "").trim();
   const renderedHeartbeatPrompt = renderTemplate(promptTemplate, templateData);
-  const prompt = joinPromptSections([instructions, wakePrompt, sessionHandoffNote, renderedHeartbeatPrompt]);
+  const prompt = joinPromptSections([
+    instructions,
+    wakePrompt,
+    sessionHandoffNote,
+    taskContextNote,
+    renderedHeartbeatPrompt,
+  ]);
   return {
     prompt,
     promptMetrics: {
@@ -216,6 +223,7 @@ async function buildPrompt(input: {
       promptChars: prompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
       heartbeatPromptChars: renderedHeartbeatPrompt.length,
     },
     commandNotes,

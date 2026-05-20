@@ -96,6 +96,47 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+function readExternalAdapterStartupWaitMs(): number {
+  const raw = process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS?.trim();
+  if (!raw) return 15_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 15_000;
+  return Math.max(0, Math.floor(parsed));
+}
+
+async function waitForExternalAdaptersWithTimeout(
+  waitForExternalAdapters: () => Promise<void>,
+  timeoutMs: number,
+): Promise<"ready" | "timed_out"> {
+  if (timeoutMs <= 0) {
+    await waitForExternalAdapters();
+    return "ready";
+  }
+
+  return await new Promise<"ready" | "timed_out">((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve("timed_out");
+    }, timeoutMs);
+
+    void waitForExternalAdapters()
+      .then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve("ready");
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 export async function startServer(): Promise<StartedServer> {
   startupDebug("startServer: begin");
   let config = loadConfig();
@@ -629,6 +670,9 @@ export async function startServer(): Promise<StartedServer> {
   startupDebug("startServer: app created");
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
   startupDebug("startServer: http server created");
+  server.on("error", (err) => {
+    logger.error({ err }, "Paperclip HTTP server emitted an unexpected runtime error");
+  });
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -821,8 +865,26 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   startupDebug("startServer: waiting for external adapters");
-  await waitForExternalAdapters();
-  startupDebug("startServer: external adapters ready");
+  const externalAdapterStartupWaitMs = readExternalAdapterStartupWaitMs();
+  const externalAdapterStartupState = await waitForExternalAdaptersWithTimeout(
+    waitForExternalAdapters,
+    externalAdapterStartupWaitMs,
+  );
+  if (externalAdapterStartupState === "timed_out") {
+    logger.warn(
+      { timeoutMs: externalAdapterStartupWaitMs },
+      "External adapter loading exceeded startup wait budget; continuing startup while adapters finish in background",
+    );
+    void waitForExternalAdapters()
+      .then(() => {
+        logger.info("External adapters finished loading after startup timeout");
+      })
+      .catch((err) => {
+        logger.error({ err }, "External adapter loading failed after startup timeout");
+      });
+  } else {
+    startupDebug("startServer: external adapters ready");
+  }
 
   startupDebug("startServer: calling server.listen");
   await new Promise<void>((resolveListen, rejectListen) => {

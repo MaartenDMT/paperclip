@@ -405,6 +405,8 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   type: "minimax_local",
   execute: minimaxExecute,
   testEnvironment: minimaxTestEnvironment,
+  sessionCodec: openCodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("minimax_local") ?? undefined,
   models: minimaxModels,
   modelProfiles: minimaxModelProfiles,
   detectModel: minimaxDetectModel,
@@ -412,7 +414,14 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "mmx", "mmx-cli"),
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "opencode");
+    return buildNpmRuntimeCommandSpec(
+      { ...config, command: command === "mmx" ? "opencode" : command },
+      "opencode",
+      "opencode-ai",
+    );
+  },
   agentConfigurationDoc: minimaxAgentConfigurationDoc,
   getQuotaWindows: minimaxGetQuotaWindows,
 };

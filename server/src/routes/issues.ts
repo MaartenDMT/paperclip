@@ -561,12 +561,9 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments can clear a blocked issue back to todo.
-  // Closed issues require explicit reopen/resume intent.
-  if (input.actorType !== "user") return false;
-  if (input.issueStatus !== "blocked") return false;
-  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  return true;
+  // Safety: do not implicitly revive blocked work just because a comment exists.
+  // Operators must set explicit follow-up intent (`resume: true`) to move `blocked` -> `todo`.
+  return false;
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
@@ -2642,6 +2639,16 @@ export function issueRoutes(
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0
         : false;
+    if (
+      isClosed &&
+      updateFields.status === "todo" &&
+      explicitMoveToTodoRequested !== true
+    ) {
+      res.status(409).json({
+        error: "Closed issues require explicit reopen or resume intent before moving back to todo",
+      });
+      return;
+    }
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
@@ -2965,11 +2972,11 @@ export function issueRoutes(
       }
     }
     const reopened =
-      commentBody &&
       effectiveMoveToTodoRequested &&
       (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
       previous.status !== undefined &&
       issue.status === "todo";
+    const reopenSource = reopened ? (commentBody ? "comment" : "update") : null;
     const reopenFromStatus = reopened ? existing.status : null;
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2984,6 +2991,7 @@ export function issueRoutes(
         ...updateFields,
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
+        ...(reopenSource && !commentBody ? { source: reopenSource } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -3375,7 +3383,9 @@ export function issueRoutes(
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
 
+        const skipMentionWakeups = isClosed && !reopened;
         for (const mentionedId of mentionedIds) {
+          if (skipMentionWakeups) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
@@ -3400,6 +3410,28 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          if (dependent.status === "blocked") {
+            const reopenedDependent = await svc.update(dependent.id, { status: "todo" });
+            if (reopenedDependent) {
+              await logActivity(db, {
+                companyId: issue.companyId,
+                actorType: "system",
+                actorId: "system",
+                agentId: null,
+                runId: null,
+                action: "issue.updated",
+                entityType: "issue",
+                entityId: dependent.id,
+                details: {
+                  status: "todo",
+                  reopened: true,
+                  reopenedFrom: "blocked",
+                  source: "issue.blockers_resolved",
+                  resolvedBlockerIssueId: issue.id,
+                },
+              });
+            }
+          }
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
@@ -4413,7 +4445,9 @@ export function issueRoutes(
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
+      const skipMentionWakeups = isClosed && !reopened;
       for (const mentionedId of mentionedIds) {
+        if (skipMentionWakeups) continue;
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {

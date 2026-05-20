@@ -40,7 +40,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
-      enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? true,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       issueGraphLivenessAutoRecoveryLookbackHours:
@@ -50,7 +50,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   }
   return {
     enableEnvironments: false,
-    enableIsolatedWorkspaces: false,
+    enableIsolatedWorkspaces: true,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:

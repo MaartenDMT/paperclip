@@ -33,12 +33,60 @@ export type MigrationConnection = {
   stop: () => Promise<void>;
 };
 
+const EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS = 5_000;
+const EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS = 250;
+
 function isPostgresStartupNotReadyError(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code ?? "")
     : "";
   const message = error instanceof Error ? error.message : String(error ?? "");
   return code === "57P03" || message.toLowerCase().includes("not yet accepting connections");
+}
+
+export function isEmbeddedPostgresStartupTransientError(error: unknown): boolean {
+  if (isPostgresStartupNotReadyError(error)) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const haystack = message.toLowerCase();
+  return (
+    haystack.includes("connect_timeout") ||
+    haystack.includes("connection_ended") ||
+    haystack.includes("connection ended") ||
+    haystack.includes("connection terminated") ||
+    haystack.includes("econnrefused")
+  );
+}
+
+export async function waitForEmbeddedPostgresReady(input: {
+  adminConnectionString: string;
+  databaseName?: string;
+  timeoutMs?: number;
+  pollMs?: number;
+  ensureDatabase?: typeof ensurePostgresDatabase;
+}): Promise<boolean> {
+  const timeoutMs = input.timeoutMs ?? EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS;
+  const pollMs = input.pollMs ?? EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS;
+  const ensureDatabase = input.ensureDatabase ?? ensurePostgresDatabase;
+  const databaseName = input.databaseName ?? "paperclip";
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    try {
+      await ensureDatabase(input.adminConnectionString, databaseName);
+      return true;
+    } catch (error) {
+      if (!isEmbeddedPostgresStartupTransientError(error)) {
+        throw error;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
 }
 
 async function isPortInUse(port: number): Promise<boolean> {
@@ -117,20 +165,25 @@ async function ensureEmbeddedPostgresConnection(
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
     try {
-      await ensurePostgresDatabase(adminConnectionString, "paperclip");
-      return {
-        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-        source: `embedded-postgres@${port}`,
-        stop: async () => {},
-      };
+      const ready = await waitForEmbeddedPostgresReady({
+        adminConnectionString,
+        databaseName: "paperclip",
+      });
+      if (ready) {
+        return {
+          connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+          source: `embedded-postgres@${port}`,
+          stop: async () => {},
+        };
+      }
     } catch (error) {
-      if (!isPostgresStartupNotReadyError(error)) {
+      if (!isEmbeddedPostgresStartupTransientError(error)) {
         throw error;
       }
-      process.emitWarning(
-        `Embedded PostgreSQL process ${runningPid} on port ${port} is stuck during startup; attempting recovery restart.`,
-      );
     }
+    process.emitWarning(
+      `Embedded PostgreSQL process ${runningPid} on port ${port} is still unavailable after waiting ${EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS}ms; attempting recovery restart.`,
+    );
   }
 
   const instance = new EmbeddedPostgres({

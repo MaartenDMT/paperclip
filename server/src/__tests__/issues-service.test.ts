@@ -1897,6 +1897,93 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("infers projectId from projectWorkspaceId when creating an issue", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Workspace-only linkage",
+      status: "todo",
+      priority: "medium",
+      projectWorkspaceId,
+    });
+
+    expect(issue.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(issue.projectId).toBe(projectId);
+  });
+
+  it("backfills projectId from existing projectWorkspaceId during update", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: "TST-1",
+      title: "Malformed workspace linkage",
+      status: "blocked",
+      priority: "medium",
+      projectId: null,
+      projectWorkspaceId,
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "todo",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(updated!.projectId).toBe(projectId);
+  });
+
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

@@ -602,7 +602,7 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
 }
 
 function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled";
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 

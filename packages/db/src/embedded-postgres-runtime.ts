@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_EMBEDDED_POSTGRES_START_TIMEOUT_MS = 60_000;
-const MAX_EMBEDDED_POSTGRES_START_RECOVERY_ATTEMPTS = 2;
+const MAX_EMBEDDED_POSTGRES_START_RECOVERY_ATTEMPTS = 4;
+const EMBEDDED_POSTGRES_RECOVERY_SETTLE_MS = 500;
 
 type EmbeddedPostgresInstance = {
   start(): Promise<void>;
@@ -253,6 +254,7 @@ async function cleanupEmbeddedPostgresCandidates(input: {
   }
   if (terminatedAny) {
     await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
+    await delay(EMBEDDED_POSTGRES_RECOVERY_SETTLE_MS);
   }
 
   return {

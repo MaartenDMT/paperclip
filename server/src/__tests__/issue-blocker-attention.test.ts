@@ -404,11 +404,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
-      state: "needs_attention",
-      reason: "attention_required",
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
       coveredBlockerCount: 0,
       stalledBlockerCount: 1,
-      attentionBlockerCount: 1,
+      attentionBlockerCount: 0,
       sampleStalledBlockerIdentifier: "PBQ-2",
     });
   });
@@ -453,8 +454,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       reason: "active_dependency",
-      unresolvedBlockerCount: 2,
-      coveredBlockerCount: 2,
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
       attentionBlockerCount: 0,
     });
   });
@@ -481,6 +482,30 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PBY-2",
+    });
+  });
+
+  it("does not count blocked children as blockers unless a blocks relation exists", async () => {
+    const { companyId } = await createCompany("PBN");
+    const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Parent", status: "blocked" });
+    await insertIssue({
+      companyId,
+      identifier: "PBN-2",
+      title: "Blocked child",
+      status: "blocked",
+      parentId,
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockedByIssueIds ?? []).toEqual([]);
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
     });
   });
 });

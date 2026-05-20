@@ -74,6 +74,21 @@ export type SuccessfulRunHandoffDecision =
       reason: string;
     };
 
+export type SuccessfulRunHandoffCompletionDecision =
+  | {
+      kind: "accept";
+      reason: string;
+    }
+  | {
+      kind: "reject";
+      errorCode: "missing_issue_disposition";
+      reason: string;
+    }
+  | {
+      kind: "not_applicable";
+      reason: string;
+    };
+
 function metadataText(value: unknown, fallback = "unknown") {
   const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
   const resolved = text.length > 0 ? text : fallback;
@@ -272,6 +287,13 @@ function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
     readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
 }
 
+export function isSuccessfulRunHandoffRun(run: Pick<HeartbeatRunRow, "contextSnapshot">) {
+  const context = readRecord(run.contextSnapshot);
+  return context.handoffRequired === true ||
+    readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON ||
+    readString(context.handoffReason) === SUCCESSFUL_RUN_MISSING_STATE_REASON;
+}
+
 function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   const wakeReason = readString(context.wakeReason);
@@ -403,5 +425,49 @@ export function decideSuccessfulRunHandoff(input: {
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,
     }),
+  };
+}
+
+export function decideSuccessfulRunHandoffCompletion(input: {
+  run: Pick<HeartbeatRunRow, "contextSnapshot">;
+  issue: IssueRow | null;
+  hasActiveExecutionPath: boolean;
+  hasQueuedWake: boolean;
+  hasPendingInteractionOrApproval: boolean;
+  hasExplicitBlockerPath: boolean;
+}): SuccessfulRunHandoffCompletionDecision {
+  if (!isSuccessfulRunHandoffRun(input.run)) {
+    return { kind: "not_applicable", reason: "run is not a successful-run handoff" };
+  }
+
+  const { issue } = input;
+  if (!issue) {
+    return {
+      kind: "reject",
+      errorCode: "missing_issue_disposition",
+      reason: "corrective handoff finished but the source issue was not found",
+    };
+  }
+
+  if (issue.status === "done" || issue.status === "cancelled") {
+    return { kind: "accept", reason: `issue status ${issue.status} is terminal` };
+  }
+  if (issue.assigneeUserId) {
+    return { kind: "accept", reason: "issue is human-owned" };
+  }
+  if (issue.status === "in_review" && (issue.executionState || input.hasPendingInteractionOrApproval)) {
+    return { kind: "accept", reason: "issue is in review with an explicit review path" };
+  }
+  if (issue.status === "blocked" && input.hasExplicitBlockerPath) {
+    return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+  }
+  if (input.hasActiveExecutionPath || input.hasQueuedWake) {
+    return { kind: "accept", reason: "issue has an explicit continuation path" };
+  }
+
+  return {
+    kind: "reject",
+    errorCode: "missing_issue_disposition",
+    reason: "corrective handoff finished without a valid issue disposition",
   };
 }

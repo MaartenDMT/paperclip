@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
-  executeSimpleCliAdapter,
-  testSimpleCliEnvironment,
-  type SimpleCliAdapterDefinition,
-} from "@paperclipai/adapter-utils/simple-cli-server";
+  execute as executeOpenCode,
+  testEnvironment as testOpenCodeEnvironment,
+} from "@paperclipai/adapter-opencode-local/server";
 import { detectSimpleCliModel } from "@paperclipai/adapter-utils/simple-cli-model-detection";
 import type {
   AdapterExecutionContext,
@@ -12,35 +11,61 @@ import type {
   ProviderQuotaResult,
   QuotaWindow,
 } from "@paperclipai/adapter-utils";
-import { DEFAULT_MINIMAX_LOCAL_MODEL, label, SANDBOX_INSTALL_COMMAND, type } from "../index.js";
+import { DEFAULT_MINIMAX_LOCAL_MODEL, type } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
-export const minimaxDefinition: SimpleCliAdapterDefinition = {
-  type,
-  label,
-  defaultCommand: "mmx",
-  defaultModel: DEFAULT_MINIMAX_LOCAL_MODEL,
-  sandboxInstallCommand: SANDBOX_INSTALL_COMMAND,
-  defaultTimeoutSec: 0,
-  defaultGraceSec: 20,
-  authEnvKeys: ["MINIMAX_API_KEY"],
-  biller: "minimax",
-  buildArgs({ prompt, model, extraArgs }) {
-    const args = ["text", "chat"];
-    if (model && model !== DEFAULT_MINIMAX_LOCAL_MODEL) args.push("--model", model);
-    args.push(...extraArgs);
-    args.push("--message", prompt);
-    return args;
-  },
-};
+const LEGACY_MINIMAX_MODEL_RE = /^MiniMax-/i;
 
-export function execute(ctx: AdapterExecutionContext) {
-  return executeSimpleCliAdapter(ctx, minimaxDefinition);
+function normalizeMiniMaxModelId(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return DEFAULT_MINIMAX_LOCAL_MODEL;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "auto") return DEFAULT_MINIMAX_LOCAL_MODEL;
+  if (trimmed.includes("/")) return trimmed;
+  if (LEGACY_MINIMAX_MODEL_RE.test(trimmed)) return `minimax/${trimmed}`;
+  return trimmed;
 }
 
-export function testEnvironment(ctx: AdapterEnvironmentTestContext) {
-  return testSimpleCliEnvironment(ctx, minimaxDefinition);
+export function normalizeMiniMaxOpenCodeConfig(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const command =
+    typeof config.command === "string" && config.command.trim().length > 0 && config.command.trim() !== "mmx"
+      ? config.command.trim()
+      : "opencode";
+  return {
+    ...config,
+    command,
+    model: normalizeMiniMaxModelId(config.model),
+    dangerouslySkipPermissions: config.dangerouslySkipPermissions === false
+      ? true
+      : config.dangerouslySkipPermissions ?? true,
+  };
+}
+
+export function execute(ctx: AdapterExecutionContext) {
+  return executeOpenCode({
+    ...ctx,
+    config: normalizeMiniMaxOpenCodeConfig(ctx.config),
+  });
+}
+
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext) {
+  const result = await testOpenCodeEnvironment({
+    ...ctx,
+    adapterType: "opencode_local",
+    config: normalizeMiniMaxOpenCodeConfig(
+      ctx.config && typeof ctx.config === "object" && !Array.isArray(ctx.config)
+        ? ctx.config as Record<string, unknown>
+        : {},
+    ),
+  });
+  return {
+    ...result,
+    adapterType: type,
+  };
 }
 
 export function detectModel() {

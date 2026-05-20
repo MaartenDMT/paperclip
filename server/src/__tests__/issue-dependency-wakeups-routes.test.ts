@@ -80,6 +80,15 @@ async function createApp() {
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(async () => []),
+        })),
+      })),
+    })),
+  };
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -92,7 +101,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -155,12 +164,16 @@ describe("issue dependency wakeups in issue routes", () => {
       {
         id: "issue-2",
         assigneeAgentId: "agent-2",
+        status: "blocked",
         blockerIssueIds: ["issue-1", "issue-3"],
       },
     ]);
 
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
     expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.update).toHaveBeenCalledWith("issue-2", { status: "todo" });
+    });
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "agent-2",

@@ -305,6 +305,45 @@ describe("startEmbeddedPostgresWithRecovery", () => {
     }
   });
 
+  it("allows additional recovery passes when Windows cleanup needs more than two retries", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      let startCalls = 0;
+      const terminatedPids: number[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls <= 4) {
+            writeFileSync(postmasterPidFile, `${4241 + startCalls}\n`);
+            throw new Error("startup failed");
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [
+          "FATAL:  pre-existing shared memory block is still in use",
+          "HINT:  Check if there are any old server processes still running, and terminate them.",
+        ],
+        findCandidateProcessPids: async () => [],
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          return true;
+        },
+      });
+
+      expect(startCalls).toBe(5);
+      expect(terminatedPids).toEqual([4242, 4243, 4244, 4245]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not retry unrelated startup failures", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
     const postmasterPidFile = path.join(tempDir, "postmaster.pid");

@@ -192,6 +192,23 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
   }
 
+  async function seedRecoveryOwnedRunningRun(input: {
+    now: Date;
+    ageMs: number;
+    originKind: "stranded_issue_recovery" | "stale_active_run_evaluation";
+  }) {
+    const seeded = await seedRunningRun({ now: input.now, ageMs: input.ageMs });
+    await db
+      .update(issues)
+      .set({
+        originKind: input.originKind,
+        originId: randomUUID(),
+        originFingerprint: `${input.originKind}:${seeded.companyId}:${seeded.issueId}`,
+      })
+      .where(eq(issues.id, seeded.issueId));
+    return seeded;
+  }
+
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({
@@ -304,6 +321,29 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(staleResult).toMatchObject({ created: 0, snoozed: 1 });
     expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
+  });
+
+  it("does not create stale-run evaluations for recovery-owned source issues", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    for (const originKind of ["stranded_issue_recovery", "stale_active_run_evaluation"] as const) {
+      const { companyId } = await seedRecoveryOwnedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+        originKind,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+      expect(result).toMatchObject({ created: 0, existing: 0, escalated: 0 });
+
+      const evaluations = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+      expect(evaluations).toHaveLength(0);
+
+      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    }
   });
 
   it("records watchdog decisions through recovery owner authorization", async () => {

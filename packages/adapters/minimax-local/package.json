@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*"
   },
   "devDependencies": {

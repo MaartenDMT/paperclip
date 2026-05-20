@@ -38,6 +38,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "codex_local" &&
       input.adapterType !== "claude_local" &&
       input.adapterType !== "gemini_local" &&
+      input.adapterType !== "minimax_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
       input.adapterType !== "cursor"
@@ -109,6 +110,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "acpx_local" &&
       input.adapterType !== "claude_local" &&
       input.adapterType !== "gemini_local" &&
+      input.adapterType !== "minimax_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
       input.adapterType !== "cursor"

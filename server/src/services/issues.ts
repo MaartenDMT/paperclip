@@ -936,7 +936,7 @@ async function terminalExplicitBlockersByRoot(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
 
@@ -1140,43 +1140,15 @@ async function listIssueBlockerAttentionMap(
             ne(issues.status, "done"),
           ),
         );
-      const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
-        .select({
-          issueId: issues.parentId,
-          blockerIssueId: issues.id,
-          id: issues.id,
-          companyId: issues.companyId,
-          parentId: issues.parentId,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          executionRunId: issues.executionRunId,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-        })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
-          ),
-        );
-      const [explicitBlockerRows, childRows] = await Promise.all([
-        explicitBlockerRowsPromise,
-        childRowsPromise,
-      ]);
+      const [explicitBlockerRows] = await Promise.all([explicitBlockerRowsPromise]);
 
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...explicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
-        ...childRows
-          .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
       ]);
 
-      for (const row of [...explicitBlockerRows, ...childRows]) {
+      for (const row of [...explicitBlockerRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
         nodesById.set(row.blockerIssueId, {
           id: row.blockerIssueId,
@@ -1251,7 +1223,7 @@ async function listIssueBlockerAttentionMap(
   }
 
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => node.status !== "done" && node.status !== "cancelled")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
@@ -1362,7 +1334,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const status = nodesById.get(edge.blockerIssueId)?.status;
+      return status !== "done" && status !== "cancelled";
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -1406,7 +1381,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const status = nodesById.get(edge.blockerIssueId)?.status;
+      return status !== "done" && status !== "cancelled";
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -1902,6 +1880,29 @@ export function issueService(db: Db) {
     if (projectId && workspace.projectId !== projectId) {
       throw unprocessable("Project workspace must belong to the selected project");
     }
+  }
+
+  async function resolveProjectIdFromWorkspace(
+    companyId: string,
+    projectId: string | null | undefined,
+    projectWorkspaceId: string,
+    dbOrTx: DbReader = db,
+  ): Promise<string> {
+    const workspace = await dbOrTx
+      .select({
+        id: projectWorkspaces.id,
+        companyId: projectWorkspaces.companyId,
+        projectId: projectWorkspaces.projectId,
+      })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.id, projectWorkspaceId))
+      .then((rows) => rows[0] ?? null);
+    if (!workspace) throw notFound("Project workspace not found");
+    if (workspace.companyId !== companyId) throw unprocessable("Project workspace must belong to same company");
+    if (projectId && workspace.projectId !== projectId) {
+      throw unprocessable("Project workspace must belong to the selected project");
+    }
+    return workspace.projectId;
   }
 
   async function assertValidExecutionWorkspace(
@@ -2740,6 +2741,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          status: candidate.status,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -2899,8 +2901,8 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
-        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
+        let resolvedProjectId = issueData.projectId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
@@ -2938,6 +2940,15 @@ export function issueService(db: Db) {
             }
           }
         }
+        if (projectWorkspaceId) {
+          resolvedProjectId = await resolveProjectIdFromWorkspace(
+            companyId,
+            resolvedProjectId,
+            projectWorkspaceId,
+            tx,
+          );
+        }
+        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, resolvedProjectId);
         // Cache the project policy lookup for this insert. Both the
         // default-settings block and the assignee-environment-promotion block
         // need the same row; without caching they'd issue two round-trips.
@@ -2946,11 +2957,11 @@ export function issueService(db: Db) {
         const loadProjectPolicyOnce = async () => {
           if (projectPolicyLoaded) return projectPolicyCached;
           projectPolicyLoaded = true;
-          if (!issueData.projectId) return null;
+          if (!resolvedProjectId) return null;
           const projectRow = await tx
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .where(and(eq(projects.id, resolvedProjectId), eq(projects.companyId, companyId)))
             .then((rows) => rows[0] ?? null);
           projectPolicyCached = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
           return projectPolicyCached;
@@ -2959,7 +2970,7 @@ export function issueService(db: Db) {
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
-          issueData.projectId
+          resolvedProjectId
         ) {
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
@@ -2982,7 +2993,7 @@ export function issueService(db: Db) {
           // default to issue settings would invert the documented priority
           // (project policy must win over agent default when explicitly set).
           let projectHasEnvironmentSelection = false;
-          if (!issueHasEnvironmentSelection && issueData.projectId) {
+          if (!issueHasEnvironmentSelection && resolvedProjectId) {
             const projectPolicy = await loadProjectPolicyOnce();
             projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
           }
@@ -3000,13 +3011,13 @@ export function issueService(db: Db) {
             }
           }
         }
-        if (!projectWorkspaceId && issueData.projectId) {
+        if (!projectWorkspaceId && resolvedProjectId) {
           const project = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
             })
             .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .where(and(eq(projects.id, resolvedProjectId), eq(projects.companyId, companyId)))
             .then((rows) => rows[0] ?? null);
           const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
           projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
@@ -3014,16 +3025,16 @@ export function issueService(db: Db) {
             projectWorkspaceId = await tx
               .select({ id: projectWorkspaces.id })
               .from(projectWorkspaces)
-              .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
+              .where(and(eq(projectWorkspaces.projectId, resolvedProjectId), eq(projectWorkspaces.companyId, companyId)))
               .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
               .then((rows) => rows[0]?.id ?? null);
           }
         }
         if (projectWorkspaceId) {
-          await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
+          await assertValidProjectWorkspace(companyId, resolvedProjectId, projectWorkspaceId, tx);
         }
         if (executionWorkspaceId) {
-          await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+          await assertValidExecutionWorkspace(companyId, resolvedProjectId, executionWorkspaceId, tx);
         }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
@@ -3046,10 +3057,11 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          projectId: resolvedProjectId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
-            projectId: issueData.projectId,
+            projectId: resolvedProjectId,
             goalId: issueData.goalId,
             projectGoalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
@@ -3196,7 +3208,7 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
-      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      let nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
@@ -3210,6 +3222,15 @@ export function issueService(db: Db) {
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
           : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
       if (nextProjectWorkspaceId) {
+        const resolvedProjectId = await resolveProjectIdFromWorkspace(
+          existing.companyId,
+          nextProjectId,
+          nextProjectWorkspaceId,
+        );
+        if (resolvedProjectId !== nextProjectId) {
+          patch.projectId = resolvedProjectId;
+          nextProjectId = resolvedProjectId;
+        }
         await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
       }
       if (nextExecutionWorkspaceId) {

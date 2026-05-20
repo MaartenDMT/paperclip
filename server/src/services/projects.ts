@@ -1,3 +1,5 @@
+import { existsSync, lstatSync } from "node:fs";
+import path from "node:path";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -34,6 +36,14 @@ type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const DEFAULT_CODEBASE_EXECUTION_WORKSPACE_POLICY: ProjectExecutionWorkspacePolicy = {
+  enabled: true,
+  defaultMode: "isolated_workspace",
+  allowIssueOverride: true,
+  workspaceStrategy: {
+    type: "git_worktree",
+  },
+};
 type CreateWorkspaceInput = {
   name?: string | null;
   sourceType?: string | null;
@@ -347,6 +357,37 @@ function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
   return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;
+}
+
+function isLocalGitCheckoutPath(cwd: unknown): boolean {
+  const normalized = normalizeWorkspaceCwd(cwd);
+  if (!normalized) return false;
+  const gitPath = path.join(normalized, ".git");
+  if (!existsSync(gitPath)) return false;
+  try {
+    const stat = lstatSync(gitPath);
+    return stat.isDirectory() || stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function defaultExecutionWorkspacePolicyForCodebase(input: {
+  cwd?: string | null;
+  repoUrl?: string | null;
+  sourceType?: string | null;
+}): ProjectExecutionWorkspacePolicy | null {
+  const repoUrl = readNonEmptyString(input.repoUrl);
+  const sourceType = readNonEmptyString(input.sourceType);
+  if (repoUrl || sourceType === "git_repo" || isLocalGitCheckoutPath(input.cwd)) {
+    return {
+      ...DEFAULT_CODEBASE_EXECUTION_WORKSPACE_POLICY,
+      workspaceStrategy: {
+        ...DEFAULT_CODEBASE_EXECUTION_WORKSPACE_POLICY.workspaceStrategy!,
+      },
+    };
+  }
+  return null;
 }
 
 function deriveNameFromCwd(cwd: string): string {
@@ -881,6 +922,22 @@ export function projectService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (row && shouldBePrimary && !parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy)) {
+          const defaultExecutionPolicy = defaultExecutionWorkspacePolicyForCodebase({
+            cwd: row.cwd,
+            repoUrl: row.repoUrl,
+            sourceType: row.sourceType,
+          });
+          if (defaultExecutionPolicy) {
+            await tx
+              .update(projects)
+              .set({
+                executionWorkspacePolicy: defaultExecutionPolicy as unknown as Record<string, unknown>,
+                updatedAt: new Date(),
+              })
+              .where(eq(projects.id, projectId));
+          }
+        }
         return row;
       });
 
@@ -903,6 +960,16 @@ export function projectService(db: Db) {
         )
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
+
+      const project = await db
+        .select({
+          id: projects.id,
+          executionWorkspacePolicy: projects.executionWorkspacePolicy,
+        })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .then((rows) => rows[0] ?? null);
+      if (!project) return null;
 
       const nextCwd =
         data.cwd !== undefined
@@ -981,6 +1048,23 @@ export function projectService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
+
+        if (row.isPrimary && !parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy)) {
+          const defaultExecutionPolicy = defaultExecutionWorkspacePolicyForCodebase({
+            cwd: row.cwd,
+            repoUrl: row.repoUrl,
+            sourceType: row.sourceType,
+          });
+          if (defaultExecutionPolicy) {
+            await tx
+              .update(projects)
+              .set({
+                executionWorkspacePolicy: defaultExecutionPolicy as unknown as Record<string, unknown>,
+                updatedAt: new Date(),
+              })
+              .where(eq(projects.id, projectId));
+          }
+        }
 
         if (row.isPrimary) return row;
 

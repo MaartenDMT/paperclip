@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { summarizeSimpleCliOutput } from "./simple-cli-server.js";
+import {
+  executeSimpleCliAdapter,
+  summarizeSimpleCliOutput,
+  type SimpleCliAdapterDefinition,
+} from "./simple-cli-server.js";
 
 describe("summarizeSimpleCliOutput", () => {
   it("prefers assistant text from JSON content arrays over thinking text", () => {
@@ -67,5 +71,48 @@ describe("summarizeSimpleCliOutput", () => {
 
   it("falls back to the first plain-text line for non-JSON output", () => {
     expect(summarizeSimpleCliOutput("\nReady for work\nsecond line")).toBe("Ready for work");
+  });
+});
+
+describe("executeSimpleCliAdapter prompt", () => {
+  it("includes scoped Paperclip task markdown in the CLI prompt", async () => {
+    let prompt = "";
+    let promptMetrics: Record<string, number> = {};
+    const definition: SimpleCliAdapterDefinition = {
+      type: "test_simple_cli",
+      label: "Test CLI",
+      defaultCommand: "node",
+      buildArgs: () => ["-e", "process.exit(0)"],
+    };
+
+    await executeSimpleCliAdapter({
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "test_simple_cli",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {},
+      context: {
+        paperclipTaskMarkdown: "## Assigned Paperclip Issue\n\nREA-1: implement the actual task.",
+      },
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        prompt = meta.prompt ?? "";
+        promptMetrics = meta.promptMetrics ?? {};
+      },
+    }, definition);
+
+    expect(prompt).toContain("## Assigned Paperclip Issue");
+    expect(prompt).toContain("REA-1: implement the actual task.");
+    expect(promptMetrics.taskContextChars).toBeGreaterThan(0);
   });
 });

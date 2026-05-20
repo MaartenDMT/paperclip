@@ -8,6 +8,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  decideSuccessfulRunHandoffCompletion,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
 } from "./successful-run-handoff.js";
@@ -293,5 +294,48 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+
+  it("rejects corrective handoff completion when the issue still has no authoritative disposition", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+    });
+
+    expect(decision).toEqual({
+      kind: "reject",
+      errorCode: "missing_issue_disposition",
+      reason: "corrective handoff finished without a valid issue disposition",
+    });
+  });
+
+  it("accepts corrective handoff completion when the issue records a valid disposition", () => {
+    expect(decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+        },
+      } as any,
+      issue: { ...issue, status: "done" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+    })).toEqual({ kind: "accept", reason: "issue status done is terminal" });
   });
 });

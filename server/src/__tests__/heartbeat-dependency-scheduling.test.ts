@@ -395,6 +395,87 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("does not auto-checkout blocked issues for comment wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: blockedIssueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "Can you respond while this task is blocked?",
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+    });
+    expect(wake).not.toBeNull();
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    const issue = await db
+      .select({ status: issues.status, checkoutRunId: issues.checkoutRunId, startedAt: issues.startedAt })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({ status: "blocked", checkoutRunId: null, startedAt: null });
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

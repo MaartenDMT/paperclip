@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -69,6 +69,7 @@ export function NewAgent() {
   const [reportsTo, setReportsTo] = useState<string | null>(null);
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
+  const [hasInitializedSkillSelection, setHasInitializedSkillSelection] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
@@ -95,6 +96,10 @@ export function NewAgent() {
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
+  const availableSkills = useMemo(
+    () => (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/")),
+    [companySkills],
+  );
 
   useEffect(() => {
     setBreadcrumbs([
@@ -119,6 +124,12 @@ export function NewAgent() {
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
+
+  useEffect(() => {
+    if (hasInitializedSkillSelection || !companySkills) return;
+    setSelectedSkillKeys(availableSkills.map((skill) => skill.key));
+    setHasInitializedSkillSelection(true);
+  }, [availableSkills, companySkills, hasInitializedSkillSelection]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -159,8 +170,6 @@ export function NewAgent() {
       }),
     );
   }
-
-  const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
 
   function toggleSkill(key: string, checked: boolean) {
     setSelectedSkillKeys((prev) => {
@@ -271,7 +280,7 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Company library skills are selected by default. Built-in Paperclip runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (

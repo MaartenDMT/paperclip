@@ -269,6 +269,93 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_triggered");
   });
 
+  it("does not enqueue timer heartbeats when the global run pool is already full", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date("2026-04-11T12:31:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const runningAgentRows = Array.from({ length: 5 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      name: `Running Bot ${index + 1}`,
+      role: "engineer",
+      status: "running" as const,
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", ""],
+        cwd: process.cwd(),
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+    }));
+
+    const dueAgentId = randomUUID();
+    await db.insert(agents).values([
+      ...runningAgentRows,
+      {
+        id: dueAgentId,
+        companyId,
+        name: "Due Timer Bot",
+        role: "engineer",
+        status: "active",
+        adapterType: "process",
+        adapterConfig: {
+          command: process.execPath,
+          args: ["-e", ""],
+          cwd: process.cwd(),
+        },
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: 30,
+            wakeOnDemand: true,
+          },
+        },
+        permissions: {},
+        lastHeartbeatAt: new Date(now.getTime() - 60_000),
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values(
+      runningAgentRows.map((agent) => ({
+        id: randomUUID(),
+        companyId,
+        agentId: agent.id,
+        invocationSource: "manual" as const,
+        triggerDetail: "system",
+        status: "running" as const,
+        startedAt: now,
+      })),
+    );
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result.checked).toBe(1);
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const dueAgentRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, dueAgentId));
+
+    expect(dueAgentRuns).toEqual([]);
+  });
+
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
     const { issueId, agentId, nextCheckAt } = await seedFixture();
     const heartbeat = heartbeatService(db);

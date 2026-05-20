@@ -84,6 +84,7 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const WATCHDOG_SUPPRESSED_SOURCE_ORIGIN_KINDS = new Set<string>(Object.values(RECOVERY_ORIGIN_KINDS));
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -1056,6 +1057,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
   }
 
+  function shouldSuppressSilentRunWatchdogForSourceIssue(
+    issue: Pick<typeof issues.$inferSelect, "originKind" | "status"> | null,
+  ) {
+    if (!issue) return false;
+    if (["done", "cancelled"].includes(issue.status)) return true;
+    return Boolean(issue.originKind && WATCHDOG_SUPPRESSED_SOURCE_ORIGIN_KINDS.has(issue.originKind));
+  }
+
   async function ensureSourceIssueBlockedByStaleEvaluation(input: {
     sourceIssue: typeof issues.$inferSelect | null;
     evaluationIssue: { id: string; identifier: string | null };
@@ -1102,6 +1111,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    if (shouldSuppressSilentRunWatchdogForSourceIssue(sourceIssue)) {
+      return { kind: "skipped" as const };
+    }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,

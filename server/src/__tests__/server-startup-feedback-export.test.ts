@@ -27,6 +27,7 @@ const {
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const fakeServer = {
+    on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
@@ -193,7 +194,14 @@ vi.mock("../auth/better-auth.js", () => ({
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
 }));
 
+const waitForExternalAdaptersMock = vi.fn(async () => undefined);
+
+vi.mock("../adapters/registry.js", () => ({
+  waitForExternalAdapters: waitForExternalAdaptersMock,
+}));
+
 import { startServer } from "../index.ts";
+import { logger } from "../middleware/logger.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -201,7 +209,9 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    waitForExternalAdaptersMock.mockResolvedValue(undefined);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS;
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -215,6 +225,51 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+});
+
+describe("startServer external adapter gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig());
+    createBetterAuthInstanceMock.mockReturnValue({});
+    deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    waitForExternalAdaptersMock.mockResolvedValue(undefined);
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS;
+  });
+
+  it("continues startup when external adapters exceed the startup wait budget", async () => {
+    waitForExternalAdaptersMock.mockImplementation(() => new Promise<void>(() => {}));
+    process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS = "1";
+
+    const started = await startServer();
+
+    expect(started.server).toBe(fakeServer);
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 1 }),
+      expect.stringContaining("External adapter loading exceeded startup wait budget"),
+    );
+  });
+
+  it("attaches a permanent runtime error handler to the HTTP server", async () => {
+    await startServer();
+
+    const runtimeErrorHandler = fakeServer.on.mock.calls.find((call) => call[0] === "error")?.[1] as
+      | ((err: Error) => void)
+      | undefined;
+
+    expect(typeof runtimeErrorHandler).toBe("function");
+
+    runtimeErrorHandler?.(new Error("socket meltdown"));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({ message: "socket meltdown" }),
+      }),
+      "Paperclip HTTP server emitted an unexpected runtime error",
+    );
   });
 });
 

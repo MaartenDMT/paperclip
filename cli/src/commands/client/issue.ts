@@ -55,6 +55,10 @@ interface IssueUpdateOptions extends BaseClientOptions {
   requestDepth?: string;
   billingCode?: string;
   comment?: string;
+  blockedByIssueIds?: string;
+  clearBlockers?: boolean;
+  reopen?: boolean;
+  resume?: boolean;
   hiddenAt?: string;
 }
 
@@ -208,10 +212,17 @@ export function registerIssueCommands(program: Command): void {
       .option("--request-depth <n>", "Request depth integer")
       .option("--billing-code <code>", "Billing code")
       .option("--comment <text>", "Optional comment to add with update")
+      .option("--blocked-by-issue-ids <csv>", "Replace blocker issue IDs")
+      .option("--clear-blockers", "Clear blocker issue IDs")
+      .option("--reopen", "Reopen if issue is done/cancelled")
+      .option("--resume", "Request explicit follow-up and wake the assignee when resumable")
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
+          if (opts.blockedByIssueIds && opts.clearBlockers) {
+            throw new Error("Use either --blocked-by-issue-ids or --clear-blockers, not both");
+          }
           const payload = updateIssueSchema.parse({
             title: opts.title,
             description: opts.description,
@@ -224,6 +235,9 @@ export function registerIssueCommands(program: Command): void {
             requestDepth: parseOptionalInt(opts.requestDepth),
             billingCode: opts.billingCode,
             comment: opts.comment,
+            blockedByIssueIds: opts.clearBlockers ? [] : parseOptionalCsv(opts.blockedByIssueIds),
+            reopen: opts.reopen,
+            resume: opts.resume,
             hiddenAt: parseHiddenAt(opts.hiddenAt),
           });
 
@@ -384,6 +398,11 @@ export function registerIssueCommands(program: Command): void {
 function parseCsv(value: string | undefined): string[] {
   if (!value) return [];
   return value.split(",").map((v) => v.trim()).filter(Boolean);
+}
+
+function parseOptionalCsv(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return parseCsv(value);
 }
 
 function parseOptionalInt(value: string | undefined): number | undefined {

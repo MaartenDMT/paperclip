@@ -25,7 +25,7 @@ export function buildNewAgentHirePayload(input: {
     role: effectiveRole,
     ...(title?.trim() ? { title: title.trim() } : {}),
     ...(reportsTo ? { reportsTo } : {}),
-    ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
+    desiredSkills: selectedSkillKeys,
     adapterType: configValues.adapterType,
     defaultEnvironmentId: configValues.defaultEnvironmentId ?? null,
     adapterConfig,

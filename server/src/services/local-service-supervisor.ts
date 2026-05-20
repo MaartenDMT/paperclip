@@ -144,8 +144,20 @@ export async function writeLocalServiceRegistryRecord(record: LocalServiceRegist
   );
 }
 
+function isIgnorableRegistryRemoveError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "ENOENT" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
+}
+
 export async function removeLocalServiceRegistryRecord(serviceKey: string) {
-  await fs.rm(getRuntimeServiceRegistryPath(serviceKey), { force: true });
+  try {
+    await fs.rm(getRuntimeServiceRegistryPath(serviceKey), { force: true });
+  } catch (error) {
+    if (!isIgnorableRegistryRemoveError(error)) {
+      throw error;
+    }
+  }
 }
 
 export async function readLocalServiceRegistryRecord(serviceKey: string) {

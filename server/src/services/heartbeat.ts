@@ -131,10 +131,12 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   buildSuccessfulRunHandoffRequiredNotice,
+  decideSuccessfulRunHandoffCompletion,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isSuccessfulRunHandoffRun,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -378,6 +380,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "cursor",
   "gemini_local",
   "hermes_local",
+  "minimax_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -1752,6 +1755,10 @@ function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  // Comment-driven interaction wakes are allowed to run against blocked issues for
+  // triage/response, but they must not implicitly take the issue out of `blocked`
+  // via auto-checkout (which transitions to `in_progress` + stamps locks).
+  if (issueStatus === "blocked" && ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason.startsWith("execution_")) return false;
 
@@ -3521,9 +3528,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
-    const issueProjectId = issueProjectRef?.projectId ?? null;
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+    let issueProjectId = issueProjectRef?.projectId ?? null;
+    if (!issueProjectId && preferredProjectWorkspaceId) {
+      issueProjectId = await db
+        .select({ projectId: projectWorkspaces.projectId })
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.id, preferredProjectWorkspaceId),
+            eq(projectWorkspaces.companyId, agent.companyId),
+          ),
+        )
+        .then((rows) => rows[0]?.projectId ?? null);
+    }
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
@@ -4385,6 +4404,150 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         detectedProgressSummary,
         issue: issueUiLink(issue),
       },
+    });
+  }
+
+  async function validateSuccessfulRunHandoffCompletion(run: typeof heartbeatRuns.$inferSelect) {
+    const handoffWake = run.wakeupRequestId
+      ? await db
+        .select({ reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    if (
+      !isSuccessfulRunHandoffRun(run) &&
+      handoffWake?.reason !== FINISH_SUCCESSFUL_RUN_HANDOFF_REASON
+    ) {
+      return { kind: "not_applicable" as const, reason: "run is not a successful-run handoff" };
+    }
+
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issue = issueId
+      ? await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null)
+      : null;
+
+    const [
+      activeExecutionPath,
+      queuedWake,
+      pendingInteraction,
+      pendingApproval,
+      explicitBlocker,
+    ] = await Promise.all([
+      issue
+        ? db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`(
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}
+                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}
+              )`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+              sql`(
+                ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
+              )`,
+              run.wakeupRequestId
+                ? sql`${agentWakeupRequests.id} <> ${run.wakeupRequestId}`
+                : sql`true`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issueApprovals.approvalId })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, issue.companyId),
+              eq(issueApprovals.issueId, issue.id),
+              inArray(approvals.status, ["pending", "revision_requested"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issueRelations.issueId })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, issue.companyId),
+              eq(issueRelations.relatedIssueId, issue.id),
+              eq(issueRelations.type, "blocks"),
+              sql`exists (
+                select 1
+                from issues blocker
+                where blocker.id = ${issueRelations.issueId}
+                  and blocker.company_id = ${issue.companyId}
+                  and blocker.status not in ('done', 'cancelled')
+                  and blocker.hidden_at is null
+              )`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+
+    return decideSuccessfulRunHandoffCompletion({
+      run,
+      issue,
+      hasActiveExecutionPath: Boolean(activeExecutionPath),
+      hasQueuedWake: Boolean(queuedWake),
+      hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
+      hasExplicitBlockerPath: Boolean(explicitBlocker),
     });
   }
 
@@ -5972,6 +6135,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countQueuedOrRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+    return Number(count ?? 0);
+  }
+
   async function reapStalePreSpawnRunsForAgent(agent: typeof agents.$inferSelect) {
     if (!agent.adapterType.endsWith("_local")) return 0;
     const now = new Date();
@@ -6478,12 +6649,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      const allowsClosedIssueCommentWake =
+        wakeCommentId &&
+        (
+          wakeReason === "issue_reopened_via_comment" ||
+          resumeIntent
+        );
+      if (!allowsClosedIssueCommentWake) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
           reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
+          details: {
+            issueId,
+            currentStatus: issue.status,
+            wakeReason,
+            wakeCommentId,
+            resumeIntent,
+          },
         };
       }
     }
@@ -8268,16 +8451,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         outcome = "failed";
       }
+      const handoffCompletionDecision = outcome === "succeeded"
+        ? await validateSuccessfulRunHandoffCompletion({ ...run, status: "succeeded" })
+        : { kind: "not_applicable" as const, reason: "run did not succeed" };
+      if (handoffCompletionDecision.kind === "reject") {
+        outcome = "failed";
+      }
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                handoffCompletionDecision.kind === "reject"
+                  ? handoffCompletionDecision.reason
+                  : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
       const runErrorCode =
+        handoffCompletionDecision.kind === "reject"
+          ? handoffCompletionDecision.errorCode
+          :
         outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
@@ -8776,14 +8970,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        // Deferred comment wakes may only revive completed issues when the
+        // original comment carried explicit reopen/resume intent.
+        const deferredResumeIntent =
+          asBoolean((deferredPayload as Record<string, unknown>)?.resumeIntent) === true ||
+          asBoolean((deferredPayload as Record<string, unknown>)?.followUpRequested) === true ||
+          asBoolean(promotedContextSeed.resumeIntent) === true ||
+          asBoolean(promotedContextSeed.followUpRequested) === true;
+        // System follow-ups such as retry or cleanup wakes must not reopen
+        // closed work on behalf of generic comments.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
+            deferredWakeReason === "issue_reopened_via_comment" ||
+            deferredResumeIntent
           );
         let reopenedActivity: LogActivityInput | null = null;
 
@@ -8946,6 +9147,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      if (run.errorCode === "missing_issue_disposition") {
+        return {
+          kind: "blocked_successful_run_handoff" as const,
+          issue,
+          previousStatus: issue.status,
+        };
+      }
+
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
@@ -9087,6 +9296,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "blocked_successful_run_handoff") {
+      const context = parseObject(run.contextSnapshot);
+      await recovery.escalateStrandedAssignedIssue({
+        issue: promotionResult.issue,
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        latestRun: run,
+        recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        successfulRunHandoffEvidence: {
+          sourceRunId: readNonEmptyString(context.sourceRunId) ?? readNonEmptyString(context.resumeFromRunId),
+          correctiveRunId: run.id,
+          missingDisposition: readNonEmptyString(context.missingDisposition) ?? "clear_next_step",
+          handoffAttempt: Math.max(1, Math.floor(asNumber(context.handoffAttempt, 1))),
+          maxHandoffAttempts: Math.max(1, Math.floor(asNumber(context.maxHandoffAttempts, 1))),
+        },
       });
       return;
     }
@@ -10538,6 +10765,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        const liveRunCount = await countQueuedOrRunningRuns();
+        if (liveRunCount >= HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

@@ -54,11 +54,14 @@ export {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffRequiredNotice,
+  decideSuccessfulRunHandoffCompletion,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  isSuccessfulRunHandoffRun,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
+  SuccessfulRunHandoffCompletionDecision,
 } from "./successful-run-handoff.js";

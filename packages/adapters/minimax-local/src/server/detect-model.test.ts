@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { models } from "../index.js";
-import { detectModel, mapMiniMaxQuotaShowOutput, minimaxDefinition } from "./index.js";
+import { detectModel, mapMiniMaxQuotaShowOutput, normalizeMiniMaxOpenCodeConfig } from "./index.js";
 
 describe("minimax_local server adapter", () => {
   const originalMiniMaxModel = process.env.MINIMAX_MODEL;
@@ -20,31 +20,33 @@ describe("minimax_local server adapter", () => {
     });
   });
 
-  it("advertises executable non-highspeed MiniMax models", () => {
+  it("advertises OpenCode-routable MiniMax models", () => {
     expect(models.map((model) => model.id)).toEqual([
-      "auto",
-      "MiniMax-M2.1",
-      "MiniMax-M2.5",
-      "MiniMax-M2.7",
+      "minimax/MiniMax-M2.7",
+      "minimax/MiniMax-M2.5",
+      "minimax/MiniMax-M2.1",
     ]);
   });
 
-  it("builds the MiniMax text chat command", () => {
-    expect(minimaxDefinition.buildArgs({
-      prompt: "do work",
-      model: "MiniMax-M2.7-highspeed",
-      extraArgs: ["--output", "json"],
-      config: {},
-    })).toEqual([
-      "text",
-      "chat",
-      "--model",
-      "MiniMax-M2.7-highspeed",
-      "--output",
-      "json",
-      "--message",
-      "do work",
-    ]);
+  it("normalizes legacy mmx config into unattended OpenCode config", () => {
+    expect(normalizeMiniMaxOpenCodeConfig({
+      command: "mmx",
+      model: "MiniMax-M2.5",
+      dangerouslySkipPermissions: false,
+    })).toMatchObject({
+      command: "opencode",
+      model: "minimax/MiniMax-M2.5",
+      dangerouslySkipPermissions: true,
+    });
+  });
+
+  it("keeps explicit OpenCode-compatible model ids", () => {
+    expect(normalizeMiniMaxOpenCodeConfig({
+      model: "github-copilot/gpt-5-mini",
+    })).toMatchObject({
+      command: "opencode",
+      model: "github-copilot/gpt-5-mini",
+    });
   });
 
   it("maps mmx quota output into provider quota windows", () => {

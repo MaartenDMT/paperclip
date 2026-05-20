@@ -42,6 +42,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
+  listFull: vi.fn(),
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
@@ -249,6 +250,7 @@ describe.sequential("agent skill routes", () => {
         requiredReason: "required",
       },
     ]);
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
@@ -688,6 +690,59 @@ describe.sequential("agent skill routes", () => {
         expect.any(Object),
       );
     });
+  });
+
+  it("defaults newly created agents to all compatible company skills when no selection is provided", async () => {
+    mockCompanySkillService.listFull.mockResolvedValue([
+      {
+        key: "company/company-1/caveman",
+        slug: "caveman",
+        compatibility: "compatible",
+      },
+      {
+        key: "company/company-1/research",
+        slug: "research",
+        compatibility: "compatible",
+      },
+      {
+        key: "company/company-1/old-skill",
+        slug: "old-skill",
+        compatibility: "incompatible",
+      },
+      {
+        key: "paperclipai/paperclip/paperclip",
+        slug: "paperclip",
+        compatibility: "compatible",
+      },
+    ]);
+    mockCompanySkillService.resolveRequestedSkillKeys.mockImplementationOnce(
+      async (_companyId: string, requested: string[]) => requested,
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Engineer",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "company/company-1/caveman",
+              "company/company-1/research",
+            ],
+          }),
+        }),
+      }),
+    );
   });
 
   it("includes canonical desired skills in hire approvals", async () => {

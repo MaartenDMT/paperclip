@@ -1333,17 +1333,15 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
-    if (!requestedDesiredSkills) {
-      return {
-        adapterConfig,
-        desiredSkills: null as string[] | null,
-        runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
-      };
-    }
+    const requestedSkillRefs = requestedDesiredSkills
+      ?? (await companySkills.listFull(companyId))
+        .filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"))
+        .filter((skill) => skill.compatibility !== "incompatible")
+        .map((skill) => skill.key);
 
     const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
       companyId,
-      requestedDesiredSkills,
+      requestedSkillRefs,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
