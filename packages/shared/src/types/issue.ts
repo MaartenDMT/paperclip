@@ -602,6 +602,39 @@ export interface RequestConfirmationResult {
   staleTarget?: RequestConfirmationTarget | null;
 }
 
+export type AgentMeetingExpectedOutput =
+  | "decisions"
+  | "tasks"
+  | "blockers"
+  | "questions"
+  | "plan_update";
+
+export interface AgentMeetingPayload {
+  version: 1;
+  purpose: string;
+  participantAgentIds: string[];
+  agenda: string[];
+  expectedOutputs: AgentMeetingExpectedOutput[];
+  contextMarkdown?: string | null;
+}
+
+export interface AgentMeetingResult {
+  version: 1;
+  summaryMarkdown: string;
+  decisions: string[];
+  actionItems: Array<{
+    title: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
+  blockers: Array<{
+    summary: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
+  openQuestions: string[];
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -637,20 +670,115 @@ export interface RequestConfirmationInteraction extends IssueThreadInteractionBa
   result?: RequestConfirmationResult | null;
 }
 
+export interface AgentMeetingInteraction extends IssueThreadInteractionBase {
+  kind: "agent_meeting";
+  payload: AgentMeetingPayload;
+  result?: AgentMeetingResult | null;
+}
+
+export interface WorkMeetingSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  issueStatus: IssueStatus;
+  title: string | null;
+  status: IssueThreadInteractionStatus;
+  purpose: string;
+  agenda: string[];
+  participantAgentIds: string[];
+  participants: Array<{
+    id: string;
+    name: string;
+    role: string;
+    title: string | null;
+    status: string;
+  }>;
+  expectedOutputs: AgentMeetingExpectedOutput[];
+  result: AgentMeetingResult | null;
+  resultSummaryMarkdown: string | null;
+  pendingAgeHours: number | null;
+  unlinkedActionItems: number;
+  unlinkedBlockers: number;
+  createdAt: Date | string;
+  resolvedAt: Date | string | null;
+}
+
+export type MeetingWorkflowTrigger =
+  | "blocked_without_edge"
+  | "stale_review"
+  | "stale_in_progress"
+  | "no_recent_meetings";
+
+export interface MeetingWorkflowPolicyTrigger {
+  id: MeetingWorkflowTrigger;
+  label: string;
+  when: string;
+  chair: string;
+  expectedOutputs: AgentMeetingExpectedOutput[];
+}
+
+export interface MeetingWorkflowLifecycleStep {
+  status: "triggered" | "pending" | "answered" | "operationalized";
+  label: string;
+  description: string;
+}
+
+export interface MeetingWorkflowRecommendation {
+  id: string;
+  trigger: MeetingWorkflowTrigger;
+  severity: "info" | "warning" | "urgent";
+  reason: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueStatus: IssueStatus | null;
+  suggestedHeadAgentId: string | null;
+  suggestedHeadName: string | null;
+  participantAgentIds: string[];
+  participantNames: string[];
+  expectedOutputs: AgentMeetingExpectedOutput[];
+}
+
+export interface MeetingWorkflowHealth {
+  companyId: string;
+  metrics: {
+    totalMeetings: number;
+    pendingMeetings: number;
+    resolvedMeetings: number;
+    stalePendingMeetings: number;
+    meetingsLast7Days: number;
+    openMeetingGaps: number;
+    lastMeetingAt: Date | string | null;
+  };
+  policy: {
+    purpose: string;
+    chairRule: string;
+    triggerRules: MeetingWorkflowPolicyTrigger[];
+    lifecycle: MeetingWorkflowLifecycleStep[];
+    doneDefinition: string;
+  };
+  recommendations: MeetingWorkflowRecommendation[];
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
-  | RequestConfirmationInteraction;
+  | RequestConfirmationInteraction
+  | AgentMeetingInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
-  | RequestConfirmationPayload;
+  | RequestConfirmationPayload
+  | AgentMeetingPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
-  | RequestConfirmationResult;
+  | RequestConfirmationResult
+  | AgentMeetingResult;
 
 export interface IssueAttachment {
   id: string;

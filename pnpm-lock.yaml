@@ -256,6 +256,9 @@ importers:
 
   packages/adapters/minimax-local:
     dependencies:
+      '@paperclipai/adapter-opencode-local':
+        specifier: workspace:*
+        version: link:../opencode-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils

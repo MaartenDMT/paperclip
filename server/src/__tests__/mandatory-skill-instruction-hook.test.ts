@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe("mandatorySkillInstructionPreHook", () => {
-  it("forces the configured skill into desired skills and wraps existing instructions", async () => {
+  it("forces default mandatory skills into desired skills and wraps existing instructions", async () => {
     const home = await tempHome();
     process.env.PAPERCLIP_HOME = home;
     process.env.PAPERCLIP_INSTANCE_ID = "test";
@@ -42,6 +42,21 @@ describe("mandatorySkillInstructionPreHook", () => {
           key: "company/caveman",
           runtimeName: "caveman",
           source: path.join(home, "skills", "caveman"),
+        },
+        {
+          key: "company/caveman-copy",
+          runtimeName: "caveman--4573ebe2fc",
+          source: path.join(home, "skills", "caveman-copy"),
+        },
+        {
+          key: "company/karpathy-obsidian-memory",
+          runtimeName: "karpathy-obsidian-memory",
+          source: path.join(home, "skills", "karpathy-obsidian-memory"),
+        },
+        {
+          key: "paperclipai/paperclip/para-memory-files",
+          runtimeName: "para-memory-files",
+          source: path.join(home, "skills", "para-memory-files"),
         },
       ],
     };
@@ -61,16 +76,37 @@ describe("mandatorySkillInstructionPreHook", () => {
     });
 
     expect(runtimeConfig.paperclipSkillSync).toEqual({
-      desiredSkills: ["paperclipai/paperclip/paperclip", "company/caveman"],
+      desiredSkills: [
+        "paperclipai/paperclip/paperclip",
+        "company/caveman",
+        "company/karpathy-obsidian-memory",
+        "paperclipai/paperclip/para-memory-files",
+      ],
     });
     expect(runtimeConfig.instructionsFilePath).not.toBe(existingInstructionsPath);
     const generated = await fs.readFile(String(runtimeConfig.instructionsFilePath), "utf8");
     expect(generated).toContain("read and apply the `caveman` skill");
+    expect(generated).toContain("read and apply the `karpathy-obsidian-memory` skill");
+    expect(generated).toContain("read and apply `para-memory-files`");
     expect(generated).toContain("Skill key: company/caveman");
+    expect(generated).not.toContain("caveman--4573ebe2fc");
     expect(generated).toContain("Keep issue context tight.");
+    expect(contextSnapshot.mandatorySkillInstructions).toEqual([
+      expect.objectContaining({
+        skillKey: "company/caveman",
+        runtimeName: "caveman",
+      }),
+      expect.objectContaining({
+        skillKey: "company/karpathy-obsidian-memory",
+        runtimeName: "karpathy-obsidian-memory",
+      }),
+      expect.objectContaining({
+        skillKey: "paperclipai/paperclip/para-memory-files",
+        runtimeName: "para-memory-files",
+      }),
+    ]);
     expect(contextSnapshot.mandatorySkillInstruction).toMatchObject({
       skillKey: "company/caveman",
-      runtimeName: "caveman",
       originalInstructionsFilePath: existingInstructionsPath,
     });
   });

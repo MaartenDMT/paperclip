@@ -167,6 +167,52 @@ async function findWindowsListeningProcessPids(port: number): Promise<number[]> 
   }
 }
 
+async function findWindowsPostgresChildPids(parentPids: Iterable<number>): Promise<number[]> {
+  const parentPidList = Array.from(new Set(parentPids)).filter((pid) => Number.isInteger(pid) && pid > 0);
+  if (parentPidList.length === 0) return [];
+
+  const script = [
+    `$parentPids = @(${parentPidList.join(",")})`,
+    "Get-CimInstance Win32_Process",
+    " | Where-Object { $_.Name -eq 'postgres.exe' -and $parentPids -contains $_.ParentProcessId }",
+    " | Select-Object -ExpandProperty ProcessId",
+  ].join("");
+
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
+      windowsHide: true,
+    });
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function expandWindowsPostgresProcessTreePids(rootPids: Iterable<number>): Promise<number[]> {
+  if (process.platform !== "win32") return [];
+
+  const roots = new Set(Array.from(rootPids).filter((pid) => Number.isInteger(pid) && pid > 0));
+  const seen = new Set<number>();
+  const queue = Array.from(roots);
+
+  while (queue.length > 0) {
+    const parentPid = queue.shift();
+    if (!parentPid || seen.has(parentPid)) continue;
+    seen.add(parentPid);
+
+    for (const childPid of await findWindowsPostgresChildPids([parentPid])) {
+      if (!seen.has(childPid)) {
+        queue.push(childPid);
+      }
+    }
+  }
+
+  return Array.from(seen).filter((pid) => !roots.has(pid));
+}
+
 async function findEmbeddedPostgresProcessPidsForDataDir(dataDir: string): Promise<number[]> {
   if (process.platform === "win32") {
     const candidatePids = new Set<number>();
@@ -190,15 +236,16 @@ async function findEmbeddedPostgresProcessPidsForDataDir(dataDir: string): Promi
 async function waitForEmbeddedPostgresProcessCleanup(
   dataDir: string,
   findCandidateProcessPids: (dataDir: string) => Promise<number[]>,
-): Promise<void> {
+): Promise<number[]> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const remaining = await findCandidateProcessPids(dataDir);
     if (remaining.length === 0) {
-      return;
+      return [];
     }
     await delay(250);
   }
+  return await findCandidateProcessPids(dataDir);
 }
 
 function resolveStartTimeoutMs(value: string | undefined): number {
@@ -234,13 +281,19 @@ async function cleanupEmbeddedPostgresCandidates(input: {
   stalePid: number | null;
   terminateProcessTree: (pid: number) => Promise<boolean>;
   findCandidateProcessPids: (dataDir: string) => Promise<number[]>;
-}): Promise<{ candidatePids: number[]; terminatedAny: boolean }> {
+  findRelatedProcessTreePids?: (rootPids: Iterable<number>) => Promise<number[]>;
+}): Promise<{ candidatePids: number[]; terminatedAny: boolean; remainingPids: number[] }> {
   const dataDir = path.dirname(input.postmasterPidFile);
+  const findRelatedProcessTreePids =
+    input.findRelatedProcessTreePids ?? expandWindowsPostgresProcessTreePids;
   const candidatePids = new Set<number>();
   if (input.stalePid) {
     candidatePids.add(input.stalePid);
   }
   for (const pid of await input.findCandidateProcessPids(dataDir)) {
+    candidatePids.add(pid);
+  }
+  for (const pid of await findRelatedProcessTreePids(candidatePids)) {
     candidatePids.add(pid);
   }
 
@@ -252,14 +305,23 @@ async function cleanupEmbeddedPostgresCandidates(input: {
   if (existsSync(input.postmasterPidFile)) {
     rmSync(input.postmasterPidFile, { force: true });
   }
+  let remainingPids: number[] = [];
   if (terminatedAny) {
-    await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
+    remainingPids = await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
     await delay(EMBEDDED_POSTGRES_RECOVERY_SETTLE_MS);
+  } else {
+    remainingPids = await input.findCandidateProcessPids(dataDir);
+  }
+  for (const pid of await findRelatedProcessTreePids(candidatePids)) {
+    if (!remainingPids.includes(pid)) {
+      remainingPids.push(pid);
+    }
   }
 
   return {
     candidatePids: Array.from(candidatePids),
     terminatedAny,
+    remainingPids,
   };
 }
 
@@ -270,6 +332,7 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   onRecovered?: (message: string) => void;
   terminateProcessTree?: (pid: number) => Promise<boolean>;
   findCandidateProcessPids?: (dataDir: string) => Promise<number[]>;
+  findRelatedProcessTreePids?: (rootPids: Iterable<number>) => Promise<number[]>;
   startTimeoutMs?: number;
 }): Promise<void> {
   const initialStalePid = readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false });
@@ -303,6 +366,7 @@ export async function startEmbeddedPostgresWithRecovery(input: {
             ? initialStalePid ?? readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false })
             : readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false }),
         findCandidateProcessPids,
+        findRelatedProcessTreePids: input.findRelatedProcessTreePids,
         terminateProcessTree,
       });
       if (cleanup.candidatePids.length === 0) {
@@ -310,6 +374,11 @@ export async function startEmbeddedPostgresWithRecovery(input: {
       }
       if (!cleanup.terminatedAny) {
         throw error;
+      }
+      if (cleanup.remainingPids.length > 0) {
+        throw new Error(
+          `embedded postgres recovery could not clear conflicting process tree(s): ${cleanup.remainingPids.join(", ")}`,
+        );
       }
 
       input.onRecovered?.(

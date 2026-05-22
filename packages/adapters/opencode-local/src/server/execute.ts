@@ -53,6 +53,7 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import {
   DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC,
+  DEFAULT_OPENCODE_STARTUP_NO_OUTPUT_TIMEOUT_SEC,
   DEFAULT_OPENCODE_TERMINAL_RESULT_CLEANUP_GRACE_SEC,
   SANDBOX_INSTALL_COMMAND,
 } from "../index.js";
@@ -316,6 +317,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     const timeoutSec = resolveRunTimeoutSec(config);
+    const startupNoOutputTimeoutSec = asNumber(
+      config.startupNoOutputTimeoutSec,
+      DEFAULT_OPENCODE_STARTUP_NO_OUTPUT_TIMEOUT_SEC,
+    );
     const graceSec = asNumber(config.graceSec, 20);
     const terminalResultCleanupGraceSec = asNumber(
       config.terminalResultCleanupGraceSec,
@@ -530,11 +535,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
       sessionHandoffNote,
+      taskContextNote,
       renderedPrompt,
     ]);
     const promptMetrics = {
@@ -543,6 +550,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 
@@ -585,6 +593,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             graceMs: Math.max(0, terminalResultCleanupGraceSec) * 1000,
             hasTerminalResult: hasOpenCodeTerminalResult,
           },
+        startupNoOutputTimeoutSec: Math.max(0, startupNoOutputTimeoutSec),
       });
       return {
         proc,
@@ -595,18 +604,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          timeoutReason?: "run_timeout" | "startup_no_output_timeout";
+          stdout: string;
+          stderr: string;
+        };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        const startupNoOutput =
+          attempt.proc.timeoutReason === "startup_no_output_timeout";
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: startupNoOutput ? "startup_no_output_timeout" : undefined,
+          errorMessage: startupNoOutput
+            ? `OpenCode produced no stdout/stderr within ${startupNoOutputTimeoutSec}s after process start`
+            : `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }

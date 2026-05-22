@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   documents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -20,8 +22,14 @@ import type {
   RequestConfirmationTarget,
   RejectIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  AgentMeetingInteraction,
+  AgentMeetingExpectedOutput,
+  MeetingWorkflowHealth,
+  MeetingWorkflowRecommendation,
+  MeetingWorkflowTrigger,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
+  WorkMeetingSummary,
 } from "@paperclipai/shared";
 import {
   acceptIssueThreadInteractionSchema,
@@ -32,10 +40,13 @@ import {
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  agentMeetingPayloadSchema,
+  agentMeetingResultSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
 
 type InteractionActor = {
@@ -61,6 +72,104 @@ type ResolvedInteractionResult = {
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
+
+type ListWorkMeetingsOptions = {
+  limit?: number;
+  status?: string | null;
+  agentId?: string | null;
+  expectedOutput?: string | null;
+  q?: string | null;
+};
+
+type ReconcileMeetingWorkflowResult = {
+  checked: number;
+  created: number;
+  skipped: number;
+  meetings: Array<{
+    id: string;
+    issueId: string;
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+  }>;
+};
+
+const MEETING_RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const STALE_REVIEW_MS = 24 * 60 * 60 * 1000;
+const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
+const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
+
+const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpectedOutput[]> = {
+  blocked_without_edge: ["blockers", "tasks", "decisions"],
+  stale_review: ["decisions", "questions", "plan_update"],
+  stale_in_progress: ["blockers", "questions", "plan_update"],
+  no_recent_meetings: ["decisions", "tasks", "plan_update"],
+};
+
+function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
+  return {
+    purpose: "Meetings are structured issue-thread interactions used only when coordination needs a recorded decision, task, blocker, question, or plan update.",
+    chairRule: "The chair is the nearest department head for the affected assignee. If no manager exists, the assignee chairs; cross-department work is chaired by the closest common head or the board.",
+    triggerRules: [
+      {
+        id: "blocked_without_edge",
+        label: "Blocker hygiene",
+        when: "An issue says blocked/stuck/waiting but no first-class blocker edge exists.",
+        chair: "Assignee's department head.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.blocked_without_edge,
+      },
+      {
+        id: "stale_review",
+        label: "Review waiting",
+        when: "An issue sits in review for more than 24 hours.",
+        chair: "Review owner or assignee's department head.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_review,
+      },
+      {
+        id: "stale_in_progress",
+        label: "Execution ambiguity",
+        when: "An in-progress issue has not moved for more than 72 hours.",
+        chair: "Assignee's department head.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_in_progress,
+      },
+      {
+        id: "no_recent_meetings",
+        label: "No meeting activity",
+        when: "Open work exists but no structured meeting was recorded in the last 7 days.",
+        chair: "Company lead or board.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.no_recent_meetings,
+      },
+    ],
+    lifecycle: [
+      {
+        status: "triggered",
+        label: "Triggered",
+        description: "A blocker, stale review, stale execution, or coordination gap requires a meeting.",
+      },
+      {
+        status: "pending",
+        label: "Pending",
+        description: "An agent creates an agent_meeting interaction with purpose, participants, agenda, and expected outputs.",
+      },
+      {
+        status: "answered",
+        label: "Answered",
+        description: "The meeting is resolved with summary, decisions, action items, blockers, and open questions.",
+      },
+      {
+        status: "operationalized",
+        label: "Operationalized",
+        description: "Action items and blockers are linked to first-class issues so the meeting changes the work graph.",
+      },
+    ],
+    doneDefinition: "A meeting is done when it has a result and every action item or blocker is linked to an issue or explicitly closed as a decision/question.",
+  };
+}
+
+function severityForMeetingTrigger(trigger: MeetingWorkflowTrigger): MeetingWorkflowRecommendation["severity"] {
+  if (trigger === "blocked_without_edge") return "urgent";
+  if (trigger === "stale_review" || trigger === "stale_in_progress") return "warning";
+  return "info";
+}
 
 type IssueResolutionContext = {
   id: string;
@@ -128,6 +237,13 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "agent_meeting":
+      return {
+        ...base,
+        kind: "agent_meeting",
+        payload: agentMeetingPayloadSchema.parse(row.payload),
+        result: row.result ? agentMeetingResultSchema.parse(row.result) : null,
+      } satisfies AgentMeetingInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -602,7 +718,427 @@ export function issueThreadInteractionService(db: Db) {
     return hydrateInteraction(updated);
   }
 
+  async function createMeetingFromRecommendation(
+    companyId: string,
+    recommendation: MeetingWorkflowRecommendation,
+  ) {
+    if (!recommendation.issueId || recommendation.participantAgentIds.length === 0) {
+      return null;
+    }
+
+    const triggerLabel = recommendation.trigger.replace(/_/g, " ");
+    const issueLabel = recommendation.issueIdentifier ?? recommendation.issueId;
+    const data = createIssueThreadInteractionSchema.parse({
+      kind: "agent_meeting",
+      idempotencyKey: `meeting-workflow:${recommendation.id}`,
+      title: `Work meeting: ${issueLabel}`,
+      summary: recommendation.reason,
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        purpose: recommendation.reason,
+        participantAgentIds: recommendation.participantAgentIds,
+        agenda: [
+          `Review ${triggerLabel} on ${issueLabel}.`,
+          "Share department context, current blockers, and recent decisions.",
+          "Agree on decisions, owners, action items, blockers, open questions, and any plan updates.",
+        ],
+        expectedOutputs: recommendation.expectedOutputs,
+        contextMarkdown: [
+          `Issue: ${recommendation.issueIdentifier ?? recommendation.issueId}`,
+          recommendation.issueTitle ? `Title: ${recommendation.issueTitle}` : null,
+          recommendation.issueStatus ? `Status: ${recommendation.issueStatus}` : null,
+          recommendation.suggestedHeadName ? `Suggested chair: ${recommendation.suggestedHeadName}` : null,
+          "Record the outcome as a meeting result and convert action items/blockers into linked issues.",
+        ].filter(Boolean).join("\n"),
+      },
+    });
+
+    const existing = data.idempotencyKey
+      ? await getIdempotentInteraction({
+          issueId: recommendation.issueId,
+          companyId,
+          idempotencyKey: data.idempotencyKey,
+        })
+      : null;
+    if (existing) return null;
+
+    try {
+      const [inserted] = await db
+        .insert(issueThreadInteractions)
+        .values({
+          companyId,
+          issueId: recommendation.issueId,
+          kind: data.kind,
+          status: "pending",
+          continuationPolicy: data.continuationPolicy,
+          idempotencyKey: data.idempotencyKey ?? null,
+          sourceCommentId: data.sourceCommentId ?? null,
+          sourceRunId: data.sourceRunId ?? null,
+          title: data.title ?? null,
+          summary: data.summary ?? null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          payload: data.payload,
+        })
+        .returning();
+
+      if (!inserted) return null;
+      await touchIssue(db, recommendation.issueId);
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "issue.thread_interaction_created",
+        entityType: "issue",
+        entityId: recommendation.issueId,
+        details: {
+          interactionId: inserted.id,
+          interactionKind: "agent_meeting",
+          interactionStatus: "pending",
+          source: "meeting_workflow",
+          trigger: recommendation.trigger,
+          participantAgentIds: recommendation.participantAgentIds,
+          chairAgentId: recommendation.suggestedHeadAgentId,
+        },
+      });
+      return hydrateInteraction(inserted);
+    } catch (err) {
+      if (isIssueThreadInteractionIdempotencyConflict(err)) return null;
+      throw err;
+    }
+  }
+
   return {
+    listMeetingsForCompany: async (
+      companyId: string,
+      options: ListWorkMeetingsOptions = {},
+    ): Promise<WorkMeetingSummary[]> => {
+      const limit = Math.min(Math.max(Math.floor(options.limit ?? 50), 1), 200);
+      const filters = [
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.kind, "agent_meeting"),
+      ];
+      if (options.status) filters.push(eq(issueThreadInteractions.status, options.status));
+      if (options.agentId) {
+        filters.push(sql`${issueThreadInteractions.payload}->'participantAgentIds' ? ${options.agentId}`);
+      }
+      if (options.expectedOutput) {
+        filters.push(sql`${issueThreadInteractions.payload}->'expectedOutputs' ? ${options.expectedOutput}`);
+      }
+      if (options.q) {
+        const q = `%${options.q.replace(/[%_\\]/g, (char) => `\\${char}`)}%`;
+        filters.push(sql`(
+          ${issueThreadInteractions.title} ilike ${q} escape '\\'
+          or ${issueThreadInteractions.summary} ilike ${q} escape '\\'
+          or ${issues.title} ilike ${q} escape '\\'
+          or ${issues.identifier} ilike ${q} escape '\\'
+          or (${issueThreadInteractions.payload}->>'purpose') ilike ${q} escape '\\'
+        )`);
+      }
+
+      const rows = await db
+        .select({
+          interaction: issueThreadInteractions,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+        .where(and(...filters))
+        .orderBy(desc(issueThreadInteractions.createdAt))
+        .limit(limit);
+
+      const participantIds = [...new Set(rows.flatMap((row) => {
+        const interaction = hydrateInteraction(row.interaction);
+        return interaction.kind === "agent_meeting" ? interaction.payload.participantAgentIds : [];
+      }))];
+      const participantRows = participantIds.length > 0
+        ? await db
+            .select({
+              id: agents.id,
+              name: agents.name,
+              role: agents.role,
+              title: agents.title,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(and(eq(agents.companyId, companyId), inArray(agents.id, participantIds)))
+        : [];
+      const participantById = new Map(participantRows.map((agent) => [agent.id, agent]));
+
+      const now = Date.now();
+      return rows.map((row) => {
+        const interaction = hydrateInteraction(row.interaction);
+        if (interaction.kind !== "agent_meeting") {
+          throw unprocessable("Unexpected non-meeting interaction in work meeting query");
+        }
+        const result = interaction.result ?? null;
+        return {
+          id: interaction.id,
+          companyId: interaction.companyId,
+          issueId: interaction.issueId,
+          issueIdentifier: row.issueIdentifier,
+          issueTitle: row.issueTitle,
+          issueStatus: row.issueStatus as WorkMeetingSummary["issueStatus"],
+          title: interaction.title,
+          status: interaction.status,
+          purpose: interaction.payload.purpose,
+          agenda: interaction.payload.agenda,
+          participantAgentIds: interaction.payload.participantAgentIds,
+          participants: interaction.payload.participantAgentIds
+            .map((agentId) => participantById.get(agentId))
+            .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent)),
+          expectedOutputs: interaction.payload.expectedOutputs,
+          result,
+          resultSummaryMarkdown: result?.summaryMarkdown ?? null,
+          pendingAgeHours: interaction.status === "pending"
+            ? Math.max(0, (now - interaction.createdAt.getTime()) / (1000 * 60 * 60))
+            : null,
+          unlinkedActionItems: result?.actionItems.filter((item) => !item.issueId).length ?? 0,
+          unlinkedBlockers: result?.blockers.filter((blocker) => !blocker.issueId).length ?? 0,
+          createdAt: interaction.createdAt,
+          resolvedAt: interaction.resolvedAt ?? null,
+        };
+      });
+    },
+
+    getMeetingWorkflowHealth: async (companyId: string): Promise<MeetingWorkflowHealth> => {
+      const now = Date.now();
+      const meetingRows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.kind, "agent_meeting"),
+        ))
+        .orderBy(desc(issueThreadInteractions.createdAt))
+        .limit(500);
+
+      const openIssueRows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          sql`${issues.status} not in ('done', 'cancelled')`,
+          sql`${issues.hiddenAt} is null`,
+        ))
+        .orderBy(desc(issues.updatedAt))
+        .limit(500);
+
+      const openIssueIds = openIssueRows.map((issue) => issue.id);
+      const companyAgentRows = await db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          title: agents.title,
+          reportsTo: agents.reportsTo,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), sql`${agents.status} <> 'terminated'`));
+      const agentById = new Map(companyAgentRows.map((agent) => [agent.id, agent] as const));
+      const topLevelHead = companyAgentRows.find((agent) => agent.reportsTo === null) ?? null;
+
+      const blockerEdgeRows = openIssueIds.length > 0
+        ? await db
+            .select({ issueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, companyId),
+              inArray(issueRelations.issueId, openIssueIds),
+              eq(issueRelations.type, "blocks"),
+            ))
+        : [];
+      const blockerEdgeIssueIds = new Set(blockerEdgeRows.map((row) => row.issueId));
+
+      const childIssueRows = openIssueIds.length > 0
+        ? await db
+            .select({
+              id: issues.id,
+              parentId: issues.parentId,
+              assigneeAgentId: issues.assigneeAgentId,
+            })
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              inArray(issues.parentId, openIssueIds),
+              sql`${issues.status} not in ('done', 'cancelled')`,
+              sql`${issues.hiddenAt} is null`,
+            ))
+        : [];
+      const childAssigneesByParentId = new Map<string, string[]>();
+      for (const child of childIssueRows) {
+        if (!child.parentId || !child.assigneeAgentId) continue;
+        const current = childAssigneesByParentId.get(child.parentId) ?? [];
+        current.push(child.assigneeAgentId);
+        childAssigneesByParentId.set(child.parentId, current);
+      }
+
+      const meetingsByIssueId = new Map<string, IssueThreadInteractionRow[]>();
+      for (const meeting of meetingRows) {
+        const group = meetingsByIssueId.get(meeting.issueId) ?? [];
+        group.push(meeting);
+        meetingsByIssueId.set(meeting.issueId, group);
+      }
+      const hasMeetingCoverage = (issueId: string) => {
+        const rows = meetingsByIssueId.get(issueId) ?? [];
+        return rows.some((meeting) => {
+          if (meeting.status === "pending") return true;
+          return now - meeting.createdAt.getTime() <= MEETING_RECENT_WINDOW_MS;
+        });
+      };
+      const resolveHead = (assigneeAgentId: string | null) => {
+        const assignee = assigneeAgentId ? agentById.get(assigneeAgentId) ?? null : null;
+        if (assignee?.reportsTo) return agentById.get(assignee.reportsTo) ?? assignee;
+        return assignee ?? topLevelHead;
+      };
+      const resolveDepartmentHeadId = (agentId: string | null) => resolveHead(agentId)?.id ?? null;
+      const buildRecommendation = (
+        trigger: MeetingWorkflowTrigger,
+        issue: typeof openIssueRows[number] | null,
+        reason: string,
+      ): MeetingWorkflowRecommendation => {
+        const head = resolveHead(issue?.assigneeAgentId ?? null);
+        const relatedAssigneeIds = [
+          ...(issue?.assigneeAgentId ? [issue.assigneeAgentId] : []),
+          ...(issue?.id ? childAssigneesByParentId.get(issue.id) ?? [] : []),
+        ];
+        const relatedHeadIds = relatedAssigneeIds
+          .map((agentId) => resolveDepartmentHeadId(agentId))
+          .filter((agentId): agentId is string => Boolean(agentId));
+        const crossesDepartments = new Set(relatedHeadIds).size > 1;
+        const participantIds = [...new Set([
+          ...(head ? [head.id] : []),
+          ...relatedHeadIds,
+          ...relatedAssigneeIds,
+          ...((trigger === "no_recent_meetings" || trigger === "blocked_without_edge" || crossesDepartments) && topLevelHead
+            ? [topLevelHead.id]
+            : []),
+        ])].slice(0, 20);
+        return {
+          id: `${trigger}:${issue?.id ?? "company"}`,
+          trigger,
+          severity: severityForMeetingTrigger(trigger),
+          reason,
+          issueId: issue?.id ?? null,
+          issueIdentifier: issue?.identifier ?? null,
+          issueTitle: issue?.title ?? null,
+          issueStatus: issue?.status as MeetingWorkflowRecommendation["issueStatus"] ?? null,
+          suggestedHeadAgentId: head?.id ?? null,
+          suggestedHeadName: head?.name ?? null,
+          participantAgentIds: participantIds,
+          participantNames: participantIds
+            .map((agentId) => agentById.get(agentId)?.name ?? null)
+            .filter((name): name is string => Boolean(name)),
+          expectedOutputs: MEETING_TRIGGER_OUTPUTS[trigger],
+        };
+      };
+
+      const recommendations: MeetingWorkflowRecommendation[] = [];
+      for (const issue of openIssueRows) {
+        if (hasMeetingCoverage(issue.id)) continue;
+        const ageMs = now - issue.updatedAt.getTime();
+        if (issue.status === "blocked" && !blockerEdgeIssueIds.has(issue.id)) {
+          recommendations.push(buildRecommendation(
+            "blocked_without_edge",
+            issue,
+            "Issue is blocked, but no first-class blocker edge exists.",
+          ));
+          continue;
+        }
+        if (issue.status === "in_review" && ageMs >= STALE_REVIEW_MS) {
+          recommendations.push(buildRecommendation(
+            "stale_review",
+            issue,
+            "Issue has been waiting in review for more than 24 hours without a recent meeting.",
+          ));
+          continue;
+        }
+        if (issue.status === "in_progress" && ageMs >= STALE_IN_PROGRESS_MS) {
+          recommendations.push(buildRecommendation(
+            "stale_in_progress",
+            issue,
+            "Issue has not moved for more than 72 hours while in progress.",
+          ));
+        }
+      }
+
+      const meetingsLast7Days = meetingRows.filter(
+        (meeting) => now - meeting.createdAt.getTime() <= MEETING_RECENT_WINDOW_MS,
+      ).length;
+      if (openIssueRows.length > 0 && meetingsLast7Days === 0) {
+        const anchorIssue = openIssueRows[0] ?? null;
+        recommendations.push(buildRecommendation(
+          "no_recent_meetings",
+          anchorIssue,
+          "Open work exists, but no structured agent meeting was recorded in the last 7 days.",
+        ));
+      }
+
+      const pendingMeetings = meetingRows.filter((meeting) => meeting.status === "pending");
+      return {
+        companyId,
+        metrics: {
+          totalMeetings: meetingRows.length,
+          pendingMeetings: pendingMeetings.length,
+          resolvedMeetings: meetingRows.filter((meeting) => meeting.status !== "pending").length,
+          stalePendingMeetings: pendingMeetings.filter(
+            (meeting) => now - meeting.createdAt.getTime() >= STALE_PENDING_MEETING_MS,
+          ).length,
+          meetingsLast7Days,
+          openMeetingGaps: recommendations.length,
+          lastMeetingAt: meetingRows[0]?.createdAt ?? null,
+        },
+        policy: meetingWorkflowPolicy(),
+        recommendations: recommendations.slice(0, 12),
+      };
+    },
+
+    reconcileMeetingWorkflow: async (companyId: string): Promise<ReconcileMeetingWorkflowResult> => {
+      const health = await issueThreadInteractionService(db).getMeetingWorkflowHealth(companyId);
+      const meetings: ReconcileMeetingWorkflowResult["meetings"] = [];
+      const coveredIssueIds = new Set<string>();
+      let skipped = 0;
+
+      for (const recommendation of health.recommendations) {
+        if (!recommendation.issueId || coveredIssueIds.has(recommendation.issueId)) {
+          skipped += 1;
+          continue;
+        }
+        coveredIssueIds.add(recommendation.issueId);
+
+        const meeting = await createMeetingFromRecommendation(companyId, recommendation);
+        if (!meeting || meeting.kind !== "agent_meeting") {
+          skipped += 1;
+          continue;
+        }
+        meetings.push({
+          id: meeting.id,
+          issueId: meeting.issueId,
+          participantAgentIds: meeting.payload.participantAgentIds,
+          chairAgentId: recommendation.suggestedHeadAgentId,
+        });
+      }
+
+      return {
+        checked: health.recommendations.length,
+        created: meetings.length,
+        skipped,
+        meetings,
+      };
+    },
+
     listForIssue: async (issueId: string) => {
       const rows = await db
         .select()
@@ -1111,11 +1647,39 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be answered");
+      if (current.kind !== "ask_user_questions" && current.kind !== "agent_meeting") {
+        throw unprocessable("Only ask_user_questions and agent_meeting interactions can be answered");
       }
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
+      }
+
+      if (current.kind === "agent_meeting") {
+        if (!input.meetingResult) {
+          throw unprocessable("meetingResult is required for agent_meeting interactions");
+        }
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: agentMeetingResultSchema.parse(input.meetingResult),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+
+        await touchIssue(db, issue.id);
+        return hydrateInteraction(updated);
       }
 
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;

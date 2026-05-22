@@ -314,10 +314,18 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   sourceRunId: string;
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
+  const issueArg = input.issueIdentifier ?? "<issue-id-or-identifier>";
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
+    "",
+    "Use a real Paperclip issue mutation, not just a comment or file edit. Prefer:",
+    `- \`scripts/paperclip-issue-update.sh --issue-id \"${issueArg}\" --status done\``,
+    `- or \`PATCH /api/issues/${issueArg}\` with \`X-Paperclip-Run-Id\``,
+    "Use the issue UUID or full identifier such as `REA-2631` for issue routes. Do not call bare numeric paths like `/api/issues/2631`.",
+    "After the mutation, read the issue back and verify that its status/path changed. If verification fails, fix the mutation before ending the run.",
+    "On Windows/PowerShell, use PowerShell syntax such as `Set-Location <path>; <command>` and `Get-ChildItem -Force`; do not use Bash-only command chains like `&&` or `ls -la`.",
     "",
     "**Is the issue finished?**",
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",

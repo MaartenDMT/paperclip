@@ -371,31 +371,44 @@ function clearDevServerStatus() {
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
-  await writeLocalServiceRegistryRecord({
-    version: 1,
-    serviceKey: devService.serviceKey,
-    profileKind: "paperclip-dev",
-    serviceName: devService.serviceName,
-    command: "dev-runner.ts",
-    cwd: repoRoot,
-    envFingerprint: devService.envFingerprint,
-    port: serverPort,
-    url: `http://127.0.0.1:${serverPort}`,
-    pid: process.pid,
-    processGroupId: null,
-    provider: "local_process",
-    runtimeServiceId: null,
-    reuseKey: null,
-    startedAt: lastRestartAt ?? new Date().toISOString(),
-    lastSeenAt: new Date().toISOString(),
-    metadata: {
-      repoRoot,
-      mode,
-      childPid: child?.pid ?? null,
+  try {
+    await writeLocalServiceRegistryRecord({
+      version: 1,
+      serviceKey: devService.serviceKey,
+      profileKind: "paperclip-dev",
+      serviceName: devService.serviceName,
+      command: "dev-runner.ts",
+      cwd: repoRoot,
+      envFingerprint: devService.envFingerprint,
+      port: serverPort,
       url: `http://127.0.0.1:${serverPort}`,
-      ...extra,
-    },
-  });
+      pid: process.pid,
+      processGroupId: null,
+      provider: "local_process",
+      runtimeServiceId: null,
+      reuseKey: null,
+      startedAt: lastRestartAt ?? new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: {
+        repoRoot,
+        mode,
+        childPid: child?.pid ?? null,
+        url: `http://127.0.0.1:${serverPort}`,
+        ...extra,
+      },
+    });
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    if (code !== "EACCES" && code !== "EPERM") {
+      throw error;
+    }
+    console.warn(
+      `[paperclip] unable to write dev service registry (${code}); continuing without duplicate-start detection`,
+    );
+  }
 }
 
 async function runPnpm(args: string[], options: {
@@ -679,7 +692,7 @@ async function startServerChild() {
           childPid: null,
           url: `http://127.0.0.1:${serverPort}`,
         },
-      });
+      }).catch(() => {});
       resolve({ code: code ?? 0, signal });
 
       if (restartInFlight || expected || shuttingDown) {

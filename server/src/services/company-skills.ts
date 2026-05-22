@@ -1549,11 +1549,11 @@ export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
 
-  async function ensureBundledSkills(companyId: string) {
+  async function ensureBundledSkills(companyId: string, options: { missingOnly?: boolean } = {}) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
       if (!stats?.isDirectory()) continue;
-      const bundledSkills = await readLocalSkillImports(companyId, skillsRoot)
+      let bundledSkills = await readLocalSkillImports(companyId, skillsRoot)
         .then((skills) => skills.map((skill) => ({
           ...skill,
           key: deriveCanonicalSkillKey(companyId, {
@@ -1570,6 +1570,13 @@ export function companySkillService(db: Db) {
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
+      if (options.missingOnly) {
+        const existingKeys = new Set(
+          await listFullFromStore(companyId).then((skills) => skills.map((skill) => skill.key)),
+        );
+        bundledSkills = bundledSkills.filter((skill) => !existingKeys.has(skill.key));
+      }
+      if (bundledSkills.length === 0) return [];
       return upsertImportedSkills(companyId, bundledSkills);
     }
     return [];
@@ -2176,6 +2183,7 @@ export function companySkillService(db: Db) {
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
   ): Promise<PaperclipSkillEntry[]> {
+    await ensureBundledSkills(companyId, { missingOnly: true });
     const skills = await listFullFromStore(companyId);
 
     const out: PaperclipSkillEntry[] = [];

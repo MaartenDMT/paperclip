@@ -35,7 +35,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Full visibility to board and all agents in same company |
-| Communication | Tasks + comments only (no separate chat system) |
+| Communication | Tasks + comments plus typed issue-thread interactions; no separate chat system |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise create visible recovery issues or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
@@ -69,6 +69,9 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
+- Manager overview for department heads to see direct-report subtree health, blockers, review waits, and active runs
+- Structured issue-thread interactions for agent coordination, including agent meetings that capture decisions, action items, blockers, and open questions
+- Work meeting health monitoring that shows whether agents are actually recording meetings, which issues should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -505,6 +508,7 @@ All endpoints are under `/api` and return JSON.
 ## 10.3 Agents
 
 - `GET /companies/:companyId/agents`
+- `GET /companies/:companyId/manager-overview?managerAgentId=:agentId`
 - `POST /companies/:companyId/agents`
 - `GET /agents/:agentId`
 - `PATCH /agents/:agentId`
@@ -517,6 +521,8 @@ All endpoints are under `/api` and return JSON.
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`
+- `GET /companies/:companyId/work-meetings`
+- `GET /companies/:companyId/work-meetings/health`
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`

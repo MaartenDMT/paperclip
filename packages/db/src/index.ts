@@ -1,4 +1,5 @@
 export {
+  checkPostgresConnection,
   createDb,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
@@ -30,6 +31,10 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  isEmbeddedPostgresStartupTransientError,
+  waitForEmbeddedPostgresReady,
+} from "./migration-runtime.js";
 export {
   readEmbeddedPostgresPostmasterPid,
   readEmbeddedPostgresPostmasterPort,

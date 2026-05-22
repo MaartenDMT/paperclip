@@ -143,7 +143,8 @@ function readSkillMarkdown(skillName: string): string | null {
     normalized !== "paperclip-create-agent" &&
     normalized !== "paperclip-create-plugin" &&
     normalized !== "paperclip-converting-plans-to-tasks" &&
-    normalized !== "para-memory-files"
+    normalized !== "para-memory-files" &&
+    normalized !== "karpathy-obsidian-memory"
   )
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -2865,6 +2866,10 @@ export function accessRoutes(
         {
           name: "para-memory-files",
           path: "/api/skills/para-memory-files"
+        },
+        {
+          name: "karpathy-obsidian-memory",
+          path: "/api/skills/karpathy-obsidian-memory"
         },
         {
           name: "paperclip-create-agent",

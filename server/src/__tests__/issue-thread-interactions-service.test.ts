@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -37,10 +38,11 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     db = createDb(tempDb.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -971,5 +973,140 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         },
       },
     });
+  });
+
+  it("materializes meeting workflow recommendations into pending agent meetings", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const engineeringHeadId = randomUUID();
+    const marketingHeadId = randomUUID();
+    const engineerId = randomUUID();
+    const marketerId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const childIssueId = randomUUID();
+    const staleUpdatedAt = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Coordinate departments",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineeringHeadId,
+        companyId,
+        name: "CTO",
+        role: "engineering",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: marketingHeadId,
+        companyId,
+        name: "CMO",
+        role: "marketing",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: engineeringHeadId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: marketerId,
+        companyId,
+        name: "Marketer",
+        role: "marketer",
+        reportsTo: marketingHeadId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        goalId,
+        title: "Review launch plan",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: engineerId,
+        updatedAt: staleUpdatedAt,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        goalId,
+        parentId: issueId,
+        title: "Prepare marketing notes",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: marketerId,
+        updatedAt: staleUpdatedAt,
+      },
+    ]);
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled.created).toBeGreaterThanOrEqual(1);
+    expect(reconciled.meetings[0]).toEqual(expect.objectContaining({
+      issueId,
+      chairAgentId: engineeringHeadId,
+    }));
+
+    const rows = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "agent_meeting",
+      status: "pending",
+      issueId,
+      idempotencyKey: `meeting-workflow:stale_review:${issueId}`,
+    });
+    expect((rows[0]!.payload as any).participantAgentIds).toEqual(
+      expect.arrayContaining([ceoId, engineeringHeadId, marketingHeadId, engineerId, marketerId]),
+    );
+
+    const duplicate = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+    expect(duplicate.created).toBe(0);
   });
 });

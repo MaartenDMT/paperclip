@@ -66,6 +66,59 @@ describe("actorMiddleware authenticated session profile", () => {
     });
   });
 
+  it("drops unknown run ids from request headers", async () => {
+    const db = {
+      select: vi.fn(() => createSelectChain([])),
+    } as any;
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "local_trusted",
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", "7539d354-5c30-4007-a290-e0724e621c699");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      source: "local_implicit",
+    });
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("preserves known run ids from request headers", async () => {
+    const runId = "7539d354-5c30-4007-a290-e0724e621c68";
+    const db = {
+      select: vi.fn(() => createSelectChain([{ id: runId }])),
+    } as any;
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "local_trusted",
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      source: "local_implicit",
+      runId,
+    });
+  });
+
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];

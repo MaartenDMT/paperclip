@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
-import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
+import { checkPostgresConnection, ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
   readEmbeddedPostgresPostmasterPid,
@@ -35,6 +35,7 @@ export type MigrationConnection = {
 
 const EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS = 5_000;
 const EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS = 250;
+const EMBEDDED_POSTGRES_STABILITY_GRACE_MS = 1_500;
 
 function isPostgresStartupNotReadyError(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error
@@ -63,20 +64,24 @@ export function isEmbeddedPostgresStartupTransientError(error: unknown): boolean
 export async function waitForEmbeddedPostgresReady(input: {
   adminConnectionString: string;
   databaseName?: string;
+  targetConnectionString?: string;
   timeoutMs?: number;
   pollMs?: number;
+  stabilityGraceMs?: number;
   ensureDatabase?: typeof ensurePostgresDatabase;
+  verifyConnection?: typeof checkPostgresConnection;
 }): Promise<boolean> {
   const timeoutMs = input.timeoutMs ?? EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS;
   const pollMs = input.pollMs ?? EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS;
   const ensureDatabase = input.ensureDatabase ?? ensurePostgresDatabase;
+  const verifyConnection = input.verifyConnection ?? checkPostgresConnection;
   const databaseName = input.databaseName ?? "paperclip";
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
     try {
       await ensureDatabase(input.adminConnectionString, databaseName);
-      return true;
+      break;
     } catch (error) {
       if (!isEmbeddedPostgresStartupTransientError(error)) {
         throw error;
@@ -86,6 +91,31 @@ export async function waitForEmbeddedPostgresReady(input: {
       }
       await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
+  }
+
+  if (!input.targetConnectionString) {
+    return true;
+  }
+
+  const stabilityDeadline = Date.now() + (input.stabilityGraceMs ?? EMBEDDED_POSTGRES_STABILITY_GRACE_MS);
+  for (;;) {
+    try {
+      await verifyConnection(input.targetConnectionString);
+    } catch (error) {
+      if (!isEmbeddedPostgresStartupTransientError(error)) {
+        throw error;
+      }
+      if (Date.now() >= stabilityDeadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      continue;
+    }
+
+    if (Date.now() >= stabilityDeadline) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
 
@@ -130,9 +160,13 @@ async function ensureEmbeddedPostgresConnection(
   preferredPort: number,
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
-  const selectedPort = await findAvailablePort(preferredPort);
-  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
+  const preferredAvailablePort = await findAvailablePort(preferredPort);
+  const selectedPort =
+    preferredAvailablePort !== preferredPort && existsSync(pgVersionFile)
+      ? preferredPort
+      : preferredAvailablePort;
+  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
   const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
   const preferredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`;
@@ -164,14 +198,16 @@ async function ensureEmbeddedPostgresConnection(
   if (runningPid) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+    const targetConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
     try {
       const ready = await waitForEmbeddedPostgresReady({
         adminConnectionString,
         databaseName: "paperclip",
+        targetConnectionString,
       });
       if (ready) {
         return {
-          connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+          connectionString: targetConnectionString,
           source: `embedded-postgres@${port}`,
           stop: async () => {},
         };

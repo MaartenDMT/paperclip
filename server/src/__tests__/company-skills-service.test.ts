@@ -132,4 +132,27 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       required: false,
     }));
   });
+
+  it("seeds bundled memory skills when listing runtime entries for heartbeats", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    const keys = entries.map((entry) => entry.key);
+
+    expect(keys).toContain("paperclipai/paperclip/para-memory-files");
+    expect(keys).toContain("paperclipai/paperclip/karpathy-obsidian-memory");
+    expect(entries.find((entry) => entry.runtimeName === "para-memory-files")).toMatchObject({
+      required: true,
+    });
+    expect(entries.find((entry) => entry.runtimeName === "karpathy-obsidian-memory")).toMatchObject({
+      required: true,
+    });
+  });
 });

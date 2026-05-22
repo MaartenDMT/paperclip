@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -77,6 +78,7 @@ import {
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
+import { buildTimerWakeupAssignmentContext } from "./heartbeat-timer-context.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -265,6 +267,11 @@ type NormalizedSkillActivation = {
   source: string;
 };
 
+type RuntimeSkillReference = {
+  key: string;
+  runtimeName?: string | null;
+};
+
 function normalizeSkillActivationKey(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -272,20 +279,48 @@ function normalizeSkillActivationKey(value: unknown): string | null {
   return normalized.slice(0, 160);
 }
 
-function normalizeAdapterSkillActivations(value: AdapterExecutionResult["skillActivations"]): NormalizedSkillActivation[] {
+function canonicalizeSkillActivationKey(
+  value: string,
+  runtimeSkills: RuntimeSkillReference[],
+): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return value;
+
+  const exactKey = runtimeSkills.find((skill) => skill.key.trim().toLowerCase() === normalized);
+  if (exactKey) return exactKey.key;
+
+  const exactRuntimeName = runtimeSkills.find((skill) =>
+    typeof skill.runtimeName === "string" && skill.runtimeName.trim().toLowerCase() === normalized,
+  );
+  if (exactRuntimeName) return exactRuntimeName.key;
+
+  const slugMatches = runtimeSkills.filter((skill) =>
+    skill.key.trim().toLowerCase().split("/").pop() === normalized,
+  );
+  if (slugMatches.length === 1) return slugMatches[0]!.key;
+
+  return value;
+}
+
+export function normalizeAdapterSkillActivations(
+  value: AdapterExecutionResult["skillActivations"],
+  runtimeSkills: RuntimeSkillReference[] = [],
+  now = new Date(),
+): NormalizedSkillActivation[] {
   if (!Array.isArray(value) || value.length === 0) return [];
   const result: NormalizedSkillActivation[] = [];
   for (const activation of value) {
-    const skillKey = normalizeSkillActivationKey(activation?.skillKey);
-    if (!skillKey) continue;
-    const skillName = normalizeSkillActivationKey(activation.skillName) ?? skillKey;
+    const rawSkillKey = normalizeSkillActivationKey(activation?.skillKey);
+    if (!rawSkillKey) continue;
+    const skillKey = canonicalizeSkillActivationKey(rawSkillKey, runtimeSkills);
+    const skillName = normalizeSkillActivationKey(activation.skillName) ?? rawSkillKey;
     const source = normalizeSkillActivationKey(activation.source) ?? "adapter";
     const parsedActivatedAt = activation.activatedAt ? new Date(activation.activatedAt) : null;
     result.push({
       skillKey,
       skillName,
       source,
-      activatedAt: parsedActivatedAt && !Number.isNaN(parsedActivatedAt.getTime()) ? parsedActivatedAt : new Date(),
+      activatedAt: parsedActivatedAt && !Number.isNaN(parsedActivatedAt.getTime()) ? parsedActivatedAt : now,
     });
   }
   return result;
@@ -2167,13 +2202,24 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
 }) {
+  const defaultGraphifyCandidates = [
+    "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe",
+  ];
   const graphifyCommand = () => {
-    const configured = process.env.PAPERCLIP_GRAPHIFY_BIN?.trim();
+    const configuredRaw =
+      process.env.PAPERCLIP_GRAPHIFY_BIN?.trim() ||
+      defaultGraphifyCandidates.find((candidate) => existsSync(candidate)) ||
+      "";
+    const configured =
+      configuredRaw.startsWith('"') && configuredRaw.endsWith('"') && configuredRaw.length >= 2
+        ? configuredRaw.slice(1, -1)
+        : configuredRaw;
     if (!configured) return "graphify";
     if (/^[A-Za-z]:[\\/][^\s"`]+$/.test(configured) || /^[^\s"`]+$/.test(configured)) {
       return configured;
     }
-    return `"${configured.replaceAll('"', '\\"')}"`;
+    const quoted = `"${configured.replaceAll('"', '\\"')}"`;
+    return /^[A-Za-z]:[\\/]/.test(configured) ? `& ${quoted}` : quoted;
   };
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -6104,6 +6150,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function resolveTimerWakeAssignedIssue(agent: typeof agents.$inferSelect) {
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        projectId: issues.projectId,
+        status: issues.status,
+        priority: issues.priority,
+        createdAt: issues.createdAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["in_progress", "todo", "backlog", "in_review", "blocked"]),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(
+        sql`case ${issues.status}
+          when 'in_progress' then 0
+          when 'todo' then 1
+          when 'backlog' then 2
+          when 'in_review' then 3
+          when 'blocked' then 4
+          else 5
+        end`,
+        sql`case ${issues.priority}
+          when 'critical' then 0
+          when 'high' then 1
+          when 'medium' then 2
+          when 'low' then 3
+          else 4
+        end`,
+        asc(issues.createdAt),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -8362,7 +8449,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
-      const skillActivations = normalizeAdapterSkillActivations(adapterResult.skillActivations);
+      const skillActivations = normalizeAdapterSkillActivations(adapterResult.skillActivations, runtimeSkillEntries);
       if (skillActivations.length > 0) {
         await db.insert(heartbeatRunSkillEvents).values(
           skillActivations.map((activation) => ({
@@ -8973,15 +9060,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Deferred comment wakes may only revive completed issues when the
         // original comment carried explicit reopen/resume intent.
         const deferredResumeIntent =
-          asBoolean((deferredPayload as Record<string, unknown>)?.resumeIntent) === true ||
-          asBoolean((deferredPayload as Record<string, unknown>)?.followUpRequested) === true ||
-          asBoolean(promotedContextSeed.resumeIntent) === true ||
-          asBoolean(promotedContextSeed.followUpRequested) === true;
+          asBoolean((deferredPayload as Record<string, unknown>)?.resumeIntent, false) === true ||
+          asBoolean((deferredPayload as Record<string, unknown>)?.followUpRequested, false) === true ||
+          asBoolean(promotedContextSeed.resumeIntent, false) === true ||
+          asBoolean(promotedContextSeed.followUpRequested, false) === true;
+        const deferredRequestedByHuman = deferred.requestedByActorType === "user";
         // System follow-ups such as retry or cleanup wakes must not reopen
         // closed work on behalf of generic comments.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          deferredRequestedByHuman &&
           (
             deferredWakeReason === "issue_reopened_via_comment" ||
             deferredResumeIntent
@@ -10772,17 +10861,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           continue;
         }
 
+        const { payload, contextSnapshot } = buildTimerWakeupAssignmentContext(
+          now,
+          await resolveTimerWakeAssignedIssue(agent),
+        );
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
           reason: "heartbeat_timer",
+          payload,
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
+          contextSnapshot,
         });
         if (run) enqueued += 1;
         else skipped += 1;

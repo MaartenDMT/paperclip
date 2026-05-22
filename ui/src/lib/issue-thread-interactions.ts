@@ -10,6 +10,9 @@ export type {
   IssueThreadInteractionBase,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionStatus,
+  AgentMeetingInteraction,
+  AgentMeetingPayload,
+  AgentMeetingResult,
   RequestConfirmationInteraction,
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationPayload,
@@ -49,6 +52,7 @@ export function isIssueThreadInteraction(
       candidate.kind === "suggest_tasks"
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
+      || candidate.kind === "agent_meeting"
     );
 }
 
@@ -81,6 +85,13 @@ export function buildIssueThreadInteractionSummary(
       return "Confirmation expired";
     }
     return "Requested confirmation";
+  }
+
+  if (interaction.kind === "agent_meeting") {
+    const count = interaction.payload.participantAgentIds.length;
+    if (interaction.status === "answered") return "Meeting outcomes recorded";
+    if (interaction.status === "cancelled") return "Meeting cancelled";
+    return count === 1 ? "Requested agent meeting" : `Requested ${count}-agent meeting`;
   }
 
   const count = interaction.payload.questions.length;

@@ -17,9 +17,11 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  MeetingWorkflowHealth,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueDocument,
+  WorkMeetingSummary,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -158,6 +160,27 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listWorkMeetings: (
+    companyId: string,
+    options?: {
+      limit?: number;
+      status?: string;
+      agentId?: string;
+      expectedOutput?: string;
+      q?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set("limit", String(options.limit));
+    if (options?.status) params.set("status", options.status);
+    if (options?.agentId) params.set("agentId", options.agentId);
+    if (options?.expectedOutput) params.set("expectedOutput", options.expectedOutput);
+    if (options?.q) params.set("q", options.q);
+    const qs = params.toString();
+    return api.get<WorkMeetingSummary[]>(`/companies/${companyId}/work-meetings${qs ? `?${qs}` : ""}`);
+  },
+  getWorkMeetingHealth: (companyId: string) =>
+    api.get<MeetingWorkflowHealth>(`/companies/${companyId}/work-meetings/health`),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

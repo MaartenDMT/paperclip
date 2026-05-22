@@ -209,6 +209,121 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("resolves assigneeAgentId filters from agent URL keys", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Video Marketing Producer",
+        role: "marketing",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other Agent",
+        role: "marketing",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const matchedIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: matchedIssueId,
+        companyId,
+        title: "Script a launch video",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Prepare analytics",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: otherAgentId,
+      },
+    ]);
+
+    const result = await svc.list(companyId, { assigneeAgentId: "video-marketing-producer" });
+
+    expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
+  });
+
+  it("resolves participantAgentId filters from agent URL keys", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Video Marketing Producer",
+      role: "marketing",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const createdIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: createdIssueId,
+        companyId,
+        title: "Created issue",
+        status: "todo",
+        priority: "medium",
+        createdByAgentId: agentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Other issue",
+        status: "todo",
+        priority: "medium",
+        createdByAgentId: otherAgentId,
+      },
+    ]);
+
+    const result = await svc.list(companyId, { participantAgentId: "video-marketing-producer" });
+
+    expect(result.map((issue) => issue.id)).toEqual([createdIssueId]);
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1304,6 +1419,39 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("strips unsafe control characters from issue text and comments", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Bad\u0000 title\u0007",
+      description: "Line one\nLine two\u001b\fstill text",
+    });
+
+    expect(issue.title).toBe("Bad title");
+    expect(issue.description).toBe("Line one\nLine twostill text");
+
+    const updated = await svc.update(issue.id, {
+      title: "Updated\u0000 title",
+      description: "Clean\r\nmarkdown\u0007 body",
+    });
+
+    expect(updated.title).toBe("Updated title");
+    expect(updated.description).toBe("Clean\r\nmarkdown body");
+
+    const comment = await svc.addComment(issue.id, "Comment\u0000 body\nkept\u001b", {
+      userId: "user-1",
+    });
+
+    expect(comment.body).toBe("Comment body\nkept");
   });
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
@@ -3173,5 +3321,96 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .then((rows) => rows[0]);
     expect(marker).toMatchObject({ id: recoveryIssue.id, status: "done" });
     expect(marker?.hiddenAt).toBeInstanceOf(Date);
+  });
+});
+
+describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-guard-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCheckoutIssue(status: "done" | "blocked") {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: `Checkout ${status} issue`,
+      status,
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: status === "done" ? new Date() : null,
+    });
+
+    return { issueId, agentId };
+  }
+
+  it("rejects checkout for done issues even if expectedStatuses includes done", async () => {
+    const { issueId, agentId } = await seedCheckoutIssue("done");
+
+    await expect(svc.checkout(issueId, agentId, ["done"], randomUUID())).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout requires an explicit reopen or follow-up path first",
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("rejects checkout for blocked issues even if expectedStatuses includes blocked", async () => {
+    const { issueId, agentId } = await seedCheckoutIssue("blocked");
+
+    await expect(svc.checkout(issueId, agentId, ["blocked"], randomUUID())).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout requires an explicit reopen or follow-up path first",
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
   });
 });

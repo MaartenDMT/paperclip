@@ -92,6 +92,7 @@ import {
   type AgentRuntimeState,
   type LiveEvent,
   type WorkspaceOperation,
+  type ManagerOverview as ManagerOverviewRecord,
 } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -707,6 +708,15 @@ export function AgentDetail() {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const { data: managerOverview } = useQuery({
+    queryKey:
+      resolvedCompanyId && resolvedAgentId
+        ? queryKeys.agents.managerOverview(resolvedCompanyId, resolvedAgentId)
+        : ["agents", "manager-overview", "none"],
+    queryFn: () => agentsApi.managerOverview(resolvedCompanyId!, resolvedAgentId!),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData && directReports.length > 0,
+    refetchInterval: 30_000,
+  });
   const agentBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(
       (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
@@ -1112,6 +1122,7 @@ export function AgentDetail() {
           runtimeState={runtimeState}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
+          managerOverview={managerOverview}
         />
       )}
 
@@ -1285,6 +1296,7 @@ function AgentOverview({
   runtimeState,
   agentId,
   agentRouteId,
+  managerOverview,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
@@ -1292,6 +1304,7 @@ function AgentOverview({
   runtimeState?: AgentRuntimeState;
   agentId: string;
   agentRouteId: string;
+  managerOverview?: ManagerOverviewRecord;
 }) {
   return (
     <div className="space-y-8">
@@ -1313,6 +1326,8 @@ function AgentOverview({
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
+
+      {managerOverview && <ManagerCommandCenter overview={managerOverview} />}
 
       {/* Recent Issues */}
       <div className="space-y-3">
@@ -1352,6 +1367,143 @@ function AgentOverview({
         <h3 className="text-sm font-medium">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
+    </div>
+  );
+}
+
+function formatAttentionLabel(value: string) {
+  switch (value) {
+    case "agent_paused":
+      return "Paused";
+    case "agent_error":
+      return "Error";
+    case "multiple_active_runs":
+      return "Multiple runs";
+    case "blocked_work":
+      return "Blocked";
+    case "blocked_without_first_class_blocker":
+      return "Missing blocker edge";
+    case "review_waiting":
+      return "Review";
+    case "stale_meeting":
+      return "Stale meeting";
+    default:
+      return value.replace(/_/g, " ");
+  }
+}
+
+function ManagerCommandCenter({ overview }: { overview: ManagerOverviewRecord }) {
+  const attentionReports = overview.reports.filter((report) => report.attention.length > 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium">Team Command Center</h3>
+          <p className="text-xs text-muted-foreground">
+            {overview.rollup.directReports} direct reports · {overview.rollup.openIssues} open issues
+          </p>
+        </div>
+        {attentionReports.length > 0 && (
+          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
+            {attentionReports.length} need attention
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <SummaryMetric label="Active runs" value={overview.rollup.activeRuns} />
+        <SummaryMetric label="In progress" value={overview.rollup.inProgressIssues} />
+        <SummaryMetric label="In review" value={overview.rollup.inReviewIssues} />
+        <SummaryMetric label="Blocked" value={overview.rollup.blockedIssues} />
+        <SummaryMetric label="Missing blockers" value={overview.rollup.blockerTextWithoutEdges} />
+      </div>
+
+      <div className="border border-border rounded-lg overflow-hidden">
+        {overview.reports.map((report) => (
+          <div key={report.agent.id} className="border-b border-border last:border-b-0 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <Link
+                  to={agentUrl(report.agent)}
+                  className="font-medium text-sm hover:text-foreground/80"
+                >
+                  {report.agent.name}
+                </Link>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>{roleLabels[report.agent.role] ?? report.agent.role}</span>
+                  <StatusBadge status={report.agent.status} />
+                  <span>{report.counts.openIssues} open</span>
+                  <span>{report.counts.activeRuns} runs</span>
+                  <span>{report.counts.recentMeetings} meetings</span>
+                </div>
+              </div>
+              {report.attention.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {report.attention.map((item) => (
+                    <span
+                      key={item}
+                      className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                    >
+                      {formatAttentionLabel(item)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {report.recentIssues.length > 0 && (
+              <div className="mt-3 grid gap-1">
+                {report.recentIssues.slice(0, 3).map((issue) => (
+                  <Link
+                    key={issue.id}
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5 text-xs hover:bg-accent/40"
+                  >
+                    <span className="min-w-0 truncate">
+                      <span className="font-mono text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+                      <span className="mx-1 text-muted-foreground">·</span>
+                      {issue.title}
+                    </span>
+                    <StatusBadge status={issue.status} />
+                  </Link>
+                ))}
+              </div>
+            )}
+            {report.recentMeetings.length > 0 && (
+              <div className="mt-3 grid gap-1">
+                {report.recentMeetings.slice(0, 2).map((meeting) => (
+                  <Link
+                    key={meeting.id}
+                    to="/work-meetings"
+                    className="flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5 text-xs hover:bg-accent/40"
+                  >
+                    <span className="min-w-0 truncate">
+                      <span className="text-muted-foreground">Meeting</span>
+                      <span className="mx-1 text-muted-foreground">·</span>
+                      {meeting.title ?? meeting.purpose}
+                    </span>
+                    {meeting.pendingAgeHours && meeting.pendingAgeHours >= 24 ? (
+                      <span className="shrink-0 text-amber-600 dark:text-amber-300">stale</span>
+                    ) : (
+                      <span className="shrink-0 text-muted-foreground">{meeting.status}</span>
+                    )}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
     </div>
   );
 }

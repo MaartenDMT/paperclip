@@ -26,6 +26,7 @@ describe("waitForEmbeddedPostgresReady", () => {
       if (calls < 3) {
         throw new Error("write CONNECTION_ENDED 127.0.0.1:54329");
       }
+      return "exists" as const;
     });
 
     await expect(
@@ -69,5 +70,49 @@ describe("waitForEmbeddedPostgresReady", () => {
       }),
     ).rejects.toThrow("password authentication failed");
     expect(ensureDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns false when the target database drops during the stability window", async () => {
+    const ensureDatabase = vi.fn(async () => "exists" as const);
+    let verifyCalls = 0;
+    const verifyConnection = vi.fn(async () => {
+      verifyCalls += 1;
+      if (verifyCalls >= 2) {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:54329");
+      }
+    });
+
+    await expect(
+      waitForEmbeddedPostgresReady({
+        adminConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/postgres",
+        targetConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+        ensureDatabase,
+        verifyConnection,
+        timeoutMs: 5,
+        stabilityGraceMs: 5,
+        pollMs: 1,
+      }),
+    ).resolves.toBe(false);
+    expect(ensureDatabase).toHaveBeenCalledTimes(1);
+    expect(verifyConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps probing until the target database survives the stability window", async () => {
+    const ensureDatabase = vi.fn(async () => "exists" as const);
+    const verifyConnection = vi.fn(async () => {});
+
+    await expect(
+      waitForEmbeddedPostgresReady({
+        adminConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/postgres",
+        targetConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+        ensureDatabase,
+        verifyConnection,
+        timeoutMs: 5,
+        stabilityGraceMs: 3,
+        pollMs: 1,
+      }),
+    ).resolves.toBe(true);
+    expect(ensureDatabase).toHaveBeenCalledTimes(1);
+    expect(verifyConnection).toHaveBeenCalled();
   });
 });

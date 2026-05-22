@@ -85,6 +85,15 @@ export async function getPostgresDataDirectory(url: string): Promise<string | nu
   }
 }
 
+export async function checkPostgresConnection(url: string): Promise<void> {
+  const sql = createUtilitySql(url);
+  try {
+    await sql`select 1`;
+  } finally {
+    await sql.end();
+  }
+}
+
 async function listMigrationFiles(): Promise<string[]> {
   const entries = await readdir(MIGRATIONS_FOLDER, { withFileTypes: true });
   return entries

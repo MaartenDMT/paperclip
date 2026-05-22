@@ -39,6 +39,7 @@ import {
   approvalService,
   companySkillService,
   budgetService,
+  dashboardService,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -1336,7 +1337,7 @@ export function agentRoutes(
     const requestedSkillRefs = requestedDesiredSkills
       ?? (await companySkills.listFull(companyId))
         .filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"))
-        .filter((skill) => skill.compatibility !== "incompatible")
+        .filter((skill) => skill.compatibility !== "invalid")
         .map((skill) => skill.key);
 
     const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
@@ -1782,6 +1783,18 @@ export function agentRoutes(
     const tree = await svc.orgForCompany(companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);
+  });
+
+  router.get("/companies/:companyId/manager-overview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const managerAgentId = typeof req.query.managerAgentId === "string" ? req.query.managerAgentId.trim() : "";
+    if (!managerAgentId) {
+      res.status(400).json({ error: "managerAgentId is required" });
+      return;
+    }
+    const overview = await dashboardService(db).managerOverview(companyId, managerAgentId);
+    res.json(overview);
   });
 
   router.get("/companies/:companyId/org.svg", async (req, res) => {

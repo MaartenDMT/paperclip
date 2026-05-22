@@ -11,6 +11,8 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  listMeetingsForCompany: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
@@ -49,6 +51,12 @@ function registerModuleMocks() {
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
         ambiguous: false,
         agent: { id: raw },
+      })),
+    }),
+    agentInstructionsService: () => ({
+      pruneStaleIssueScopedFiles: vi.fn(async () => ({
+        removed: [],
+        failed: [],
       })),
     }),
     clampIssueListLimit: (value: number) => value,
@@ -151,6 +159,8 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.listMeetingsForCompany.mockResolvedValue([]);
+    mockInteractionService.getById.mockResolvedValue(null);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -391,6 +401,84 @@ describe.sequential("issue thread interaction routes", () => {
       expect.objectContaining({
         action: "issue.thread_interaction_answered",
       }),
+    );
+  });
+
+  it("allows an agent participant to answer an agent meeting on another assignee's issue", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce({
+      id: "meeting-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "agent_meeting",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        purpose: "Resolve cross-team blocker",
+        participantAgentIds: [CREATED_AGENT_ID],
+        agenda: ["Decide next owner"],
+        expectedOutputs: ["decisions"],
+      },
+      result: null,
+    });
+    mockInteractionService.answerQuestions.mockResolvedValueOnce({
+      id: "meeting-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "agent_meeting",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-2",
+      payload: {
+        version: 1,
+        purpose: "Resolve cross-team blocker",
+        participantAgentIds: [CREATED_AGENT_ID],
+        agenda: ["Decide next owner"],
+        expectedOutputs: ["decisions"],
+      },
+      result: {
+        version: 1,
+        summaryMarkdown: "Decision recorded.",
+        decisions: ["Keep implementation with engineering."],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:06:00.000Z",
+      resolvedAt: "2026-04-20T12:06:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/meeting-1/respond")
+      .send({
+        meetingResult: {
+          version: 1,
+          summaryMarkdown: "Decision recorded.",
+          decisions: ["Keep implementation with engineering."],
+          actionItems: [],
+          blockers: [],
+          openQuestions: [],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "meeting-1",
+      expect.objectContaining({ meetingResult: expect.any(Object) }),
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
     );
   });
 

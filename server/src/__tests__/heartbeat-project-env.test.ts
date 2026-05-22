@@ -3,6 +3,7 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
+  normalizeAdapterSkillActivations,
   resolveExecutionRunAdapterConfig,
 } from "../services/heartbeat.ts";
 
@@ -144,5 +145,53 @@ describe("applyRunScopedMentionedSkillKeys", () => {
         desiredSkills: ["paperclipai/paperclip/paperclip"],
       },
     });
+  });
+});
+
+describe("normalizeAdapterSkillActivations", () => {
+  it("canonicalizes adapter runtime skill names back to company skill keys", () => {
+    const activations = normalizeAdapterSkillActivations(
+      [
+        {
+          skillKey: "caveman--4573ebe2fc",
+          skillName: "caveman--4573ebe2fc",
+          source: "codex",
+          activatedAt: "2026-04-18T20:00:00.000Z",
+        },
+        {
+          skillKey: "paperclipai/paperclip/paperclip",
+          skillName: "paperclip",
+          source: "codex",
+        },
+      ],
+      [
+        {
+          key: "company/company-1/caveman",
+          runtimeName: "caveman--4573ebe2fc",
+          source: "A:/skills/caveman",
+        },
+        {
+          key: "paperclipai/paperclip/paperclip",
+          runtimeName: "paperclip",
+          source: "A:/skills/paperclip",
+        },
+      ],
+      new Date("2026-04-18T20:05:00.000Z"),
+    );
+
+    expect(activations).toEqual([
+      {
+        skillKey: "company/company-1/caveman",
+        skillName: "caveman--4573ebe2fc",
+        source: "codex",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        skillKey: "paperclipai/paperclip/paperclip",
+        skillName: "paperclip",
+        source: "codex",
+        activatedAt: new Date("2026-04-18T20:05:00.000Z"),
+      },
+    ]);
   });
 });

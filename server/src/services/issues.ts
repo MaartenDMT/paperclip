@@ -44,6 +44,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isUuidLike,
+  normalizeAgentUrlKey,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -83,6 +84,18 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+
+function sanitizeTextForPostgres(input: string) {
+  // PostgreSQL rejects NUL bytes, and other C0 controls corrupt issue text
+  // in practice when pasted from escaped prompt snippets. Preserve whitespace
+  // controls that are meaningful markdown.
+  return input.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+
+function sanitizeNullableTextForPostgres<T extends string | null | undefined>(input: T): T {
+  return typeof input === "string" ? sanitizeTextForPostgres(input) as T : input;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -264,6 +277,12 @@ export type ChildIssueCompletionSummary = {
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
+}
+
+function isCheckoutRunnableStatus(
+  status: string | null | undefined,
+): status is "backlog" | "todo" | "in_review" | "in_progress" {
+  return status === "backlog" || status === "todo" || status === "in_review" || status === "in_progress";
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -1695,6 +1714,27 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  async function resolveAgentFilterId(companyId: string, reference: string): Promise<string | null> {
+    const raw = reference.trim();
+    if (!raw) return null;
+    if (isUuidLike(raw)) return raw;
+
+    const urlKey = normalizeAgentUrlKey(raw);
+    if (!urlKey) return null;
+
+    const rows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const matches = rows.filter((agent) => normalizeAgentUrlKey(agent.name) === urlKey && agent.status !== "terminated");
+    return matches.length === 1 ? (matches[0]?.id ?? null) : null;
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -2354,10 +2394,14 @@ export function issueService(db: Db) {
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+        const resolvedAssigneeAgentId = await resolveAgentFilterId(companyId, filters.assigneeAgentId);
+        if (!resolvedAssigneeAgentId) return [];
+        conditions.push(eq(issues.assigneeAgentId, resolvedAssigneeAgentId));
       }
       if (filters?.participantAgentId) {
-        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+        const resolvedParticipantAgentId = await resolveAgentFilterId(companyId, filters.participantAgentId);
+        if (!resolvedParticipantAgentId) return [];
+        conditions.push(participatedByAgentCondition(companyId, resolvedParticipantAgentId));
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
@@ -3057,6 +3101,8 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          title: sanitizeTextForPostgres(issueData.title),
+          description: sanitizeNullableTextForPostgres(issueData.description),
           projectId: resolvedProjectId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
@@ -3177,6 +3223,12 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (typeof patch.title === "string") {
+        patch.title = sanitizeTextForPostgres(patch.title);
+      }
+      if (typeof patch.description === "string") {
+        patch.description = sanitizeTextForPostgres(patch.description);
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -3548,6 +3600,37 @@ export function issueService(db: Db) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
       }
 
+      const runnableExpectedStatuses = expectedStatuses.filter((status) => isCheckoutRunnableStatus(status));
+      if (runnableExpectedStatuses.length === 0) {
+        throw conflict("Issue checkout requires an explicit reopen or follow-up path first", {
+          issueId: id,
+          expectedStatuses,
+        });
+      }
+
+      const currentBeforeCheckout = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!currentBeforeCheckout) throw notFound("Issue not found");
+      if (!isCheckoutRunnableStatus(currentBeforeCheckout.status)) {
+        throw conflict("Issue checkout requires an explicit reopen or follow-up path first", {
+          issueId: currentBeforeCheckout.id,
+          status: currentBeforeCheckout.status,
+          assigneeAgentId: currentBeforeCheckout.assigneeAgentId,
+          checkoutRunId: currentBeforeCheckout.checkoutRunId,
+          executionRunId: currentBeforeCheckout.executionRunId,
+        });
+      }
+
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
@@ -3571,7 +3654,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
+            inArray(issues.status, runnableExpectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -4025,7 +4108,9 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = sanitizeTextForPostgres(
+        redactCurrentUserText(body, currentUserRedactionOptions),
+      );
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );

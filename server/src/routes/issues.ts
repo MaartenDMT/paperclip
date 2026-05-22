@@ -3740,6 +3740,30 @@ export function issueRoutes(
     res.json(interactions);
   });
 
+  router.get("/companies/:companyId/work-meetings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 200) : 50;
+    const meetings = await issueThreadInteractionService(db).listMeetingsForCompany(companyId, {
+      limit,
+      status: typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : null,
+      agentId: typeof req.query.agentId === "string" && req.query.agentId.trim() ? req.query.agentId.trim() : null,
+      expectedOutput: typeof req.query.expectedOutput === "string" && req.query.expectedOutput.trim()
+        ? req.query.expectedOutput.trim()
+        : null,
+      q: typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : null,
+    });
+    res.json(meetings);
+  });
+
+  router.get("/companies/:companyId/work-meetings/health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const health = await issueThreadInteractionService(db).getMeetingWorkflowHealth(companyId);
+    res.json(health);
+  });
+
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -3951,9 +3975,20 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
 
       const actor = getActorInfo(req);
+      if (req.actor.type === "agent") {
+        const currentInteraction = await issueThreadInteractionService(db).getById(interactionId);
+        const actorIsMeetingParticipant =
+          currentInteraction?.kind === "agent_meeting"
+          && currentInteraction.issueId === issue.id
+          && currentInteraction.companyId === issue.companyId
+          && currentInteraction.payload.participantAgentIds.includes(req.actor.agentId);
+        if (!actorIsMeetingParticipant && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      } else {
+        assertBoard(req);
+      }
+
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,

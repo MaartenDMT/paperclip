@@ -15,6 +15,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  timeoutReason?: "run_timeout" | "startup_no_output_timeout";
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -2008,6 +2009,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    startupNoOutputTimeoutSec?: number;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
   },
@@ -2060,6 +2062,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timeoutReason: RunProcessResult["timeoutReason"];
         let stdout = "";
         let stderr = "";
         const logQueue: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
@@ -2070,6 +2073,9 @@ export async function runChildProcess(
         let terminalCleanupStarted = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let timeoutKillTimer: NodeJS.Timeout | null = null;
+        let timeoutForceResolveTimer: NodeJS.Timeout | null = null;
+        let settled = false;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
 
@@ -2160,20 +2166,81 @@ export async function runChildProcess(
           }, graceMs);
         };
 
+        const clearStartupNoOutputTimeout = () => {
+          if (startupNoOutputTimeout) clearTimeout(startupNoOutputTimeout);
+          startupNoOutputTimeout = null;
+        };
+
+        const clearTimeoutKillTimers = () => {
+          if (timeoutKillTimer) clearTimeout(timeoutKillTimer);
+          if (timeoutForceResolveTimer) clearTimeout(timeoutForceResolveTimer);
+          timeoutKillTimer = null;
+          timeoutForceResolveTimer = null;
+        };
+
+        const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+          if (settled) return;
+          settled = true;
+          if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
+          clearTerminalCleanupTimers();
+          clearTimeoutKillTimers();
+          runningProcesses.delete(runId);
+          void (logDrainPromise ?? Promise.resolve()).then(() => drainLogQueue()).finally(() => {
+            void Promise.resolve()
+              .then(() => target.cleanup?.())
+              .finally(() => {
+                resolve({
+                  exitCode: code,
+                  signal,
+                  timedOut,
+                  timeoutReason,
+                  stdout,
+                  stderr,
+                  pid: child.pid ?? null,
+                  startedAt,
+                });
+              });
+          });
+        };
+
+        const terminateForTimeout = (reason: NonNullable<RunProcessResult["timeoutReason"]>) => {
+          if (timedOut || settled) return;
+          timedOut = true;
+          timeoutReason = reason;
+          if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
+          clearTerminalCleanupTimers();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          const killDelayMs = Math.max(1, opts.graceSec) * 1000;
+          timeoutKillTimer = setTimeout(() => {
+            timeoutKillTimer = null;
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, killDelayMs);
+          timeoutForceResolveTimer = setTimeout(() => {
+            timeoutForceResolveTimer = null;
+            finish(null, "SIGKILL");
+          }, killDelayMs + 1_000);
+        };
+
+        let startupNoOutputTimeout =
+          opts.startupNoOutputTimeoutSec && opts.startupNoOutputTimeoutSec > 0
+            ? setTimeout(() => {
+                if (stdout.length > 0 || stderr.length > 0) return;
+                terminateForTimeout("startup_no_output_timeout");
+              }, opts.startupNoOutputTimeoutSec * 1000)
+            : null;
+
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
+                terminateForTimeout("run_timeout");
               }, opts.timeoutSec * 1000)
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
+          clearStartupNoOutputTimeout();
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           scheduleLog("stdout", text);
@@ -2181,6 +2248,7 @@ export async function runChildProcess(
 
         child.stderr?.on("data", (chunk: unknown) => {
           const text = String(chunk);
+          clearStartupNoOutputTimeout();
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           scheduleLog("stderr", text);
@@ -2197,7 +2265,9 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
           clearTerminalCleanupTimers();
+          clearTimeoutKillTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2214,24 +2284,7 @@ export async function runChildProcess(
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
-          runningProcesses.delete(runId);
-          void (logDrainPromise ?? Promise.resolve()).then(() => drainLogQueue()).finally(() => {
-            void Promise.resolve()
-              .then(() => target.cleanup?.())
-              .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-              });
-              });
-          });
+          finish(code, signal);
         });
       })
       .catch(reject);

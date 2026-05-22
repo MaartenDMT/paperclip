@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueComments, issueRelations, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,9 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -165,5 +168,163 @@ describeEmbeddedPostgres("dashboard service", () => {
       other: 1,
       total: 3,
     });
+  });
+
+  it("summarizes direct-report operating attention for a department head", async () => {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const frontendId = randomUUID();
+    const qaId = randomUUID();
+    const qaSpecialistId = randomUUID();
+    const outsideAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: frontendId,
+        companyId,
+        name: "Frontend",
+        role: "engineer",
+        status: "running",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: qaId,
+        companyId,
+        name: "QA",
+        role: "qa",
+        status: "idle",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: outsideAgentId,
+        companyId,
+        name: "CMO",
+        role: "cmo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: qaSpecialistId,
+        companyId,
+        name: "QA Specialist",
+        role: "qa",
+        status: "idle",
+        reportsTo: qaId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const frontendBlockedIssueId = randomUUID();
+    const qaReviewIssueId = randomUUID();
+    const qaNestedTodoIssueId = randomUUID();
+    const outsideIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: frontendBlockedIssueId,
+        companyId,
+        title: "Fix cover images",
+        status: "blocked",
+        priority: "critical",
+        assigneeAgentId: frontendId,
+        identifier: "TST-1",
+        issueNumber: 1,
+      },
+      {
+        id: qaReviewIssueId,
+        companyId,
+        title: "QA cover evidence",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: qaId,
+        identifier: "TST-2",
+        issueNumber: 2,
+      },
+      {
+        id: outsideIssueId,
+        companyId,
+        title: "Marketing calendar",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: outsideAgentId,
+        identifier: "TST-3",
+        issueNumber: 3,
+      },
+      {
+        id: qaNestedTodoIssueId,
+        companyId,
+        title: "Nested QA follow-up",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: qaSpecialistId,
+        identifier: "TST-4",
+        issueNumber: 4,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: frontendBlockedIssueId,
+      authorAgentId: frontendId,
+      body: "Blocked until storage owner fixes the bucket, no first-class blocker linked.",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: qaSpecialistId,
+      invocationSource: "assignment",
+      status: "running",
+    });
+
+    const overview = await dashboardService(db).managerOverview(companyId, managerId);
+
+    expect(overview.manager.id).toBe(managerId);
+    expect(overview.reports).toHaveLength(2);
+    expect(overview.rollup).toMatchObject({
+      directReports: 2,
+      openIssues: 3,
+      blockedIssues: 1,
+      inReviewIssues: 1,
+      activeRuns: 1,
+      blockerTextWithoutEdges: 1,
+    });
+    const qaReport = overview.reports.find((report) => report.agent.id === qaId);
+    expect(qaReport?.counts.openIssues).toBe(2);
+    expect(qaReport?.counts.activeRuns).toBe(1);
+    expect(overview.reports.find((report) => report.agent.id === frontendId)?.attention).toContain(
+      "blocked_without_first_class_blocker",
+    );
+    expect(overview.reports.some((report) => report.agent.id === outsideAgentId)).toBe(false);
   });
 });

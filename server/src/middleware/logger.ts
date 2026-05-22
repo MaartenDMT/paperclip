@@ -23,6 +23,21 @@ fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, "server.log");
 const rotatingLogTransport = fileURLToPath(new URL("./rotating-log-transport.cjs", import.meta.url));
 
+function canWriteLogFile(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, "a");
+    fs.closeSync(fd);
+    return true;
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "unknown";
+    console.warn(`[paperclip] unable to open server log file (${code}); continuing with console logging only`);
+    return false;
+  }
+}
+
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -39,29 +54,34 @@ const sharedOpts = {
   singleLine: true,
 };
 
+const transportTargets: pino.TransportTargetOptions[] = [
+  {
+    target: "pino-pretty",
+    options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+    level: "info",
+  },
+];
+
+if (canWriteLogFile(logFile)) {
+  transportTargets.push({
+    target: rotatingLogTransport,
+    options: {
+      ...sharedOpts,
+      colorize: false,
+      destination: logFile,
+      mkdir: true,
+      maxBytes: maxLogBytes,
+      maxFiles: maxLogFiles,
+    },
+    level: "debug",
+  });
+}
+
 export const logger = pino({
   level: "debug",
   redact: ["req.headers.authorization"],
 }, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: rotatingLogTransport,
-      options: {
-        ...sharedOpts,
-        colorize: false,
-        destination: logFile,
-        mkdir: true,
-        maxBytes: maxLogBytes,
-        maxFiles: maxLogFiles,
-      },
-      level: "debug",
-    },
-  ],
+  targets: transportTargets,
 }));
 
 export const httpLogger = pinoHttp({

@@ -34,6 +34,28 @@ describe("issue thread interaction schemas", () => {
     });
   });
 
+  it("parses structured agent meeting interactions", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "agent_meeting",
+      title: "Cover incident triage",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        purpose: "Decide owner and next tasks for the cover-image incident.",
+        participantAgentIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        agenda: ["Review evidence", "Choose owner", "Create follow-up tasks"],
+        expectedOutputs: ["decisions", "tasks", "blockers"],
+      },
+    });
+
+    expect(parsed.kind).toBe("agent_meeting");
+    if (parsed.kind !== "agent_meeting") return;
+    expect(parsed.payload.expectedOutputs).toEqual(["decisions", "tasks", "blockers"]);
+  });
+
   it("accepts issue document targets for request_confirmation interactions", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",

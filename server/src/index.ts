@@ -13,6 +13,7 @@ import {
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
   inspectMigrations,
+  isEmbeddedPostgresStartupTransientError,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
   readEmbeddedPostgresPostmasterPid,
@@ -21,6 +22,7 @@ import {
   formatDatabaseBackupResult,
   runDatabaseBackup,
   startEmbeddedPostgresWithRecovery,
+  waitForEmbeddedPostgresReady,
   authUsers,
   companies,
   companyMemberships,
@@ -35,6 +37,7 @@ import {
   feedbackService,
   heartbeatService,
   instanceSettingsService,
+  issueThreadInteractionService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -391,9 +394,33 @@ export async function startServer(): Promise<StartedServer> {
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
     const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
     const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
+    let shouldStartManagedEmbeddedPostgres = false;
     if (runningPid) {
-      port = runningPort ?? port;
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      const candidatePort = runningPort ?? port;
+      const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${candidatePort}/postgres`;
+      const candidateConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${candidatePort}/paperclip`;
+      try {
+        const ready = await waitForEmbeddedPostgresReady({
+          adminConnectionString,
+          databaseName: "paperclip",
+          targetConnectionString: candidateConnectionString,
+        });
+        if (!ready) {
+          throw new Error(
+            `embedded postgres pid ${runningPid} exists but port ${candidatePort} did not become ready within the grace window`,
+          );
+        }
+        port = candidatePort;
+        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      } catch (err) {
+        if (!isEmbeddedPostgresStartupTransientError(err)) {
+          throw err;
+        }
+        logger.warn(
+          `Embedded PostgreSQL pid ${runningPid} exists but port ${candidatePort} is not accepting connections; attempting managed restart instead.`,
+        );
+        shouldStartManagedEmbeddedPostgres = true;
+      }
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
@@ -409,53 +436,61 @@ export async function startServer(): Promise<StartedServer> {
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
       } catch {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
-        }
-        port = detectedPort;
-        logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-        embeddedPostgres = new EmbeddedPostgres({
-          databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
-          port,
-          persistent: true,
-          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-          onLog: appendEmbeddedPostgresLog,
-          onError: appendEmbeddedPostgresLog,
-        });
+        shouldStartManagedEmbeddedPostgres = true;
+      }
+    }
 
-        if (!clusterAlreadyInitialized) {
-          try {
-            await embeddedPostgres.initialise();
-          } catch (err) {
-            logEmbeddedPostgresFailure("initialise", err);
-            throw formatEmbeddedPostgresError(err, {
-              fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
-              recentLogs: logBuffer.getRecentLogs(),
-            });
-          }
-        } else {
-          logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
-        }
+    if (shouldStartManagedEmbeddedPostgres) {
+      const detectedPort = await detectPort(configuredPort);
+      if (detectedPort !== configuredPort && clusterAlreadyInitialized) {
+        logger.warn(
+          `Embedded PostgreSQL configured port ${configuredPort} is occupied while existing cluster data is present; retrying managed recovery on the configured port instead of starting a second instance on ${detectedPort}.`,
+        );
+      } else if (detectedPort !== configuredPort) {
+        logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
+      }
+      port = detectedPort !== configuredPort && clusterAlreadyInitialized ? configuredPort : detectedPort;
+      logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
+      embeddedPostgres = new EmbeddedPostgres({
+        databaseDir: dataDir,
+        user: "paperclip",
+        password: "paperclip",
+        port,
+        persistent: true,
+        initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+        onLog: appendEmbeddedPostgresLog,
+        onError: appendEmbeddedPostgresLog,
+      });
 
+      if (!clusterAlreadyInitialized) {
         try {
-          await startEmbeddedPostgresWithRecovery({
-            instance: embeddedPostgres,
-            postmasterPidFile,
-            getRecentLogs: () => logBuffer.getRecentLogs(),
-            onRecovered: (message) => logger.warn(message),
-          });
+          await embeddedPostgres.initialise();
         } catch (err) {
-          logEmbeddedPostgresFailure("start", err);
+          logEmbeddedPostgresFailure("initialise", err);
           throw formatEmbeddedPostgresError(err, {
-            fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
+            fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        embeddedPostgresStartedByThisProcess = true;
+      } else {
+        logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
       }
+
+      try {
+        await startEmbeddedPostgresWithRecovery({
+          instance: embeddedPostgres,
+          postmasterPidFile,
+          getRecentLogs: () => logBuffer.getRecentLogs(),
+          onRecovered: (message) => logger.warn(message),
+        });
+      } catch (err) {
+        logEmbeddedPostgresFailure("start", err);
+        throw formatEmbeddedPostgresError(err, {
+          fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
+          recentLogs: logBuffer.getRecentLogs(),
+        });
+      }
+      embeddedPostgresStartedByThisProcess = true;
     }
   
     const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
@@ -727,6 +762,48 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const issueThreadInteractions = issueThreadInteractionService(db as any);
+    const reconcileMeetings = async (source: "startup" | "periodic") => {
+      const companyIds = await instanceSettingsService(db).listCompanyIds();
+      let created = 0;
+      for (const companyId of companyIds) {
+        const result = await issueThreadInteractions.reconcileMeetingWorkflow(companyId);
+        created += result.created;
+        for (const meeting of result.meetings) {
+          for (const agentId of meeting.participantAgentIds) {
+            try {
+              await heartbeat.wakeup(agentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "agent_meeting_requested",
+                payload: {
+                  issueId: meeting.issueId,
+                  interactionId: meeting.id,
+                  mutation: "meeting_workflow",
+                  chairAgentId: meeting.chairAgentId,
+                },
+                requestedByActorType: "system",
+                requestedByActorId: "meeting_workflow",
+                contextSnapshot: {
+                  issueId: meeting.issueId,
+                  taskId: meeting.issueId,
+                  interactionId: meeting.id,
+                  interactionKind: "agent_meeting",
+                  wakeReason: "agent_meeting_requested",
+                  source: `meeting_workflow.${source}`,
+                },
+              });
+            } catch (err) {
+              logger.warn(
+                { err, companyId, meetingId: meeting.id, issueId: meeting.issueId, agentId },
+                "meeting workflow failed to wake participant",
+              );
+            }
+          }
+        }
+      }
+      return { companies: companyIds.length, created };
+    };
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -769,6 +846,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })
+      .then(async () => {
+        const meetings = await reconcileMeetings("startup");
+        if (meetings.created > 0) {
+          logger.warn({ ...meetings }, "startup meeting workflow reconciliation created meetings");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -793,6 +876,16 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
+        });
+
+      void reconcileMeetings("periodic")
+        .then((result) => {
+          if (result.created > 0) {
+            logger.info({ ...result }, "meeting workflow tick created meetings");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "meeting workflow tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure

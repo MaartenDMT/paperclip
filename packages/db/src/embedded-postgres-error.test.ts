@@ -220,6 +220,51 @@ describe("startEmbeddedPostgresWithRecovery", () => {
     }
   });
 
+  it("terminates postgres forkchildren that outlive the stale parent pid", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "44840\n");
+
+    try {
+      let startCalls = 0;
+      let relatedProcessLookups = 0;
+      const terminatedPids: number[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls === 1) {
+            throw new Error("startup failed");
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [
+          "FATAL:  pre-existing shared memory block is still in use",
+          "HINT:  Check if there are any old server processes still running, and terminate them.",
+        ],
+        findCandidateProcessPids: async () => [],
+        findRelatedProcessTreePids: async (rootPids) => {
+          relatedProcessLookups += 1;
+          return relatedProcessLookups === 1 && Array.from(rootPids).includes(44840)
+            ? [11372]
+            : [];
+        },
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          return true;
+        },
+      });
+
+      expect(startCalls).toBe(2);
+      expect(terminatedPids).toEqual([44840, 11372]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("recovers when start hangs after writing a stale postmaster.pid", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
     const postmasterPidFile = path.join(tempDir, "postmaster.pid");
@@ -305,6 +350,51 @@ describe("startEmbeddedPostgresWithRecovery", () => {
     }
   });
 
+  it("does not claim recovery when a conflicting postgres pid remains alive", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      let startCalls = 0;
+      let discoveryCalls = 0;
+      const recoveredMessages: string[] = [];
+      const terminatedPids: number[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          throw new Error("startup failed");
+        },
+      };
+
+      await expect(
+        startEmbeddedPostgresWithRecovery({
+          instance,
+          postmasterPidFile,
+          getRecentLogs: () => [
+            "FATAL:  pre-existing shared memory block is still in use",
+            "HINT:  Check if there are any old server processes still running, and terminate them.",
+          ],
+          findCandidateProcessPids: async () => {
+            discoveryCalls += 1;
+            return discoveryCalls >= 2 ? [4242] : [4242, 4343];
+          },
+          terminateProcessTree: async (pid) => {
+            terminatedPids.push(pid);
+            return pid === 4343;
+          },
+          onRecovered: (message) => recoveredMessages.push(message),
+        }),
+      ).rejects.toThrow("embedded postgres recovery could not clear conflicting process tree(s): 4242");
+
+      expect(startCalls).toBe(1);
+      expect(terminatedPids).toEqual([4242, 4343]);
+      expect(recoveredMessages).toHaveLength(0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("allows additional recovery passes when Windows cleanup needs more than two retries", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
     const postmasterPidFile = path.join(tempDir, "postmaster.pid");
@@ -342,7 +432,7 @@ describe("startEmbeddedPostgresWithRecovery", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   it("does not retry unrelated startup failures", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));

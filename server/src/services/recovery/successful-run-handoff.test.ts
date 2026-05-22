@@ -85,6 +85,11 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
     expect(decision.instruction).toContain("record an explicit continuation path");
+    expect(decision.instruction).toContain("scripts/paperclip-issue-update.sh --issue-id \"PAP-1\" --status done");
+    expect(decision.instruction).toContain("PATCH /api/issues/PAP-1");
+    expect(decision.instruction).toContain("Do not call bare numeric paths like `/api/issues/2631`");
+    expect(decision.instruction).toContain("read the issue back and verify");
+    expect(decision.instruction).toContain("do not use Bash-only command chains like `&&` or `ls -la`");
   });
 
   it("does not queue when the issue already has a valid disposition", () => {

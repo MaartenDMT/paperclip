@@ -99,6 +99,21 @@ describe("buildPaperclipTaskMarkdown", () => {
     );
     expect(assignment).not.toContain("`graphify query");
   });
+
+  it("invokes quoted Windows graphify paths with the PowerShell call operator", () => {
+    vi.stubEnv("PAPERCLIP_GRAPHIFY_BIN", "\"C:\\Program Files\\Graphify\\graphify.exe\"");
+
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Use graph memory",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("& \"C:\\Program Files\\Graphify\\graphify.exe\" query");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {

@@ -204,6 +204,12 @@ export type {
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
+  WorkMeetingSummary,
+  MeetingWorkflowHealth,
+  MeetingWorkflowLifecycleStep,
+  MeetingWorkflowPolicyTrigger,
+  MeetingWorkflowRecommendation,
+  MeetingWorkflowTrigger,
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,
@@ -299,7 +305,16 @@ export type {
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
-export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
+export type {
+  DashboardRunActivityDay,
+  DashboardSummary,
+  ManagerOverview,
+  ManagerOverviewAgent,
+  ManagerOverviewAttention,
+  ManagerOverviewIssue,
+  ManagerOverviewMeeting,
+  ManagerOverviewReport,
+} from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,

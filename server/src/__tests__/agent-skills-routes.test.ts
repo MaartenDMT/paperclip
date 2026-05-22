@@ -707,7 +707,7 @@ describe.sequential("agent skill routes", () => {
       {
         key: "company/company-1/old-skill",
         slug: "old-skill",
-        compatibility: "incompatible",
+        compatibility: "invalid",
       },
       {
         key: "paperclipai/paperclip/paperclip",

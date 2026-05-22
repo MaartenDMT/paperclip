@@ -10,6 +10,7 @@ import {
   getQuestionAnswerLabels,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
+  type AgentMeetingInteraction,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
   type RequestConfirmationTarget,
@@ -94,9 +95,78 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Ask user questions";
     case "request_confirmation":
       return "Confirmation";
+    case "agent_meeting":
+      return "Agent meeting";
     default:
       return kind;
   }
+}
+
+function AgentMeetingCard({
+  interaction,
+  agentMap,
+}: {
+  interaction: AgentMeetingInteraction;
+  agentMap?: Map<string, Agent>;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-sm border border-border/70 p-3">
+        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Purpose</div>
+        <p className="mt-2 text-sm leading-6 text-foreground">{interaction.payload.purpose}</p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-sm border border-border/70 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Participants</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {interaction.payload.participantAgentIds.map((agentId) => (
+              <span key={agentId} className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {agentMap?.get(agentId)?.name ?? agentId.slice(0, 8)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-sm border border-border/70 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Expected outputs</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {interaction.payload.expectedOutputs.map((output) => (
+              <span key={output} className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {output.replace(/_/g, " ")}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-sm border border-border/70 p-3">
+        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Agenda</div>
+        <ul className="mt-2 space-y-1 text-sm text-foreground">
+          {interaction.payload.agenda.map((item, index) => (
+            <li key={`${index}-${item}`} className="flex gap-2">
+              <span className="text-muted-foreground">{index + 1}.</span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {interaction.payload.contextMarkdown ? (
+        <div className="rounded-sm border border-border/70 p-3">
+          <MarkdownBody>{interaction.payload.contextMarkdown}</MarkdownBody>
+        </div>
+      ) : null}
+
+      {interaction.result ? (
+        <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+            Outcomes
+          </div>
+          <MarkdownBody className="mt-2">{interaction.result.summaryMarkdown}</MarkdownBody>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function statusIcon(status: IssueThreadInteraction["status"]) {
@@ -1262,7 +1332,9 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  : interaction.kind === "agent_meeting"
+                    ? "Structured agent meeting"
+                    : "Confirmation requested")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1300,6 +1372,8 @@ export function IssueThreadInteractionCard({
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
           />
+        ) : interaction.kind === "agent_meeting" ? (
+          <AgentMeetingCard interaction={interaction} agentMap={agentMap} />
         ) : (
           <RequestConfirmationCard
             interaction={interaction}
