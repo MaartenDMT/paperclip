@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -36,6 +36,12 @@ export type MeetingWakeTarget = {
   issueId: string | null;
   participantAgentIds: string[];
   chairAgentId: string | null;
+};
+
+type ActiveMeetingRun = {
+  id: string;
+  agentId: string;
+  status: string;
 };
 
 const PENDING_MEETING_REWAKE_MS = 15 * 60 * 1000;
@@ -85,14 +91,15 @@ export function meetingService(db: Db) {
     companyId: string,
     meeting: typeof meetings.$inferSelect,
     participantAgentIds: string[],
+    activeRuns: ActiveMeetingRun[] = [],
   ) {
     if (!meeting.idempotencyKey?.startsWith("meeting-workflow:")) {
-      return participantAgentIds;
+      return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
     }
     if (meeting.idempotencyKey.startsWith("meeting-workflow:no_recent_meetings:")) {
-      return participantAgentIds;
+      return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
     }
-    if (!meeting.sourceIssueId) return participantAgentIds;
+    if (!meeting.sourceIssueId) return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
 
     const agentRows = await db
       .select({ id: agents.id, role: agents.role, reportsTo: agents.reportsTo })
@@ -103,7 +110,9 @@ export function meetingService(db: Db) {
       agentRows.find((agent) => agent.role === "ceo" && !agent.reportsTo) ??
       agentRows.find((agent) => !agent.reportsTo) ??
       null;
-    if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) return participantAgentIds;
+    if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) {
+      return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
+    }
     const directHeadIds = new Set(
       agentRows
         .filter((agent) => agent.reportsTo === topLevelHead.id)
@@ -117,7 +126,9 @@ export function meetingService(db: Db) {
         eq(issues.companyId, companyId),
         sql`(${issues.id} = ${meeting.sourceIssueId} or ${issues.parentId} = ${meeting.sourceIssueId})`,
       ));
-    if (relatedIssues.some((issue) => issue.priority === "critical")) return participantAgentIds;
+    if (relatedIssues.some((issue) => issue.priority === "critical")) {
+      return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
+    }
 
     const resolveHeadId = (agentId: string | null) => {
       const assignee = agentId ? agentById.get(agentId) ?? null : null;
@@ -135,7 +146,7 @@ export function meetingService(db: Db) {
       relatedHeadIds.size !== 1 ||
       relatedHeadIds.has(topLevelHead.id)
     ) {
-      return participantAgentIds;
+      return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
     }
     const [departmentHeadId] = [...relatedHeadIds];
     const repairedParticipantIds = [
@@ -170,6 +181,22 @@ export function meetingService(db: Db) {
         .set({ chairAgentId: departmentHeadId, updatedAt: new Date() })
         .where(eq(meetings.id, meeting.id));
     }
+    const cancelledRunRows = activeRuns.filter(
+      (run) => run.status === "queued" && !repairedParticipantIds.includes(run.agentId),
+    );
+    const cancelledRunIds = cancelledRunRows.map((run) => run.id);
+    if (cancelledRunIds.length > 0) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+          error: "Cancelled because meeting participants were repaired to the lowest responsible level",
+          errorCode: "meeting_participant_repaired",
+        })
+        .where(inArray(heartbeatRuns.id, cancelledRunIds));
+    }
     await logActivity(db, {
       companyId,
       actorType: "system",
@@ -181,13 +208,14 @@ export function meetingService(db: Db) {
         reason: "lowest_responsible_level",
         removedTopLevelHeadAgentId: topLevelHead.id,
         insertedDepartmentHeadAgentId: insertedDepartmentHead ? departmentHeadId : null,
+        cancelledRunIds,
         chairAgentId: meeting.chairAgentId === topLevelHead.id || !meeting.chairAgentId
           ? departmentHeadId
           : meeting.chairAgentId,
         sourceIssueId: meeting.sourceIssueId,
       },
     });
-    return repairedParticipantIds;
+    return { participantAgentIds: repairedParticipantIds, repaired: true, cancelledRunIds };
   }
 
   async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
@@ -620,16 +648,18 @@ export function meetingService(db: Db) {
         eq(meetings.companyId, companyId),
         eq(meetings.status, "pending"),
         sql`${meetings.idempotencyKey} like 'meeting-workflow:%'`,
-        lte(meetings.updatedAt, cutoff),
       ))
       .orderBy(asc(meetings.updatedAt))
-      .limit(50);
+      .limit(200);
 
     const meetingIds = rows.map((row) => row.id);
     const activeRunRows = meetingIds.length > 0
-      ? await db
+        ? await db
           .select({
             meetingId: sql<string>`${heartbeatRuns.contextSnapshot}->>'meetingId'`,
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
           })
           .from(heartbeatRuns)
           .where(and(
@@ -638,7 +668,14 @@ export function meetingService(db: Db) {
             inArray(sql<string>`${heartbeatRuns.contextSnapshot}->>'meetingId'`, meetingIds),
           ))
       : [];
-    const meetingIdsWithActiveRuns = new Set(activeRunRows.map((row) => row.meetingId));
+    const activeRunsByMeetingId = new Map<string, ActiveMeetingRun[]>();
+    for (const run of activeRunRows) {
+      const meetingId = run.meetingId;
+      if (!meetingId) continue;
+      const current = activeRunsByMeetingId.get(meetingId) ?? [];
+      current.push({ id: run.id, agentId: run.agentId, status: run.status });
+      activeRunsByMeetingId.set(meetingId, current);
+    }
 
     const participantRows = meetingIds.length > 0
       ? await db
@@ -656,15 +693,18 @@ export function meetingService(db: Db) {
     const wakeTargets: MeetingWakeTarget[] = [];
     let cancelledUnrunnable = 0;
     for (const meeting of rows) {
-      if (meetingIdsWithActiveRuns.has(meeting.id)) continue;
-      const prunedParticipantIds = await repairSingleDepartmentWorkflowMeetingParticipants(
+      const activeRuns = activeRunsByMeetingId.get(meeting.id) ?? [];
+      if (activeRuns.some((run) => run.status === "running")) continue;
+      const repairResult = await repairSingleDepartmentWorkflowMeetingParticipants(
         companyId,
         meeting,
         participantsByMeetingId.get(meeting.id) ?? [],
+        activeRuns,
       );
+      if (!repairResult.repaired && meeting.updatedAt > cutoff) continue;
       const runnableIds = await listRunnableParticipantIds(
         companyId,
-        prunedParticipantIds,
+        repairResult.participantAgentIds,
       );
       if (runnableIds.length === 0) {
         const [updated] = await db
