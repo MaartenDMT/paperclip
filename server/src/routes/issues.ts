@@ -101,10 +101,23 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { agentRoleCanAssignTasks } from "../services/agent-permissions.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+const linkMeetingOutcomeIssueSchema = z.object({
+  outcomeType: z.enum([
+    "action_item",
+    "blocker",
+    "workflow_correction",
+    "memory_correction",
+    "idea",
+    "agent_performance_review",
+  ]),
+  index: z.number().int().min(0),
+  issueId: z.string().uuid(),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -1024,7 +1037,13 @@ export function issueRoutes(
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (
+        actorAgent &&
+        actorAgent.companyId === companyId &&
+        (canCreateAgentsLegacy(actorAgent) || agentRoleCanAssignTasks(actorAgent.role))
+      ) {
+        return;
+      }
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
@@ -3763,6 +3782,19 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     const health = await issueThreadInteractionService(db).getMeetingWorkflowHealth(companyId);
     res.json(health);
+  });
+
+  router.post("/companies/:companyId/work-meetings/:meetingId/outcomes/link", validate(linkMeetingOutcomeIssueSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const meetingId = req.params.meetingId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const linked = await issueThreadInteractionService(db).linkMeetingOutcomeIssue(companyId, meetingId, req.body, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    res.json(linked);
   });
 
   router.post("/meetings/:meetingId/respond", validate(respondIssueThreadInteractionSchema), async (req, res) => {

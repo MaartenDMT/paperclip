@@ -618,6 +618,8 @@ export type AgentMeetingExpectedOutput =
   | "workflow_corrections"
   | "memory_corrections"
   | "idea_sharing"
+  | "business_requirements"
+  | "agent_performance"
   | "workflows"
   | "process";
 
@@ -650,6 +652,22 @@ export interface AgentMeetingResult {
     rationale: string;
     corrections?: string[];
   } | null;
+  businessReview?: {
+    goalAlignment: string;
+    targetOrKpiImpact?: string | null;
+    financeOrBudgetImpact?: string | null;
+    customerOrBusinessValue?: string | null;
+    requirements?: string[];
+    risks?: string[];
+  } | null;
+  agentPerformanceReviews?: Array<{
+    agentId: string;
+    assessment: "exceeds" | "on_track" | "at_risk" | "blocked" | "needs_attention";
+    summary: string;
+    evidence?: string[];
+    corrections?: string[];
+    issueId?: string | null;
+  }>;
   workflowCorrections?: Array<{
     summary: string;
     target?: string | null;
@@ -747,6 +765,11 @@ export interface WorkMeetingSummary {
   pendingAgeHours: number | null;
   unlinkedActionItems: number;
   unlinkedBlockers: number;
+  unlinkedWorkflowCorrections: number;
+  unlinkedMemoryCorrections: number;
+  unlinkedIdeas: number;
+  unlinkedAgentPerformanceReviews: number;
+  unlinkedOutcomeItems: number;
   createdAt: Date | string;
   resolvedAt: Date | string | null;
 }

@@ -91,6 +91,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
 const mockCompanySkillService = vi.hoisted(() => ({
+  listFull: vi.fn(),
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
@@ -319,6 +320,7 @@ describe.sequential("agent permission routes", () => {
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
+    mockCompanySkillService.listFull.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockReset();
     mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
     mockLogActivity.mockReset();
@@ -356,6 +358,7 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
@@ -372,6 +375,7 @@ describe.sequential("agent permission routes", () => {
         },
       }),
     );
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => requested,
@@ -1342,6 +1346,29 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
   }, 15_000);
 
+  it("exposes manager-role task assignment access on agent detail", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("manager_role");
+  }, 15_000);
+
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,
@@ -1371,6 +1398,43 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("keeps task assignment enabled for manager roles", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    });
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: false }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      "board-user",
+    );
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("manager_role");
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

@@ -138,6 +138,26 @@ describe("graphify compact corpus", () => {
     await expect(fs.stat(path.join(corpus, "graphify-out", "GRAPH_REPORT.md"))).rejects.toThrow();
   });
 
+  it("excludes broken graphify backup directories from the compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.mkdir(path.join(vault, ".graphify-out-broken-20260520-053206"), { recursive: true });
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+    await fs.writeFile(
+      path.join(vault, ".graphify-out-broken-20260520-053206", "GRAPH_REPORT.md"),
+      "# Broken backup\n",
+      "utf8",
+    );
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000)).toMatchObject({
+      files: 1,
+      written: 1,
+    });
+    await expect(
+      fs.stat(path.join(corpus, ".graphify-out-broken-20260520-053206", "GRAPH_REPORT.md")),
+    ).rejects.toThrow();
+  });
+
   it("does not rewrite unchanged compact corpus files", async () => {
     const vault = await tempVault();
     const corpus = path.join(vault, ".graphify-corpus");
@@ -223,5 +243,28 @@ describe("graphify graph output validation", () => {
       restoredBackup: true,
     });
     await expect(fs.readFile(graphFile, "utf8")).resolves.toContain("rea-1");
+  });
+
+  it("marks trivially small graphs as degraded when the corpus is much larger", async () => {
+    const vault = await tempVault();
+    for (let i = 0; i < 120; i += 1) {
+      await fs.writeFile(path.join(vault, "issues", `REA-${i}.md`), `# REA-${i}\n`, "utf8");
+    }
+    const graphFile = path.join(vault, "graphify-out", "graph.json");
+    await fs.writeFile(
+      graphFile,
+      JSON.stringify({
+        nodes: [{ id: "rea-1", label: "REA-1" }],
+        edges: [],
+      }),
+      "utf8",
+    );
+
+    expect(validateGraphifyGraphOutput(vault)).toMatchObject({
+      nodeCount: 1,
+      sourceFiles: 120,
+      isDegraded: true,
+      restoredBackup: false,
+    });
   });
 });

@@ -257,7 +257,7 @@ All agent communication flows through the **task system**.
 - **Coordination** = commenting on tasks
 - **Status updates** = updating task status and fields
 
-There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
+There is no separate general messaging or chat system. Tasks are the default communication channel. Paperclip also supports structured company operating meetings: separate review threads that can link to issues and record goals, targets, KPIs, finance impact, business requirements, agent employee performance, decisions, blockers, tasks, workflow corrections, memory corrections, open questions, and ideas. This keeps operational discussion attached to work and company state instead of becoming side-channel chat.
 
 ### Implications
 
@@ -265,6 +265,7 @@ There is no separate messaging or chat system. Tasks are the communication chann
 - The CEO delegates by creating tasks assigned to the CTO
 - The CTO breaks those down into sub-tasks assigned to engineers
 - Discussion happens in task comments, not a side channel
+- Operating meetings happen in meeting threads and must produce auditable outcomes linked back to issues or company-level decisions
 - If an agent needs to escalate, they comment on the parent task or reassign
 
 ### Task Hierarchy Mapping

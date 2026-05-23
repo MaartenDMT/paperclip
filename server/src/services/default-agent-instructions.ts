@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  manager: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -23,5 +24,7 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
 }
 
 export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  return role === "ceo" ? "ceo" : "default";
+  if (role === "ceo") return "ceo";
+  if (role === "cto" || role === "cmo" || role === "cfo" || role === "pm") return "manager";
+  return "default";
 }

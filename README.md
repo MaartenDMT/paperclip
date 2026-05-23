@@ -210,56 +210,65 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td>
 
-**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, workspace resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
+**Operating Meetings** — Company-level and issue-linked meeting threads capture goals, targets, KPIs, finance impact, business requirements, agent performance, decisions, tasks, blockers, workflow corrections, memory corrections, and ideas.
 
 </td>
 </tr>
 <tr>
+<td>
+
+**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, workspace resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
+
+</td>
 <td>
 
 **Workspaces & Runtime** — Project workspaces, isolated execution workspaces (git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
 
 </td>
+</tr>
+<tr>
 <td>
 
 **Governance & Approvals** — Board approval workflows, execution policies with review/approval stages, decision tracking, budget hard-stops, agent pause/resume/terminate, and full audit logging. You're the board — nothing ships without your sign-off.
 
 </td>
-</tr>
-<tr>
 <td>
 
 **Budget & Cost Control** — Token and cost tracking by company, agent, project, goal, issue, provider, and model. Scoped budget policies with warning thresholds and hard stops. Overspend pauses agents and cancels queued work automatically.
 
 </td>
-<td>
-
-**Routines & Schedules** — Recurring tasks with cron, webhook, and API triggers. Concurrency and catch-up policies. Each routine execution creates a tracked issue and wakes the assigned agent — no manual kick-offs needed.
-
-</td>
 </tr>
 <tr>
+<td>
+
+**Routines & Schedules** — Recurring tasks with cron, webhook, and API triggers. Concurrency and catch-up policies. Each routine execution creates a tracked issue and wakes the assigned agent — no manual kick-offs needed. The built-in memory maintenance routine assigns a steward agent to clean up Karpathy/Obsidian and PARA memory from meeting-derived corrections.
+
+</td>
 <td>
 
 **Plugins** — Instance-wide plugin system with out-of-process workers, capability-gated host services, job scheduling, tool exposure, and UI contributions. Extend Paperclip without forking it.
 
 </td>
+</tr>
+<tr>
 <td>
 
 **Secrets & Storage** — Instance and company secrets, encrypted local storage, provider-backed object storage, attachments, and work products. Sensitive values stay out of prompts unless a scoped run explicitly needs them.
+
+</td>
+<td>
+
+**Activity & Events** — Mutating actions, heartbeat state changes, cost events, approvals, comments, and work products are recorded as durable activity so operators can audit what happened and why.
 
 </td>
 </tr>
 <tr>
 <td>
 
-**Activity & Events** — Mutating actions, heartbeat state changes, cost events, approvals, comments, and work products are recorded as durable activity so operators can audit what happened and why.
+**Company Portability** — Export and import entire organizations — agents, skills, projects, routines, and issues — with secret scrubbing and collision handling. One deployment, many companies, complete data isolation.
 
 </td>
 <td>
-
-**Company Portability** — Export and import entire organizations — agents, skills, projects, routines, and issues — with secret scrubbing and collision handling. One deployment, many companies, complete data isolation.
-
 </td>
 </tr>
 </table>
@@ -270,7 +279,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 |                              |                                                                                                                      |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
+| **Not a chatbot.**           | Agents have jobs, not chat windows. Meetings are structured operating reviews with outcomes, not free-form chat.      |
 | **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
 | **Not a workflow builder.**  | No drag-and-drop pipelines. Paperclip models companies — with org charts, goals, budgets, and governance.            |
 | **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
@@ -364,12 +373,14 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Easy AGENTS.md configurations
 - ✅ Skills Manager
 - ✅ Scheduled Routines
+- ✅ Company Operating Meetings
+- ✅ Steward Memory Maintenance
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
 - ⚪ Artifacts & Work Products
-- ⚪ Memory / Knowledge
+- ⚪ Knowledge Plugins
 - ⚪ Enforced Outcomes
 - ⚪ MAXIMIZER MODE
 - ⚪ Deep Planning

@@ -586,6 +586,8 @@ export const agentMeetingExpectedOutputSchema = z.enum([
   "workflow_corrections",
   "memory_corrections",
   "idea_sharing",
+  "business_requirements",
+  "agent_performance",
   "workflows",
   "process",
 ]);
@@ -595,7 +597,7 @@ export const agentMeetingPayloadSchema = z.object({
   purpose: z.string().trim().min(1).max(1000),
   participantAgentIds: z.array(z.string().uuid()).min(1).max(20),
   agenda: z.array(z.string().trim().min(1).max(240)).min(1).max(20),
-  expectedOutputs: z.array(agentMeetingExpectedOutputSchema).min(1).max(8),
+  expectedOutputs: z.array(agentMeetingExpectedOutputSchema).min(1).max(20),
   contextMarkdown: z.string().max(20000).nullable().optional(),
 }).superRefine((value, ctx) => {
   const seen = new Set<string>();
@@ -631,6 +633,22 @@ export const agentMeetingResultSchema = z.object({
     rationale: z.string().trim().min(1).max(2000),
     corrections: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
   }).nullable().optional(),
+  businessReview: z.object({
+    goalAlignment: z.string().trim().min(1).max(2000),
+    targetOrKpiImpact: z.string().trim().min(1).max(2000).nullable().optional(),
+    financeOrBudgetImpact: z.string().trim().min(1).max(2000).nullable().optional(),
+    customerOrBusinessValue: z.string().trim().min(1).max(2000).nullable().optional(),
+    requirements: z.array(z.string().trim().min(1).max(1000)).max(50).optional(),
+    risks: z.array(z.string().trim().min(1).max(1000)).max(50).optional(),
+  }).nullable().optional(),
+  agentPerformanceReviews: z.array(z.object({
+    agentId: z.string().uuid(),
+    assessment: z.enum(["exceeds", "on_track", "at_risk", "blocked", "needs_attention"]),
+    summary: z.string().trim().min(1).max(2000),
+    evidence: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+    corrections: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
   workflowCorrections: z.array(z.object({
     summary: z.string().trim().min(1).max(1000),
     target: z.string().trim().min(1).max(240).nullable().optional(),

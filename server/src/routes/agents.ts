@@ -78,6 +78,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { agentRoleCanAssignTasks } from "../services/agent-permissions.js";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
   DEFAULT_ACPX_LOCAL_MODE,
@@ -564,6 +565,15 @@ export function agentRoutes(
       return {
         canAssignTasks: true,
         taskAssignSource: "agent_creator" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (agentRoleCanAssignTasks(agent.role)) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "manager_role" as const,
         membership,
         grants,
       };
@@ -2406,7 +2416,7 @@ export function agentRoutes(
     }
 
     const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+      agentRoleCanAssignTasks(agent.role) || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,

@@ -181,6 +181,25 @@ export const issuesApi = {
   },
   getWorkMeetingHealth: (companyId: string) =>
     api.get<MeetingWorkflowHealth>(`/companies/${companyId}/work-meetings/health`),
+  linkWorkMeetingOutcome: (
+    companyId: string,
+    meetingId: string,
+    data: {
+      outcomeType:
+        | "action_item"
+        | "blocker"
+        | "workflow_correction"
+        | "memory_correction"
+        | "idea"
+        | "agent_performance_review";
+      index: number;
+      issueId: string;
+    },
+  ) =>
+    api.post<{ threadKind: "meeting" | "issue_interaction"; meetingId: string; issueId: string }>(
+      `/companies/${companyId}/work-meetings/${meetingId}/outcomes/link`,
+      data,
+    ),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

@@ -35,7 +35,9 @@ const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 // LLM backend for extraction. Default to local ollama so background rebuilds
 // don't burn external API quota. Override with PAPERCLIP_GRAPHIFY_BACKEND.
 const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
-const GRAPHIFY_MODEL = process.env.PAPERCLIP_GRAPHIFY_MODEL || "qwen3.5:9b";
+const GRAPHIFY_MODEL =
+  process.env.PAPERCLIP_GRAPHIFY_MODEL ||
+  (GRAPHIFY_BACKEND === "ollama" ? "llama3.2:1b" : "qwen3.5:9b");
 const GRAPHIFY_CORPUS_MODE = process.env.PAPERCLIP_GRAPHIFY_CORPUS_MODE || "compact";
 const GRAPHIFY_CORPUS_DIR =
   process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
@@ -65,6 +67,7 @@ const GRAPHIFY_LOCK_DIR =
   path.join(VAULT, ".graphify-extract.lock");
 const GRAPHIFY_GRAPH_FILE = "graph.json";
 const GRAPHIFY_GRAPH_BACKUP_FILE = "graph.last-good.json";
+const GRAPHIFY_EXTRACT_LOG_FILE = "graphify-extract.last.log";
 
 /**
  * Resolve the graphify executable to an absolute path ONCE at module load.
@@ -88,11 +91,27 @@ function resolveGraphifyBin(): string | null {
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
     if (candidates.length === 0) return null;
-    const cmdShim = candidates.find((line) => line.toLowerCase().endsWith(".cmd"));
-    return cmdShim ?? candidates[0];
+    const scored = candidates
+      .map((candidate) => ({
+        candidate,
+        score: scoreGraphifyCandidate(candidate),
+      }))
+      .sort((left, right) => right.score - left.score);
+    return scored[0]?.candidate ?? null;
   } catch {
     return null;
   }
+}
+
+function scoreGraphifyCandidate(candidate: string): number {
+  const value = candidate.toLowerCase();
+  let score = 0;
+  if (value.endsWith(".cmd")) score += 1;
+  if (value.includes("\\.local\\bin\\")) score += 10;
+  if (value.includes("\\uv\\") || value.includes("\\appdata\\roaming\\uv\\")) score += 8;
+  if (value.includes("\\anaconda") || value.includes("\\conda")) score -= 10;
+  if (value.includes("\\d:\\bin\\")) score -= 2;
+  return score;
 }
 
 const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
@@ -124,6 +143,11 @@ const GRAPHIFY_EXCLUDED_DIRS = new Set([
 ]);
 const DEFAULT_WALK_EXCLUDED_DIRS = new Set([".git", "node_modules", ".trash"]);
 
+function shouldExcludeGraphifyDir(name: string): boolean {
+  if (GRAPHIFY_EXCLUDED_DIRS.has(name)) return true;
+  return name.startsWith(".graphify-out") || name.startsWith("graphify-out-broken");
+}
+
 function walkMarkdownFiles(
   root: string,
   out: string[] = [],
@@ -139,7 +163,12 @@ function walkMarkdownFiles(
   for (const entry of entries) {
     const fullPath = path.join(root, entry.name);
     if (entry.isDirectory()) {
-      if (excludedDirs.has(entry.name)) continue;
+      if (
+        excludedDirs.has(entry.name) ||
+        (excludedDirs === GRAPHIFY_EXCLUDED_DIRS && shouldExcludeGraphifyDir(entry.name))
+      ) {
+        continue;
+      }
       walkMarkdownFiles(fullPath, out, excludedDirs);
       continue;
     }
@@ -248,6 +277,10 @@ function graphifyGraphBackupFile(vaultRoot: string): string {
   return path.join(vaultRoot, "graphify-out", GRAPHIFY_GRAPH_BACKUP_FILE);
 }
 
+function graphifyExtractLogFile(vaultRoot: string): string {
+  return path.join(vaultRoot, "graphify-out", GRAPHIFY_EXTRACT_LOG_FILE);
+}
+
 function readGraphNodeCount(file: string): number | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { nodes?: unknown };
@@ -262,8 +295,11 @@ function backupGraphifyGraphIfUseful(vaultRoot: string): boolean {
   const nodeCount = readGraphNodeCount(graphFile);
   if (nodeCount == null || nodeCount <= 0) return false;
   try {
-    fs.mkdirSync(path.dirname(graphifyGraphBackupFile(vaultRoot)), { recursive: true });
-    fs.copyFileSync(graphFile, graphifyGraphBackupFile(vaultRoot));
+    const backupFile = graphifyGraphBackupFile(vaultRoot);
+    const backupNodeCount = readGraphNodeCount(backupFile);
+    if (backupNodeCount != null && backupNodeCount > nodeCount) return false;
+    fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+    fs.copyFileSync(graphFile, backupFile);
     return true;
   } catch {
     return false;
@@ -273,28 +309,61 @@ function backupGraphifyGraphIfUseful(vaultRoot: string): boolean {
 export function validateGraphifyGraphOutput(vaultRoot: string): {
   nodeCount: number | null;
   sourceFiles: number;
+  minimumExpectedNodes: number;
+  isDegraded: boolean;
   restoredBackup: boolean;
 } {
   const graphFile = graphifyGraphFile(vaultRoot);
   const nodeCount = readGraphNodeCount(graphFile);
   const sourceFiles = walkGraphifySourceMarkdownFiles(vaultRoot).length;
-  if (nodeCount != null && nodeCount > 0) {
+  const minimumExpectedNodes =
+    sourceFiles >= 100 ? Math.max(10, Math.floor(sourceFiles * 0.005)) : 1;
+  const isDegraded = nodeCount == null || nodeCount < minimumExpectedNodes;
+  if (!isDegraded) {
     backupGraphifyGraphIfUseful(vaultRoot);
-    return { nodeCount, sourceFiles, restoredBackup: false };
+    return {
+      nodeCount,
+      sourceFiles,
+      minimumExpectedNodes,
+      isDegraded: false,
+      restoredBackup: false,
+    };
   }
 
   const backupFile = graphifyGraphBackupFile(vaultRoot);
   const backupNodeCount = readGraphNodeCount(backupFile);
-  if (sourceFiles > 0 && backupNodeCount != null && backupNodeCount > 0) {
+  const backupIsUseful =
+    backupNodeCount != null &&
+    backupNodeCount >= minimumExpectedNodes &&
+    backupNodeCount > (nodeCount ?? 0);
+  if (sourceFiles > 0 && backupIsUseful) {
     try {
       fs.copyFileSync(backupFile, graphFile);
-      return { nodeCount, sourceFiles, restoredBackup: true };
+      return {
+        nodeCount,
+        sourceFiles,
+        minimumExpectedNodes,
+        isDegraded: true,
+        restoredBackup: true,
+      };
     } catch {
-      return { nodeCount, sourceFiles, restoredBackup: false };
+      return {
+        nodeCount,
+        sourceFiles,
+        minimumExpectedNodes,
+        isDegraded: true,
+        restoredBackup: false,
+      };
     }
   }
 
-  return { nodeCount, sourceFiles, restoredBackup: false };
+  return {
+    nodeCount,
+    sourceFiles,
+    minimumExpectedNodes,
+    isDegraded: true,
+    restoredBackup: false,
+  };
 }
 
 function safePositiveInt(value: number, fallback: number): number {
@@ -542,15 +611,23 @@ function runGraphifyExtract(): void {
   const lock = tryAcquireGraphifyExtractLock();
   if (!lock) return;
   graphifyInFlight = true;
+  let logFd: number | null = null;
   try {
     backupGraphifyGraphIfUseful(VAULT);
+    try {
+      const logFile = graphifyExtractLogFile(VAULT);
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      logFd = fs.openSync(logFile, "w");
+    } catch {
+      logFd = null;
+    }
     // `extract` has built-in caching, so only new/changed files are re-processed.
     // `--no-cluster` keeps it fast; clustering can be re-run on demand later.
     // `--max-concurrency 1` is required for local LLMs (per graphify CLI docs).
     // No `shell: true` — we resolved the absolute path so cmd.exe is unnecessary.
     const child = spawn(GRAPHIFY_BIN_RESOLVED, args, {
       detached: false,
-      stdio: "ignore",
+      stdio: logFd == null ? "ignore" : ["ignore", logFd, logFd],
       windowsHide: true,
       env: {
         ...process.env,
@@ -568,6 +645,14 @@ function runGraphifyExtract(): void {
       command: [GRAPHIFY_BIN_RESOLVED, ...args],
     });
     const finish = () => {
+      if (logFd != null) {
+        try {
+          fs.closeSync(logFd);
+        } catch {
+          // Best-effort cleanup.
+        }
+        logFd = null;
+      }
       releaseGraphifyExtractLock(lock);
       graphifyInFlight = false;
     };

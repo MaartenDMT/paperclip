@@ -102,6 +102,8 @@ import {
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
 
+const MANAGER_TASK_ASSIGN_ROLES = new Set(["cto", "cmo", "cfo", "pm"]);
+
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
   failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
@@ -1771,15 +1773,17 @@ function ConfigurationTab({
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignLocked = agent.role === "ceo" || canCreateAgents || MANAGER_TASK_ASSIGN_ROLES.has(agent.role);
   const taskAssignHint =
     taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
       : taskAssignSource === "agent_creator"
         ? "Enabled automatically while this agent can create new agents."
-        : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
-          : "Disabled unless explicitly granted.";
+        : taskAssignSource === "manager_role"
+          ? "Enabled automatically for department managers."
+          : taskAssignSource === "explicit_grant"
+            ? "Enabled via explicit company permission grant."
+            : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">

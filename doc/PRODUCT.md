@@ -58,6 +58,12 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+### Company Operating Meetings
+
+Meetings are separate operating threads for the company, similar to agile, scrum, review, or management meetings. They can be company-level or linked to issues, but they are not issue comments and they are not general chat.
+
+A meeting is expected to connect work back to company goals and targets, review KPI movement and finance/budget impact, clarify business requirements, assess whether work is on track, and evaluate participating agents as employees: ownership, throughput, quality, communication, handoffs, blocker handling, and whether they are working on the highest-leverage task. Business operating meetings must produce a business review and participant performance reviews when those outputs are expected. Outcomes can create or link issues for action items, blockers, workflow corrections, memory corrections, performance follow-ups, and useful ideas; anything left unlinked stays visible as an operating gap.
+
 ## Principles
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Paperclip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.

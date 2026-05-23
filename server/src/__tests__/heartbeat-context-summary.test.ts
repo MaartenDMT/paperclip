@@ -133,6 +133,9 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(meetingWake).toContain("/api/issues/issue-1/interactions/meeting-1/respond");
     expect(meetingWake).toContain("rightTrack");
+    expect(meetingWake).toContain("businessReview");
+    expect(meetingWake).toContain("agentPerformanceReviews");
+    expect(meetingWake).toContain("goals, targets, KPIs, finance/budget impact");
     expect(meetingWake).toContain("workflowCorrections");
     expect(meetingWake).toContain("memoryCorrections");
     expect(meetingWake).toContain("ideas");

@@ -8,6 +8,10 @@ export function defaultPermissionsForRole(role: string): NormalizedAgentPermissi
   };
 }
 
+export function agentRoleCanAssignTasks(role: string | null | undefined): boolean {
+  return role === "ceo" || role === "cto" || role === "cmo" || role === "cfo" || role === "pm";
+}
+
 export function normalizeAgentPermissions(
   permissions: unknown,
   role: string,

@@ -451,6 +451,189 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("requires business-grade legacy meeting results and counts every unlinked outcome", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "OtherCo",
+        issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Run operating review",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: otherIssueId,
+        companyId: otherCompanyId,
+        title: "Wrong company work",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "agent_meeting",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        purpose: "Review company operating health.",
+        participantAgentIds: [agentId],
+        agenda: ["Review goals", "Review employee performance", "Create follow-up issues"],
+        expectedOutputs: ["business_requirements", "agent_performance", "workflow_corrections", "memory_corrections", "idea_sharing"],
+      },
+    }, {
+      agentId,
+    });
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      meetingResult: {
+        version: 1,
+        summaryMarkdown: "Missing business review.",
+        decisions: [],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      },
+    }, {
+      agentId,
+    })).rejects.toThrow("businessReview");
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      meetingResult: {
+        version: 1,
+        summaryMarkdown: "Cross-company issue reference.",
+        decisions: [],
+        actionItems: [{ title: "Wrong company task", ownerAgentId: null, issueId: otherIssueId }],
+        blockers: [],
+        openQuestions: [],
+        businessReview: {
+          goalAlignment: "Operating health is reviewed.",
+          targetOrKpiImpact: null,
+          financeOrBudgetImpact: null,
+          customerOrBusinessValue: null,
+          requirements: [],
+          risks: [],
+        },
+        agentPerformanceReviews: [{
+          agentId,
+          assessment: "on_track",
+          summary: "The chair has the required operating context.",
+          evidence: [],
+          corrections: [],
+          issueId: null,
+        }],
+      },
+    }, {
+      agentId,
+    })).rejects.toThrow("outside this company");
+
+    const answered = await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      meetingResult: {
+        version: 1,
+        summaryMarkdown: "Operating review completed.",
+        decisions: ["Keep the active goal but add operating follow-ups."],
+        actionItems: [{ title: "Add operating review metric", ownerAgentId: agentId, issueId: null }],
+        blockers: [{ summary: "Budget owner missing", ownerAgentId: null, issueId: null }],
+        openQuestions: [],
+        businessReview: {
+          goalAlignment: "The current work still supports the company goal.",
+          targetOrKpiImpact: "Adds a measurable operating metric.",
+          financeOrBudgetImpact: "Clarifies the missing budget owner.",
+          customerOrBusinessValue: "Keeps delivery work connected to business value.",
+          requirements: ["Every operating meeting must state goal and KPI impact."],
+          risks: ["Unlinked outcomes may not be acted on."],
+        },
+        agentPerformanceReviews: [{
+          agentId,
+          assessment: "needs_attention",
+          summary: "The chair needs to convert outcomes into first-class issues.",
+          evidence: ["The meeting produced several unlinked outcomes."],
+          corrections: ["Create follow-up issues for operating outcomes."],
+          issueId: null,
+        }],
+        workflowCorrections: [{ summary: "Require issue links for operating outcomes.", target: "meeting_workflow", issueId: null }],
+        memoryCorrections: [{ system: "para-memory", filePath: "memory/meetings.md", correction: "Record the operating meeting done definition.", rationale: "Future agents need the rule.", issueId: null }],
+        ideas: [{ title: "Operating digest", summary: "Publish a weekly digest from meeting outcomes.", ownerAgentId: agentId, issueId: null }],
+      },
+    }, {
+      agentId,
+    });
+
+    expect(answered.status).toBe("answered");
+    const meetingsList = await interactionsSvc.listMeetingsForCompany(companyId, { limit: 10 });
+    expect(meetingsList[0]).toEqual(expect.objectContaining({
+      unlinkedActionItems: 1,
+      unlinkedBlockers: 1,
+      unlinkedWorkflowCorrections: 1,
+      unlinkedMemoryCorrections: 1,
+      unlinkedIdeas: 1,
+      unlinkedAgentPerformanceReviews: 1,
+      unlinkedOutcomeItems: 6,
+    }));
+
+    const followUpIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: followUpIssueId,
+      companyId,
+      title: "Add operating review metric",
+      status: "todo",
+      priority: "medium",
+    });
+    await interactionsSvc.linkMeetingOutcomeIssue(companyId, created.id, {
+      outcomeType: "action_item",
+      index: 0,
+      issueId: followUpIssueId,
+    }, {
+      agentId,
+    });
+    const linkedMeetingsList = await interactionsSvc.listMeetingsForCompany(companyId, { limit: 10 });
+    expect(linkedMeetingsList[0]).toEqual(expect.objectContaining({
+      unlinkedActionItems: 0,
+      unlinkedOutcomeItems: 5,
+    }));
+  });
+
   it("persists cancelled ask_user_questions interactions without answer data", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -1117,18 +1300,34 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     );
     expect(rows[0]!.expectedOutputs).toEqual([
       "goals",
+      "targets",
       "kpis",
+      "finance",
+      "business_requirements",
+      "agent_performance",
+      "problems",
+      "blockers",
+      "tasks",
       "right_track",
-      "questions",
+      "optimization",
+      "workflow_corrections",
+      "memory_corrections",
+      "idea_sharing",
+      "workflows",
       "process",
+      "plan_update",
+      "questions",
+      "decisions",
     ]);
     expect(rows[0]!.agenda).toEqual(expect.arrayContaining([
       expect.stringContaining("goal and target"),
       expect.stringContaining("KPI"),
+      expect.stringContaining("employees"),
       expect.stringContaining("workflow"),
     ]));
     expect(rows[0]!.contextMarkdown).toContain("Business review focus");
     expect(rows[0]!.contextMarkdown).toContain("financial or budget impact");
+    expect(rows[0]!.contextMarkdown).toContain("employee decision quality");
     const links = await db.select().from(meetingIssueLinks).where(eq(meetingIssueLinks.meetingId, rows[0]!.id));
     expect(links).toEqual([
       expect.objectContaining({ issueId, linkKind: "source" }),
@@ -1152,6 +1351,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "todo",
       priority: "medium",
     });
+    const participantAgentIds = [ceoId, engineeringHeadId, marketingHeadId, engineerId, marketerId];
     await expect(meetingService(db).respond(rows[0]!.id, {
       meetingResult: {
         version: 1,
@@ -1160,6 +1360,22 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         actionItems: [{ title: "Cross-company action", ownerAgentId: null, issueId: otherIssueId }],
         blockers: [],
         openQuestions: [],
+        businessReview: {
+          goalAlignment: "Invalid cross-company result still claims goal alignment.",
+          targetOrKpiImpact: "Invalid result.",
+          financeOrBudgetImpact: null,
+          customerOrBusinessValue: null,
+          requirements: [],
+          risks: [],
+        },
+        agentPerformanceReviews: participantAgentIds.map((agentId) => ({
+          agentId,
+          assessment: "on_track" as const,
+          summary: "Invalid result includes required performance review shape.",
+          evidence: [],
+          corrections: [],
+          issueId: null,
+        })),
       },
     }, { agentId: engineeringHeadId })).rejects.toThrow("outside this company");
     const [stillPending] = await db.select().from(meetings).where(eq(meetings.id, rows[0]!.id));
@@ -1178,6 +1394,22 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         blockers: [],
         openQuestions: [],
         rightTrack: { status: "at_risk", rationale: "Review is stale without cross-functional notes.", corrections: ["Attach marketing notes before approval."] },
+        businessReview: {
+          goalAlignment: "Launch readiness still advances the release goal.",
+          targetOrKpiImpact: "Reduces stale review time before launch.",
+          financeOrBudgetImpact: "Avoids repeated review spend.",
+          customerOrBusinessValue: "Keeps customer-facing launch material accurate.",
+          requirements: ["Marketing notes must be attached before approval."],
+          risks: ["Release quality drops if cross-functional review is skipped."],
+        },
+        agentPerformanceReviews: participantAgentIds.map((agentId) => ({
+          agentId,
+          assessment: "on_track" as const,
+          summary: "Participant has a clear role in closing the launch review.",
+          evidence: ["The meeting assigned review ownership and follow-up."],
+          corrections: [],
+          issueId: null,
+        })),
         workflowCorrections: [{ summary: "Require marketing sign-off before review completion.", target: "review_workflow", issueId }],
         memoryCorrections: [{ system: "karpathy-memory", filePath: "issues/PAP-review.md", correction: "Record review dependency on marketing notes.", rationale: "Future agents need the cross-functional dependency.", issueId }],
         ideas: [{ title: "Launch checklist", summary: "Create a reusable launch review checklist.", ownerAgentId: engineeringHeadId, issueId: null }],

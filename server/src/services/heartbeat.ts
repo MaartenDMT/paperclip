@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -2194,6 +2193,14 @@ function isHeartbeatRunTerminalStatus(
   );
 }
 
+const MEETING_RESULT_RESPONSE_BODY_SHAPE =
+  "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"businessReview\": { \"goalAlignment\": \"...\", \"targetOrKpiImpact\": \"...\", \"financeOrBudgetImpact\": \"...\", \"customerOrBusinessValue\": \"...\", \"requirements\": [\"...\"], \"risks\": [\"...\"] }, \"agentPerformanceReviews\": [{ \"agentId\": \"...\", \"assessment\": \"on_track\", \"summary\": \"...\", \"evidence\": [\"...\"], \"corrections\": [\"...\"], \"issueId\": null }], \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }";
+
+const MEETING_BUSINESS_RESPONSE_GUIDANCE = [
+  "- Business review is mandatory for real operating meetings: connect the outcome to goals, targets, KPIs, finance/budget impact, customer or business value, and concrete requirements.",
+  "- Agent performance reviews should treat participants as employees: assess ownership, velocity, quality, communication, blocker handling, and whether they are on the highest-leverage work.",
+];
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -2216,14 +2223,9 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
 }) {
-  const defaultGraphifyCandidates = [
-    "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe",
-  ];
   const graphifyCommand = () => {
     const configuredRaw =
-      process.env.PAPERCLIP_GRAPHIFY_BIN?.trim() ||
-      defaultGraphifyCandidates.find((candidate) => existsSync(candidate)) ||
-      "";
+      process.env.PAPERCLIP_GRAPHIFY_BIN?.trim() || "";
     const configured =
       configuredRaw.startsWith('"') && configuredRaw.endsWith('"') && configuredRaw.length >= 2
         ? configuredRaw.slice(1, -1)
@@ -2295,12 +2297,14 @@ export function buildPaperclipTaskMarkdown(input: {
     if (interactionId) {
       lines.push(
         `- Respond with POST /api/issues/${issue.id}/interactions/${interactionId}/respond`,
-        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+        MEETING_RESULT_RESPONSE_BODY_SHAPE,
+        ...MEETING_BUSINESS_RESPONSE_GUIDANCE,
       );
     } else {
       lines.push(
         `- Fetch /api/issues/${issue.id}/interactions and find the pending agent_meeting interaction before responding.`,
-        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+        MEETING_RESULT_RESPONSE_BODY_SHAPE,
+        ...MEETING_BUSINESS_RESPONSE_GUIDANCE,
       );
     }
   }
@@ -2310,7 +2314,8 @@ export function buildPaperclipTaskMarkdown(input: {
       "Pending company meeting response requirement:",
       "This wake is for a first-class Paperclip meeting thread. Resolve the meeting before treating the heartbeat as complete.",
       `- Respond with POST /api/meetings/${meetingId}/respond`,
-      "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      MEETING_RESULT_RESPONSE_BODY_SHAPE,
+      ...MEETING_BUSINESS_RESPONSE_GUIDANCE,
       "- Meeting threads are separate from issue threads. Link outcome items to issues by setting issueId, or create/update issues through the API before responding when the meeting creates real work.",
     );
   }

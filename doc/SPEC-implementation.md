@@ -71,8 +71,8 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
 - Manager overview for department heads to see direct-report subtree health, blockers, review waits, and active runs
 - Structured issue-thread interactions for issue-local coordination, approvals, questions, and task suggestions
-- First-class company meeting threads for agent coordination, separate from issue threads, that can link to issues while capturing decisions, action items, blockers, right-track checks, workflow corrections, memory corrections, open questions, and ideas
-- Work meeting health monitoring that shows whether agents are actually recording meetings, which issues or company-level gaps should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers
+- First-class company meeting threads for agent coordination, separate from issue threads, that can link to issues while capturing business review, goal/target/KPI/finance alignment, concrete business requirements, participating agent performance review, decisions, action items, blockers, right-track checks, workflow corrections, memory corrections, open questions, and ideas
+- Work meeting health monitoring that shows whether agents are actually recording operating meetings, which issues or company-level gaps should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers/workflow corrections/memory corrections
 - Runtime-maintained memory cleanup routines that assign a steward-like agent to audit and optimize shared Karpathy/Obsidian memory and per-agent PARA memory files, applying meeting-derived memory corrections or creating follow-up issues when correction is unsafe or ambiguous
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
@@ -526,7 +526,10 @@ All endpoints are under `/api` and return JSON.
 - `GET /companies/:companyId/issues`
 - `GET /companies/:companyId/work-meetings`
 - `GET /companies/:companyId/work-meetings/health`
+- `POST /companies/:companyId/work-meetings/:meetingId/outcomes/link`
 - `POST /meetings/:meetingId/respond`
+
+Work meetings are company operating reviews, not issue comments or chat threads. A meeting may be company-level or linked to one or more issues, but its outcome must record the business context: goal and target fit, KPI movement, finance/budget impact, customer or business value, requirements, right-track status, decisions, action items, blockers, workflow corrections, memory corrections, ideas, and agent employee performance where participants are being reviewed. When a meeting expects business requirements, goals, targets, KPIs, or finance output, the response must include `businessReview`. When it expects agent performance output, the response must include `agentPerformanceReviews` for every participant. Any linked issue IDs in meeting outcomes must belong to the same company, and unlinked action items, blockers, workflow corrections, memory corrections, ideas, and performance follow-ups remain visible as operationalization gaps. Creating a follow-up issue from a meeting outcome must stamp the new issue ID back onto that specific outcome via the outcome-link endpoint, otherwise the meeting remains unoperationalized.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`

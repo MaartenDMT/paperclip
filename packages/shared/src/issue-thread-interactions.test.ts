@@ -47,13 +47,26 @@ describe("issue thread interaction schemas", () => {
           "22222222-2222-4222-8222-222222222222",
         ],
         agenda: ["Review evidence", "Choose owner", "Create follow-up tasks"],
-        expectedOutputs: ["decisions", "tasks", "blockers", "memory_corrections", "idea_sharing"],
+        expectedOutputs: [
+          "goals",
+          "targets",
+          "kpis",
+          "finance",
+          "business_requirements",
+          "agent_performance",
+          "decisions",
+          "tasks",
+          "blockers",
+          "memory_corrections",
+          "idea_sharing",
+        ],
       },
     });
 
     expect(parsed.kind).toBe("agent_meeting");
     if (parsed.kind !== "agent_meeting") return;
-    expect(parsed.payload.expectedOutputs).toEqual(["decisions", "tasks", "blockers", "memory_corrections", "idea_sharing"]);
+    expect(parsed.payload.expectedOutputs).toContain("business_requirements");
+    expect(parsed.payload.expectedOutputs).toContain("agent_performance");
   });
 
   it("parses rich agent meeting results with memory and workflow corrections", () => {
@@ -74,6 +87,22 @@ describe("issue thread interaction schemas", () => {
           rationale: "The issue is valid, but stale memory is causing repeated wrong writes.",
           corrections: ["Update the affected memory file before the next implementation run."],
         },
+        businessReview: {
+          goalAlignment: "The fix keeps the launch-quality goal from being blocked by stale memory.",
+          targetOrKpiImpact: "Reduces rework before the next release milestone.",
+          financeOrBudgetImpact: "Avoids repeated token spend on the same incorrect owner lookup.",
+          customerOrBusinessValue: "Keeps the incident response path reliable.",
+          requirements: ["Meeting outcomes must identify stale shared memory when it affects work."],
+          risks: ["If this is not linked to an issue, the correction may be forgotten."],
+        },
+        agentPerformanceReviews: [{
+          agentId: "11111111-1111-4111-8111-111111111111",
+          assessment: "at_risk",
+          summary: "The agent found the right fix path but relied on stale memory before escalation.",
+          evidence: ["The meeting identified a stale memory file as the repeated failure source."],
+          corrections: ["Verify memory before assigning ownership-sensitive follow-up work."],
+          issueId: null,
+        }],
         workflowCorrections: [{
           summary: "Require agents to verify memory writes after updating meeting notes.",
           target: "meeting workflow",
@@ -96,6 +125,8 @@ describe("issue thread interaction schemas", () => {
     });
 
     expect(parsed.meetingResult?.rightTrack?.status).toBe("at_risk");
+    expect(parsed.meetingResult?.businessReview?.goalAlignment).toContain("launch-quality goal");
+    expect(parsed.meetingResult?.agentPerformanceReviews?.[0]?.assessment).toBe("at_risk");
     expect(parsed.meetingResult?.memoryCorrections?.[0]?.system).toBe("karpathy-memory");
     expect(parsed.meetingResult?.ideas?.[0]?.title).toBe("Meeting digest");
   });

@@ -18,6 +18,13 @@ import type {
 import { agentMeetingResultSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import {
+  countUnlinkedMeetingOutcomes,
+  readIssueIdsFromMeetingResult,
+  setMeetingOutcomeIssueId,
+  type MeetingOutcomeLinkType,
+  validateBusinessMeetingResult,
+} from "./meeting-outcome-utils.js";
 
 type MeetingActor = {
   agentId?: string | null;
@@ -39,18 +46,6 @@ function escapeLike(value: string) {
 
 function toTimeMillis(value: Date | string) {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
-}
-
-function readIssueIdsFromMeetingResult(result: AgentMeetingResult | null) {
-  if (!result) return [];
-  const ids = [
-    ...result.actionItems.map((item) => item.issueId ?? null),
-    ...result.blockers.map((blocker) => blocker.issueId ?? null),
-    ...(result.workflowCorrections ?? []).map((correction) => correction.issueId ?? null),
-    ...(result.memoryCorrections ?? []).map((correction) => correction.issueId ?? null),
-    ...(result.ideas ?? []).map((idea) => idea.issueId ?? null),
-  ];
-  return [...new Set(ids.filter((id): id is string => Boolean(id)))];
 }
 
 function rowStatus(status: string): IssueThreadInteractionStatus {
@@ -298,6 +293,7 @@ export function meetingService(db: Db) {
     const now = Date.now();
     return rows.map((row) => {
       const result = row.result ? agentMeetingResultSchema.parse(row.result) : null;
+      const unlinked = countUnlinkedMeetingOutcomes(result);
       const linkedIssues = linkedIssuesByMeetingId.get(row.id) ?? [];
       const primaryIssue =
         linkedIssues.find((issue) => issue.issueId === row.sourceIssueId) ??
@@ -328,8 +324,7 @@ export function meetingService(db: Db) {
         pendingAgeHours: row.status === "pending"
           ? Math.max(0, (now - toTimeMillis(row.createdAt)) / (1000 * 60 * 60))
           : null,
-        unlinkedActionItems: result?.actionItems.filter((item) => !item.issueId).length ?? 0,
-        unlinkedBlockers: result?.blockers.filter((blocker) => !blocker.issueId).length ?? 0,
+        ...unlinked,
         createdAt: row.createdAt,
         resolvedAt: row.resolvedAt ?? null,
       };
@@ -342,6 +337,15 @@ export function meetingService(db: Db) {
     if (meeting.status !== "pending") throw conflict("Meeting has already been resolved");
     if (!input.meetingResult) throw unprocessable("meetingResult is required");
     const result = agentMeetingResultSchema.parse(input.meetingResult);
+    const participantRows = await db
+      .select({ agentId: meetingParticipants.agentId })
+      .from(meetingParticipants)
+      .where(and(eq(meetingParticipants.companyId, meeting.companyId), eq(meetingParticipants.meetingId, meetingId)));
+    validateBusinessMeetingResult({
+      result,
+      expectedOutputs: meeting.expectedOutputs ?? [],
+      participantAgentIds: participantRows.map((row) => row.agentId),
+    });
     const now = new Date();
     const linkedOutcomeIssueIds = readIssueIdsFromMeetingResult(result);
     const updated = await db.transaction(async (tx) => {
@@ -384,6 +388,50 @@ export function meetingService(db: Db) {
       details: {
         sourceIssueId: meeting.sourceIssueId,
         linkedOutcomeIssueIds,
+      },
+    });
+    return updated;
+  }
+
+  async function linkOutcomeIssue(
+    meetingId: string,
+    input: { outcomeType: MeetingOutcomeLinkType; index: number; issueId: string },
+    actor: MeetingActor,
+  ) {
+    const meeting = await getMeetingById(meetingId);
+    if (!meeting) throw notFound("Meeting not found");
+    if (!meeting.result) throw unprocessable("Meeting has no result to operationalize");
+    const result = agentMeetingResultSchema.parse(meeting.result);
+    const nextResult = setMeetingOutcomeIssueId(result, input.outcomeType, input.index, input.issueId);
+    const updated = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await validateCompanyIssueIds(txDb, meeting.companyId, [input.issueId]);
+      const [row] = await txDb
+        .update(meetings)
+        .set({ result: nextResult, updatedAt: new Date() })
+        .where(eq(meetings.id, meetingId))
+        .returning();
+      await linkIssues(txDb, {
+        companyId: meeting.companyId,
+        meetingId,
+        issueIds: [input.issueId],
+        linkKind: "outcome",
+      });
+      return row ?? null;
+    });
+    if (!updated) throw notFound("Meeting not found");
+    await logActivity(db, {
+      companyId: meeting.companyId,
+      actorType: actor.agentId ? "agent" : "user",
+      actorId: actor.agentId ?? actor.userId ?? "system",
+      agentId: actor.agentId ?? null,
+      action: "meeting.outcome_linked",
+      entityType: "meeting",
+      entityId: meetingId,
+      details: {
+        outcomeType: input.outcomeType,
+        index: input.index,
+        issueId: input.issueId,
       },
     });
     return updated;
@@ -535,6 +583,7 @@ export function meetingService(db: Db) {
     createFromRecommendation,
     listForCompany,
     respond,
+    linkOutcomeIssue,
     resolveTerminalWorkflowMeetings,
     reconcilePendingWorkflowWakeups,
   };

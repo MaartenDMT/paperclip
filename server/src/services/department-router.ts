@@ -67,9 +67,9 @@ export function agentsInTeam(agents: AgentSnapshot[], leadId: string): AgentSnap
  * `teamLeadId`. Policy (A): strict — never spill out of the team. Return
  * null and let the wakeup-request stay queued if no one in the team is idle.
  *
- * Tie-break: lowest inflightCount, then most-recent heartbeat. The lead
- * itself is a valid candidate, but loses every tie-break against a busier
- * subordinate (managers absorb work last, which is what you want).
+ * Tie-break: prefer idle subordinates before the lead, then lowest
+ * inflightCount, then most-recent heartbeat. Managers absorb work only when
+ * no subordinate in the team is idle.
  */
 export function pickAgentForTeam(
   agents: AgentSnapshot[],
@@ -78,13 +78,15 @@ export function pickAgentForTeam(
   const team = agentsInTeam(agents, teamLeadId);
   const idle = team.filter((a) => a.status === "idle");
   if (idle.length === 0) return null;
-  idle.sort((a, b) => {
+  const subordinates = idle.filter((a) => a.id !== teamLeadId);
+  const candidates = subordinates.length > 0 ? subordinates : idle;
+  candidates.sort((a, b) => {
     if (a.inflightCount !== b.inflightCount) return a.inflightCount - b.inflightCount;
     const aHb = a.lastHeartbeatAt?.getTime() ?? 0;
     const bHb = b.lastHeartbeatAt?.getTime() ?? 0;
     return bHb - aHb;
   });
-  return idle[0] ?? null;
+  return candidates[0] ?? null;
 }
 
 import { eq, sql } from "drizzle-orm";

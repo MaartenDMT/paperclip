@@ -26,6 +26,7 @@ import type {
   RespondIssueThreadInteraction,
   AgentMeetingInteraction,
   AgentMeetingExpectedOutput,
+  AgentMeetingResult,
   MeetingWorkflowHealth,
   MeetingWorkflowRecommendation,
   MeetingWorkflowTrigger,
@@ -50,6 +51,13 @@ import {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
+import {
+  countUnlinkedMeetingOutcomes,
+  readIssueIdsFromMeetingResult,
+  setMeetingOutcomeIssueId,
+  type MeetingOutcomeLinkType,
+  validateBusinessMeetingResult,
+} from "./meeting-outcome-utils.js";
 import { meetingService } from "./meetings.js";
 
 type InteractionActor = {
@@ -105,46 +113,75 @@ const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
 const PENDING_MEETING_REWAKE_MS = 15 * 60 * 1000;
 
+const BUSINESS_OPERATING_MEETING_OUTPUTS: AgentMeetingExpectedOutput[] = [
+  "goals",
+  "targets",
+  "kpis",
+  "finance",
+  "business_requirements",
+  "agent_performance",
+  "problems",
+  "blockers",
+  "tasks",
+  "right_track",
+  "optimization",
+  "workflow_corrections",
+  "memory_corrections",
+  "idea_sharing",
+  "workflows",
+  "process",
+  "plan_update",
+  "questions",
+  "decisions",
+];
+
 const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpectedOutput[]> = {
-  blocked_without_edge: ["problems", "blockers", "tasks", "workflow_corrections", "decisions"],
-  stale_review: ["goals", "kpis", "right_track", "questions", "process"],
-  stale_in_progress: ["problems", "kpis", "optimization", "workflow_corrections", "plan_update", "memory_corrections"],
-  no_recent_meetings: ["goals", "targets", "kpis", "finance", "workflows", "idea_sharing", "memory_corrections"],
+  blocked_without_edge: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  stale_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  stale_in_progress: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  no_recent_meetings: BUSINESS_OPERATING_MEETING_OUTPUTS,
 };
 
 const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
   blocked_without_edge: [
     "Define the blocked business outcome, impacted goal and target, and current cost of delay.",
+    "Confirm the business requirement, KPI, customer value, and budget impact attached to the blocked work.",
+    "Review participating agents as employees: ownership, throughput, quality, handoff clarity, and blocker handling.",
     "Identify the concrete problem, owner, dependency, and missing first-class blocker edge.",
     "Agree on the process change or escalation path that prevents this blocker from recurring.",
   ],
   stale_review: [
     "Review the goal and target this work is meant to advance.",
     "Check KPI impact, quality bar, decision owner, and financial or budget implications.",
+    "Assess the review participants as employees: response latency, decision quality, handoff quality, and whether ownership is clear.",
     "Decide the review outcome, remaining questions, and workflow or process change needed to close faster next time.",
   ],
   stale_in_progress: [
     "Compare current progress against the goal, target, KPI, and expected completion path.",
+    "Confirm whether the active work still satisfies the business requirement and remains the highest-leverage task.",
+    "Assess the assignee and collaborators as employees: execution velocity, quality, communication, and blocker handling.",
     "Surface problems, spend or budget risk, workflow friction, memory errors, and missing inputs.",
     "Choose the optimization, plan update, workflow correction, memory correction, owner, and next measurable checkpoint.",
   ],
   no_recent_meetings: [
     "Review company goals, near-term targets, KPIs, and open work health.",
     "Inspect finance signals: budget, spend trend, cost of delay, and expected return on the active work.",
+    "Review agent performance as a management team: ownership, throughput, quality, coordination, and whether work is assigned to the right employees.",
+    "Check that current work still maps to explicit business requirements and company priorities.",
     "Identify process and workflow optimizations, ideas to share, memory corrections, problems to escalate, and owners for the next operating cycle.",
   ],
 };
 
 const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
-  blocked_without_edge: "Business review focus: problem clarity, blocker ownership, cost of delay, escalation path, and process prevention.",
-  stale_review: "Business review focus: goal and target fit, KPI movement, financial or budget impact, decision quality, review workflow, and process latency.",
-  stale_in_progress: "Business review focus: progress against target, KPI risk, budget burn, execution problems, workflow optimization, memory correctness, and plan correction.",
-  no_recent_meetings: "Business review focus: goals, targets, KPI trend, finance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
+  blocked_without_edge: "Business review focus: goal alignment, business requirement, KPI and finance impact, employee ownership, blocker ownership, cost of delay, escalation path, and process prevention.",
+  stale_review: "Business review focus: goal and target fit, KPI movement, financial or budget impact, customer value, employee decision quality, review workflow, and process latency.",
+  stale_in_progress: "Business review focus: progress against target, KPI risk, budget burn, business requirement fit, employee performance, execution problems, workflow optimization, memory correctness, and plan correction.",
+  no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
 function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
   return {
-    purpose: "Meetings are structured operating reviews used when company work needs recorded goals, targets, KPIs, finance context, problems, optimizations, workflow/process changes, memory corrections, idea sharing, right-track checks, decisions, tasks, blockers, questions, or plan updates.",
+    purpose: "Meetings are structured operating reviews used when company work needs recorded goals, targets, KPIs, finance context, business requirements, agent employee performance review, problems, optimizations, workflow/process changes, memory corrections, idea sharing, right-track checks, decisions, tasks, blockers, questions, or plan updates.",
     chairRule: "The chair is the nearest department head for the affected assignee. If no manager exists, the assignee chairs; cross-department work is chaired by the closest common head or the board.",
     triggerRules: [
       {
@@ -190,15 +227,15 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
       {
         status: "answered",
         label: "Answered",
-        description: "The meeting is resolved with a summary, decisions, action items, blockers, open questions, right-track checks, ideas, workflow corrections, memory corrections, and relevant goal/KPI/finance/process notes.",
+        description: "The meeting is resolved with a summary, business review, participating agent performance reviews, decisions, action items, blockers, open questions, right-track checks, ideas, workflow corrections, memory corrections, and relevant goal/KPI/finance/process notes.",
       },
       {
         status: "operationalized",
         label: "Operationalized",
-        description: "Action items and blockers are linked to first-class issues so the meeting changes the work graph.",
+        description: "Action items, blockers, workflow corrections, memory corrections, useful ideas, and performance follow-ups are linked to first-class issues so the meeting changes the work graph.",
       },
     ],
-    doneDefinition: "A meeting is done when it has a result and every action item, blocker, workflow correction, memory correction, or useful idea is linked to an issue or explicitly closed as a decision/question.",
+    doneDefinition: "A meeting is done when it has a business review, agent performance review where relevant, and every action item, blocker, workflow correction, memory correction, or useful idea is linked to an issue or explicitly closed as a decision/question.",
   };
 }
 
@@ -299,6 +336,22 @@ function isTerminalIssueStatus(status: string) {
 
 function toTimeMillis(value: Date | string) {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+async function validateMeetingResultIssueIdsForCompany(db: Db, companyId: string, result: AgentMeetingResult) {
+  const issueIds = readIssueIdsFromMeetingResult(result);
+  if (issueIds.length === 0) return;
+  const rows = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+  const existingIssueIds = new Set(rows.map((row) => row.id));
+  const invalidIssueIds = issueIds.filter((issueId) => !existingIssueIds.has(issueId));
+  if (invalidIssueIds.length > 0) {
+    throw unprocessable("Meeting result references issues outside this company or issues that do not exist", {
+      invalidIssueIds,
+    });
+  }
 }
 
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
@@ -778,8 +831,8 @@ export function issueThreadInteractionService(db: Db) {
         recommendation.issueStatus ? `Status: ${recommendation.issueStatus}` : null,
         recommendation.suggestedHeadName ? `Suggested chair: ${recommendation.suggestedHeadName}` : null,
         MEETING_TRIGGER_FOCUS[recommendation.trigger],
-        "Record the outcome as a meeting result, including right-track checks, ideas, workflow corrections, and memory corrections when relevant.",
-        "Convert action items/blockers into linked issues; memoryCorrections should name karpathy-memory, para-memory, or other and identify the file/path when known.",
+        "Record the outcome as a meeting result, including businessReview, agentPerformanceReviews, right-track checks, ideas, workflow corrections, and memory corrections when relevant.",
+        "Convert action items/blockers into linked issues; agentPerformanceReviews can link follow-up issues for coaching or reassignment; memoryCorrections should name karpathy-memory, para-memory, or other and identify the file/path when known.",
       ].filter(Boolean).join("\n"),
     });
   }
@@ -1039,6 +1092,7 @@ export function issueThreadInteractionService(db: Db) {
           throw unprocessable("Unexpected non-meeting interaction in work meeting query");
         }
         const result = interaction.result ?? null;
+        const unlinked = countUnlinkedMeetingOutcomes(result);
         return {
           id: interaction.id,
           companyId: interaction.companyId,
@@ -1071,8 +1125,7 @@ export function issueThreadInteractionService(db: Db) {
           pendingAgeHours: interaction.status === "pending"
             ? Math.max(0, (now - toTimeMillis(interaction.createdAt)) / (1000 * 60 * 60))
             : null,
-          unlinkedActionItems: result?.actionItems.filter((item) => !item.issueId).length ?? 0,
-          unlinkedBlockers: result?.blockers.filter((blocker) => !blocker.issueId).length ?? 0,
+          ...unlinked,
           createdAt: interaction.createdAt,
           resolvedAt: interaction.resolvedAt ?? null,
         };
@@ -1080,6 +1133,61 @@ export function issueThreadInteractionService(db: Db) {
       return [...firstClassMeetings, ...legacyMeetings]
         .sort((left, right) => toTimeMillis(right.createdAt) - toTimeMillis(left.createdAt))
         .slice(0, limit);
+    },
+
+    linkMeetingOutcomeIssue: async (
+      companyId: string,
+      meetingId: string,
+      input: { outcomeType: MeetingOutcomeLinkType; index: number; issueId: string },
+      actor: InteractionActor,
+    ) => {
+      const [firstClassMeeting] = await db
+        .select({ id: meetings.id })
+        .from(meetings)
+        .where(and(eq(meetings.companyId, companyId), eq(meetings.id, meetingId)))
+        .limit(1);
+      if (firstClassMeeting) {
+        await meetingService(db).linkOutcomeIssue(meetingId, input, actor);
+        return { threadKind: "meeting" as const, meetingId, issueId: input.issueId };
+      }
+
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.id, meetingId),
+          eq(issueThreadInteractions.kind, "agent_meeting"),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!current) throw notFound("Meeting not found");
+      if (!current.result) throw unprocessable("Meeting has no result to operationalize");
+
+      const result = agentMeetingResultSchema.parse(current.result);
+      const nextResult = setMeetingOutcomeIssueId(result, input.outcomeType, input.index, input.issueId);
+      await validateMeetingResultIssueIdsForCompany(db, companyId, nextResult);
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({ result: nextResult, updatedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, meetingId))
+        .returning();
+      if (!updated) throw notFound("Meeting not found");
+      await logActivity(db, {
+        companyId,
+        actorType: actor.agentId ? "agent" : "user",
+        actorId: actor.agentId ?? actor.userId ?? "system",
+        agentId: actor.agentId ?? null,
+        action: "issue.thread_interaction_meeting_outcome_linked",
+        entityType: "issue_thread_interaction",
+        entityId: meetingId,
+        details: {
+          outcomeType: input.outcomeType,
+          index: input.index,
+          issueId: input.issueId,
+        },
+      });
+      await touchIssue(db, current.issueId);
+      return { threadKind: "issue_interaction" as const, meetingId, issueId: input.issueId };
     },
 
     getMeetingWorkflowHealth: async (companyId: string): Promise<MeetingWorkflowHealth> => {
@@ -1895,11 +2003,19 @@ export function issueThreadInteractionService(db: Db) {
         if (!input.meetingResult) {
           throw unprocessable("meetingResult is required for agent_meeting interactions");
         }
+        const interaction = hydrateInteraction(current) as AgentMeetingInteraction;
+        const result = agentMeetingResultSchema.parse(input.meetingResult);
+        validateBusinessMeetingResult({
+          result,
+          expectedOutputs: interaction.payload.expectedOutputs,
+          participantAgentIds: interaction.payload.participantAgentIds,
+        });
+        await validateMeetingResultIssueIdsForCompany(db, issue.companyId, result);
         const [updated] = await db
           .update(issueThreadInteractions)
           .set({
             status: "answered",
-            result: agentMeetingResultSchema.parse(input.meetingResult),
+            result,
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt: new Date(),

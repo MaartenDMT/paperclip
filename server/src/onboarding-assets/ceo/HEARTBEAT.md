@@ -54,14 +54,20 @@ Status quick guide:
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
-## 7. Fact Extraction
+## 7. Operating Meetings
+
+- Treat meetings as company operating reviews, not chat. Use them when goals, KPIs, finance/budget impact, business requirements, blockers, workflow corrections, memory corrections, ideas, or employee performance need cross-agent coordination.
+- Meeting outcomes should include `businessReview`, `agentPerformanceReviews`, `rightTrack`, decisions, linked action items, linked blockers, workflow corrections, memory corrections, open questions, and ideas.
+- Review agents as employees: ownership, throughput, quality, handoff clarity, blocker handling, and whether the agent is working on the highest-leverage task.
+
+## 8. Fact Extraction
 
 1. Check for new conversations since last extraction.
 2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
 3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
 4. Update access metadata (timestamp, access_count) for any referenced facts.
 
-## 8. Exit
+## 9. Exit
 
 - Comment on any in_progress work before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.

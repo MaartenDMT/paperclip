@@ -17,8 +17,14 @@ const EXPECTED_OUTPUTS = [
   "targets",
   "kpis",
   "finance",
+  "business_requirements",
+  "agent_performance",
   "problems",
   "optimization",
+  "right_track",
+  "workflow_corrections",
+  "memory_corrections",
+  "idea_sharing",
   "workflows",
   "process",
   "decisions",
@@ -121,7 +127,7 @@ export function WorkMeetings() {
   }, [meetings]);
   const stalePendingCount = meetings?.filter(hasStalePendingMeeting).length ?? 0;
   const unresolvedOutcomeCount = meetings?.reduce(
-    (sum, meeting) => sum + meeting.unlinkedActionItems + meeting.unlinkedBlockers,
+    (sum, meeting) => sum + meeting.unlinkedOutcomeItems,
     0,
   ) ?? 0;
   const pendingCount = meetings?.filter((meeting) => meeting.status === "pending").length ?? 0;
@@ -131,7 +137,7 @@ export function WorkMeetings() {
     mutationFn: async ({ meeting, index }: { meeting: WorkMeetingSummary; index: number }) => {
       const item = meeting.result?.actionItems[index];
       if (!item || !selectedCompanyId) return null;
-      return issuesApi.create(selectedCompanyId, {
+      const created = await issuesApi.create(selectedCompanyId, {
         title: item.title,
         description: [
           `Created from work meeting: ${meeting.title ?? meeting.purpose}`,
@@ -145,6 +151,12 @@ export function WorkMeetings() {
         status: item.ownerAgentId ? "todo" : "backlog",
         priority: "medium",
       });
+      await issuesApi.linkWorkMeetingOutcome(selectedCompanyId, meeting.id, {
+        outcomeType: "action_item",
+        index,
+        issueId: created.id,
+      });
+      return created;
     },
     onSuccess: (issue) => {
       setActionMessage(issue ? `Created follow-up ${issue.identifier ?? issue.id.slice(0, 8)}.` : null);
@@ -179,6 +191,11 @@ export function WorkMeetings() {
           blockedByIssueIds: [...new Set([...existingBlockers, created.id])],
         });
       }
+      await issuesApi.linkWorkMeetingOutcome(selectedCompanyId, meeting.id, {
+        outcomeType: "blocker",
+        index,
+        issueId: created.id,
+      });
       return created;
     },
     onSuccess: (issue) => {
@@ -326,9 +343,9 @@ export function WorkMeetings() {
                     {meeting.expectedOutputs.slice(0, 2).map((output) => (
                       <span key={output} className="rounded border border-border px-2 py-1 text-xs text-muted-foreground">{formatOutput(output)}</span>
                     ))}
-                    {meeting.unlinkedActionItems + meeting.unlinkedBlockers > 0 ? (
+                    {meeting.unlinkedOutcomeItems > 0 ? (
                       <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
-                        {meeting.unlinkedActionItems + meeting.unlinkedBlockers} unlinked
+                        {meeting.unlinkedOutcomeItems} unlinked
                       </span>
                     ) : null}
                   </div>
@@ -537,6 +554,53 @@ function MeetingDetailModal({
                     <MarkdownBody>{meeting.result.summaryMarkdown}</MarkdownBody>
                   </section>
 
+                  {meeting.result.businessReview ? (
+                    <section className="mt-5 space-y-2">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Business Review</h3>
+                      <dl className="space-y-2 text-sm">
+                        <DetailTerm label="Goal alignment" value={meeting.result.businessReview.goalAlignment} />
+                        <DetailTerm label="Target / KPI impact" value={meeting.result.businessReview.targetOrKpiImpact} />
+                        <DetailTerm label="Finance / budget impact" value={meeting.result.businessReview.financeOrBudgetImpact} />
+                        <DetailTerm label="Business value" value={meeting.result.businessReview.customerOrBusinessValue} />
+                      </dl>
+                      <OutcomeTextList title="Requirements" items={meeting.result.businessReview.requirements ?? []} />
+                      <OutcomeTextList title="Risks" items={meeting.result.businessReview.risks ?? []} />
+                    </section>
+                  ) : null}
+
+                  {meeting.result.agentPerformanceReviews && meeting.result.agentPerformanceReviews.length > 0 ? (
+                    <section className="mt-5 space-y-2">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Performance</h3>
+                      <div className="space-y-3">
+                        {meeting.result.agentPerformanceReviews.map((review) => {
+                          const agent = meeting.participants.find((participant) => participant.id === review.agentId);
+                          return (
+                            <div key={`${review.agentId}-${review.summary}`} className="border border-border p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{agent?.name ?? review.agentId.slice(0, 8)}</span>
+                                <span className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{formatOutput(review.assessment)}</span>
+                              </div>
+                              <p className="mt-2 text-sm leading-6">{review.summary}</p>
+                              <OutcomeTextList title="Evidence" items={review.evidence ?? []} />
+                              <OutcomeTextList title="Corrections" items={review.corrections ?? []} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {meeting.result.rightTrack ? (
+                    <section className="mt-5 space-y-2">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Right Track</h3>
+                      <p className="text-sm leading-6">
+                        <span className="font-medium">{formatOutput(meeting.result.rightTrack.status)}:</span>{" "}
+                        {meeting.result.rightTrack.rationale}
+                      </p>
+                      <OutcomeTextList title="Corrections" items={meeting.result.rightTrack.corrections ?? []} />
+                    </section>
+                  ) : null}
+
                   {meeting.result.decisions.length > 0 ? (
                     <section className="mt-5 space-y-2">
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Decisions</h3>
@@ -574,6 +638,33 @@ function MeetingDetailModal({
                       </ul>
                     </section>
                   ) : null}
+
+                  <LinkedOutcomeList
+                    title="Workflow Corrections"
+                    items={(meeting.result.workflowCorrections ?? []).map((item) => ({
+                      title: item.summary,
+                      subtitle: item.target ?? null,
+                      issueId: item.issueId,
+                    }))}
+                  />
+
+                  <LinkedOutcomeList
+                    title="Memory Corrections"
+                    items={(meeting.result.memoryCorrections ?? []).map((item) => ({
+                      title: item.correction,
+                      subtitle: [item.system, item.filePath].filter(Boolean).join(" · "),
+                      issueId: item.issueId,
+                    }))}
+                  />
+
+                  <LinkedOutcomeList
+                    title="Ideas"
+                    items={(meeting.result.ideas ?? []).map((item) => ({
+                      title: item.title,
+                      subtitle: item.summary,
+                      issueId: item.issueId,
+                    }))}
+                  />
                 </>
               ) : (
                 <section className="mt-5 border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
@@ -621,6 +712,52 @@ function MeetingDetailModal({
         </div>
       </aside>
     </div>
+  );
+}
+
+function DetailTerm({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div>
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 leading-6">{value}</dd>
+    </div>
+  );
+}
+
+function OutcomeTextList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1">
+      <h4 className="text-xs font-medium text-muted-foreground">{title}</h4>
+      <ul className="space-y-1 text-sm">
+        {items.map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function LinkedOutcomeList({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<{ title: string; subtitle?: string | null; issueId?: string | null }>;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <section className="mt-5 space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <div className="space-y-2">
+        {items.map((item) => (
+          <div key={`${item.title}-${item.issueId ?? "none"}`} className="border border-border p-3 text-sm">
+            <div className="font-medium">{item.title}</div>
+            {item.subtitle ? <div className="mt-1 text-muted-foreground">{item.subtitle}</div> : null}
+            {item.issueId ? <div className="mt-1 font-mono text-xs text-muted-foreground">linked issue {item.issueId.slice(0, 8)}</div> : null}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

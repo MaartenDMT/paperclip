@@ -90,8 +90,16 @@ describe("pickAgentForTeam (policy A: strict + wait)", () => {
       engA: { status: "idle", inflightCount: 3 },
       engB: { status: "idle", inflightCount: 1 },
     });
-    // CTO has 0 inflight, but tie-break aside this just verifies the
-    // least-loaded rule. CTO wins because lowest inflight.
+    // CTO has 0 inflight, but managers absorb work only when no subordinate is idle.
+    expect(pickAgentForTeam(agents, "cto")?.id).toBe("engB");
+  });
+
+  it("falls back to the manager when no subordinate is idle", () => {
+    const agents = fixture({
+      cto: { status: "idle", inflightCount: 0 },
+      engA: { status: "running" },
+      engB: { status: "error" },
+    });
     expect(pickAgentForTeam(agents, "cto")?.id).toBe("cto");
   });
 
@@ -129,8 +137,7 @@ describe("pickAgentForTeam (policy A: strict + wait)", () => {
     });
     const pick = pickAgentForTeam(agents, "ceo");
     expect(pick).not.toBeNull();
-    // CEO is part of its own team and idle by default → it can be picked too.
-    expect(["ceo", "cmo", "mktA"]).toContain(pick!.id);
+    expect(["cmo", "mktA"]).toContain(pick!.id);
   });
 
   it("returns null for unknown teamLeadId", () => {
