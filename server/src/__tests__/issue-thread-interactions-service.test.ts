@@ -1432,6 +1432,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const engineerId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
+    const childIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1491,6 +1492,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "blocked",
       priority: "high",
       assigneeAgentId: engineerId,
+    });
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      goalId,
+      parentId: issueId,
+      title: "Non-critical CEO child issue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: ceoId,
     });
 
     const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
@@ -1766,8 +1777,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: doneChildIssueId,
       companyId,
       parentId: issueId,
-      title: "Completed CEO follow-up",
-      status: "done",
+      title: "CEO follow-up that should not own the department meeting",
+      status: "in_progress",
       priority: "high",
       assigneeAgentId: ceoId,
     });

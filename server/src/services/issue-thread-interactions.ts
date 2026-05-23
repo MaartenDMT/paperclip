@@ -1446,20 +1446,32 @@ export function issueThreadInteractionService(db: Db) {
           .map((agentId) => resolveDepartmentHeadId(agentId))
           .filter((agentId): agentId is string => Boolean(agentId));
         const uniqueRelatedHeadIds = [...new Set(relatedHeadIds)];
-        const crossesDepartments = uniqueRelatedHeadIds.length > 1;
         const issueIsCritical = issue?.priority === "critical";
+        const nonTopRelatedHeadIds = uniqueRelatedHeadIds.filter((agentId) => agentId !== topLevelHeadId);
+        const participantHeadIds =
+          !issueIsCritical && nonTopRelatedHeadIds.length > 0
+            ? nonTopRelatedHeadIds
+            : uniqueRelatedHeadIds;
+        const crossesDepartments = participantHeadIds.length > 1;
         const isHeadsCoordination =
           crossesDepartments &&
-          uniqueRelatedHeadIds.every((agentId) => directHeadIds.has(agentId) || agentId === topLevelHeadId);
+          participantHeadIds.every((agentId) => directHeadIds.has(agentId) || agentId === topLevelHeadId);
+        const headForMeeting =
+          head?.id === topLevelHeadId && !issueIsCritical && nonTopRelatedHeadIds.length > 0
+            ? agentById.get(nonTopRelatedHeadIds[0]!) ?? head
+            : head;
         const includeTopLevelHead =
           trigger === "no_recent_meetings" ||
           issueIsCritical ||
           isHeadsCoordination ||
-          !head;
+          !headForMeeting;
+        const participantAssigneeIds = includeTopLevelHead
+          ? relatedAssigneeIds
+          : relatedAssigneeIds.filter((agentId) => agentId !== topLevelHeadId);
         const issueParticipantIds = [...new Set([
-          ...(head ? [head.id] : []),
-          ...uniqueRelatedHeadIds,
-          ...relatedAssigneeIds,
+          ...(headForMeeting ? [headForMeeting.id] : []),
+          ...participantHeadIds,
+          ...participantAssigneeIds,
           ...(includeTopLevelHead && topLevelHead
             ? [topLevelHead.id]
             : []),
@@ -1467,7 +1479,7 @@ export function issueThreadInteractionService(db: Db) {
         const participantIds = trigger === "no_recent_meetings"
           ? companyOperatingParticipantIds()
           : issueParticipantIds;
-        const suggestedHead = trigger === "no_recent_meetings" ? topLevelHead : head;
+        const suggestedHead = trigger === "no_recent_meetings" ? topLevelHead : headForMeeting;
         return {
           id: `${trigger}:${issue?.id ?? "company"}`,
           trigger,

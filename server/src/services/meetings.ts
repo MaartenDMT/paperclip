@@ -144,13 +144,11 @@ export function meetingService(db: Db) {
       if (headId) relatedHeadIds.add(headId);
     }
 
-    if (
-      relatedHeadIds.size !== 1 ||
-      relatedHeadIds.has(topLevelHead.id)
-    ) {
+    const nonTopLevelHeadIds = [...relatedHeadIds].filter((headId) => headId !== topLevelHead.id);
+    if (nonTopLevelHeadIds.length !== 1) {
       return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };
     }
-    const [departmentHeadId] = [...relatedHeadIds];
+    const [departmentHeadId] = nonTopLevelHeadIds;
     const repairedParticipantIds = [
       ...new Set([
         departmentHeadId,
