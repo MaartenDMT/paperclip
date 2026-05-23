@@ -158,6 +158,39 @@ describe("graphify compact corpus", () => {
     ).rejects.toThrow();
   });
 
+  it("excludes top-level log.md from the compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.writeFile(path.join(vault, "log.md"), "# giant audit log\n", "utf8");
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000, 250)).toMatchObject({
+      files: 1,
+      written: 1,
+    });
+    await expect(fs.stat(path.join(corpus, "log.md"))).rejects.toThrow();
+  });
+
+  it("keeps only the most recent bounded issue pages in the compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    const older = path.join(vault, "issues", "REA-1.md");
+    const newer = path.join(vault, "issues", "REA-2.md");
+    await fs.writeFile(older, "# REA-1\n", "utf8");
+    await fs.writeFile(newer, "# REA-2\n", "utf8");
+    const olderTime = new Date("2026-05-20T10:00:00Z");
+    const newerTime = new Date("2026-05-21T10:00:00Z");
+    await fs.utimes(older, olderTime, olderTime);
+    await fs.utimes(newer, newerTime, newerTime);
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000, 1)).toMatchObject({
+      files: 1,
+      written: 1,
+    });
+    await expect(fs.readFile(path.join(corpus, "issues", "REA-2.md"), "utf8")).resolves.toContain("REA-2");
+    await expect(fs.stat(path.join(corpus, "issues", "REA-1.md"))).rejects.toThrow();
+  });
+
   it("does not rewrite unchanged compact corpus files", async () => {
     const vault = await tempVault();
     const corpus = path.join(vault, ".graphify-corpus");

@@ -81,6 +81,55 @@ export function meetingService(db: Db) {
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
   }
 
+  async function pruneTopLevelHeadForSingleDepartmentBlockedWorkflowMeeting(
+    companyId: string,
+    meeting: typeof meetings.$inferSelect,
+    participantAgentIds: string[],
+  ) {
+    if (!meeting.idempotencyKey?.startsWith("meeting-workflow:blocked_without_edge:")) {
+      return participantAgentIds;
+    }
+    if (!meeting.sourceIssueId) return participantAgentIds;
+
+    const agentRows = await db
+      .select({ id: agents.id, role: agents.role, reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const agentById = new Map(agentRows.map((agent) => [agent.id, agent]));
+    const topLevelHead =
+      agentRows.find((agent) => agent.role === "ceo" && !agent.reportsTo) ??
+      agentRows.find((agent) => !agent.reportsTo) ??
+      null;
+    if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) return participantAgentIds;
+
+    const relatedIssues = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        sql`(${issues.id} = ${meeting.sourceIssueId} or ${issues.parentId} = ${meeting.sourceIssueId})`,
+      ));
+    const relatedHeadIds = new Set<string>();
+    for (const issue of relatedIssues) {
+      if (!issue.assigneeAgentId) continue;
+      const assignee = agentById.get(issue.assigneeAgentId);
+      if (!assignee) continue;
+      relatedHeadIds.add(assignee.reportsTo ?? assignee.id);
+    }
+
+    if (relatedHeadIds.size !== 1 || relatedHeadIds.has(topLevelHead.id)) {
+      return participantAgentIds;
+    }
+
+    await db
+      .delete(meetingParticipants)
+      .where(and(
+        eq(meetingParticipants.meetingId, meeting.id),
+        eq(meetingParticipants.agentId, topLevelHead.id),
+      ));
+    return participantAgentIds.filter((agentId) => agentId !== topLevelHead.id);
+  }
+
   async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
     const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
     if (uniqueIssueIds.length === 0) return [];
@@ -548,9 +597,14 @@ export function meetingService(db: Db) {
     let cancelledUnrunnable = 0;
     for (const meeting of rows) {
       if (meetingIdsWithActiveRuns.has(meeting.id)) continue;
+      const prunedParticipantIds = await pruneTopLevelHeadForSingleDepartmentBlockedWorkflowMeeting(
+        companyId,
+        meeting,
+        participantsByMeetingId.get(meeting.id) ?? [],
+      );
       const runnableIds = await listRunnableParticipantIds(
         companyId,
-        participantsByMeetingId.get(meeting.id) ?? [],
+        prunedParticipantIds,
       );
       if (runnableIds.length === 0) {
         const [updated] = await db

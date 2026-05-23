@@ -1338,11 +1338,15 @@ export function issueThreadInteractionService(db: Db) {
           .map((agentId) => resolveDepartmentHeadId(agentId))
           .filter((agentId): agentId is string => Boolean(agentId));
         const crossesDepartments = new Set(relatedHeadIds).size > 1;
+        const includeTopLevelHead =
+          trigger === "no_recent_meetings" ||
+          crossesDepartments ||
+          !head;
         const participantIds = [...new Set([
           ...(head ? [head.id] : []),
           ...relatedHeadIds,
           ...relatedAssigneeIds,
-          ...((trigger === "no_recent_meetings" || trigger === "blocked_without_edge" || crossesDepartments) && topLevelHead
+          ...(includeTopLevelHead && topLevelHead
             ? [topLevelHead.id]
             : []),
         ])].slice(0, 20);

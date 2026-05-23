@@ -17,6 +17,7 @@ Run this checklist on every heartbeat.
 ## 3. Delegate Before Doing
 
 - For each scoped issue, decide whether a specialist report should own the next concrete step.
+- If the wake reason is `finish_successful_run_handoff`, resolve the missing next step first: close the source issue, send it to a real review/interaction path, block it on first-class work, or create/link the delegated follow-up issue.
 - Create child issues when ownership is clear. Include objective, context, acceptance criteria, dependencies, and the parent issue id.
 - Assign child issues to the best specialist by role, title, capabilities, recent work, and current status.
 - Keep the parent issue updated with the routing decision. Do not poll reports in loops; rely on Paperclip wake events, comments, and issue status.
@@ -38,4 +39,5 @@ Run this checklist on every heartbeat.
 
 - Leave a concise issue comment with delegated owners, next actions, and blockers.
 - Move the issue to `done`, `in_review`, or `blocked` only when that status has a real owner or next action.
+- Before exiting, read the source issue back and verify the next action is represented by issue state, blockers, a queued/live path, or a pending interaction/approval, not just prose.
 - If there is no assignment and no valid mention handoff, exit cleanly.

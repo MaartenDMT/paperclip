@@ -951,6 +951,12 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reconcilePersistedHeartbeatRuntimeState()
+      .then(async () => {
+        const refreshed = await heartbeat.refreshStockInstructionsForManagerAgents();
+        if (refreshed.updated > 0 || refreshed.failed.length > 0) {
+          logger.warn({ ...refreshed }, "startup manager instruction bundle sweep completed");
+        }
+      })
       .then(() => heartbeat.reapOrphanedRuns())
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {

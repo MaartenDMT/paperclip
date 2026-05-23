@@ -498,6 +498,13 @@ async function writeBundleFiles(
   }
 }
 
+function bundleFilesEqual(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+}
+
 export function syncInstructionsBundleConfigFromFilePath(
   agent: AgentLike,
   adapterConfig: Record<string, unknown>,
@@ -836,6 +843,40 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  async function replaceBundleIfFilesMatch(
+    agent: AgentLike,
+    expectedFiles: Record<string, string>,
+    replacementFiles: Record<string, string>,
+  ): Promise<{ updated: boolean; bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
+    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const currentBundle = await getBundle({ ...agent, adapterConfig: state.config });
+    if (!state.rootPath || !state.mode) {
+      return { updated: false, bundle: currentBundle, adapterConfig: state.config };
+    }
+
+    const exported = await exportFiles({ ...agent, adapterConfig: state.config });
+    if (!bundleFilesEqual(exported.files, expectedFiles)) {
+      return { updated: false, bundle: currentBundle, adapterConfig: state.config };
+    }
+
+    if (state.mode === "external") {
+      await writeBundleFiles(state.rootPath, replacementFiles, { overwriteExisting: true });
+      const nextBundle = await getBundle({ ...agent, adapterConfig: state.config });
+      return { updated: true, bundle: nextBundle, adapterConfig: state.config };
+    }
+
+    const materialized = await materializeManagedBundle(
+      { ...agent, adapterConfig: state.config },
+      replacementFiles,
+      { entryFile: state.entryFile, replaceExisting: true },
+    );
+    return {
+      updated: true,
+      bundle: materialized.bundle,
+      adapterConfig: materialized.adapterConfig,
+    };
+  }
+
   return {
     getBundle,
     readFile,
@@ -846,5 +887,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    replaceBundleIfFilesMatch,
   };
 }

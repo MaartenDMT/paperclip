@@ -43,7 +43,10 @@ const GRAPHIFY_CORPUS_DIR =
   process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
   path.join(VAULT, ".graphify-corpus");
 const GRAPHIFY_MAX_DOC_BYTES = Number(
-  process.env.PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES || 80_000,
+  process.env.PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES || 12_000,
+);
+const GRAPHIFY_MAX_ISSUE_FILES = Number(
+  process.env.PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES || 250,
 );
 const GRAPHIFY_TOKEN_BUDGET = Number(
   process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
@@ -142,6 +145,7 @@ const GRAPHIFY_EXCLUDED_DIRS = new Set([
   "node_modules",
 ]);
 const DEFAULT_WALK_EXCLUDED_DIRS = new Set([".git", "node_modules", ".trash"]);
+const GRAPHIFY_EXCLUDED_FILES = new Set(["log.md"]);
 
 function shouldExcludeGraphifyDir(name: string): boolean {
   if (GRAPHIFY_EXCLUDED_DIRS.has(name)) return true;
@@ -172,7 +176,13 @@ function walkMarkdownFiles(
       walkMarkdownFiles(fullPath, out, excludedDirs);
       continue;
     }
-    if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) out.push(fullPath);
+    if (
+      entry.isFile() &&
+      entry.name.toLowerCase().endsWith(".md") &&
+      !GRAPHIFY_EXCLUDED_FILES.has(entry.name.toLowerCase())
+    ) {
+      out.push(fullPath);
+    }
   }
   return out;
 }
@@ -506,6 +516,44 @@ function truncateUtf8(value: string, maxBytes: number): string {
   ].join("\n");
 }
 
+function compactIssueNote(body: string, maxBytes: number): string {
+  if (Buffer.byteLength(body, "utf8") <= maxBytes) return body;
+
+  const lines = body.split(/\r?\n/);
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("## ") && current.length > 0) {
+      sections.push(current.join("\n"));
+      current = [line];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) sections.push(current.join("\n"));
+
+  const prelude = sections.shift() ?? body;
+  const preferred = sections.filter((section) =>
+    /^## (Summary|Durable Facts|Next Action)\b/m.test(section),
+  );
+  const dated = sections.filter((section) =>
+    /^## \d{4}-\d{2}-\d{2}\b/m.test(section) || /^## \[\d{4}-\d{2}-\d{2}/m.test(section),
+  );
+  const recent = dated.slice(-3);
+
+  const compact = [
+    prelude.trim(),
+    ...preferred.map((section) => section.trim()),
+    ...recent
+      .filter((section, index, array) => array.findIndex((candidate) => candidate === section) === index)
+      .map((section) => section.trim()),
+  ]
+    .filter((section, index, array) => section.length > 0 && array.indexOf(section) === index)
+    .join("\n\n");
+
+  return truncateUtf8(compact, maxBytes);
+}
+
 function writeFileIfChanged(file: string, body: string): boolean {
   try {
     if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === body) return false;
@@ -539,16 +587,36 @@ export function prepareGraphifyCompactCorpus(
   vaultRoot: string,
   corpusRoot: string,
   maxDocBytes = GRAPHIFY_MAX_DOC_BYTES,
+  maxIssueFiles = GRAPHIFY_MAX_ISSUE_FILES,
 ): { files: number; truncated: number; written: number; removed: number } {
   const byteLimit = safePositiveInt(maxDocBytes, 80_000);
+  const issueLimit = Math.max(0, Math.floor(Number.isFinite(maxIssueFiles) ? maxIssueFiles : 250));
   const desired = new Set<string>();
   let files = 0;
   let truncated = 0;
   let written = 0;
+  const sources = walkGraphifySourceMarkdownFiles(vaultRoot);
+  const issueCandidates = sources
+    .filter((source) => slash(path.relative(vaultRoot, source)).startsWith("issues/"))
+    .map((source) => {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(source).mtimeMs;
+      } catch {
+        mtimeMs = 0;
+      }
+      return { source, mtimeMs };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs || left.source.localeCompare(right.source));
+  const allowedIssues =
+    issueLimit > 0
+      ? new Set(issueCandidates.slice(0, issueLimit).map((entry) => entry.source))
+      : new Set<string>();
 
-  for (const source of walkGraphifySourceMarkdownFiles(vaultRoot)) {
+  for (const source of sources) {
     const rel = slash(path.relative(vaultRoot, source));
     if (rel.startsWith("../") || path.isAbsolute(rel)) continue;
+    if (rel.startsWith("issues/") && issueLimit > 0 && !allowedIssues.has(source)) continue;
     desired.add(rel);
     files += 1;
 
@@ -559,7 +627,9 @@ export function prepareGraphifyCompactCorpus(
       continue;
     }
 
-    const compact = truncateUtf8(body, byteLimit);
+    const compact = rel.startsWith("issues/")
+      ? compactIssueNote(body, byteLimit)
+      : truncateUtf8(body, byteLimit);
     if (compact !== body) truncated += 1;
     if (writeFileIfChanged(path.join(corpusRoot, rel), compact)) written += 1;
   }

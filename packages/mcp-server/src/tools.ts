@@ -457,7 +457,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipCheckoutIssue",
-      "Checkout an issue for an agent",
+      "Checkout an issue for an agent; include in_progress in expectedStatuses only for an explicit resume/continuation wake",
       checkoutIssueToolSchema,
       async ({ issueId, agentId, expectedStatuses }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {

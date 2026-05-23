@@ -62,6 +62,11 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
+} from "./default-agent-instructions.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -1795,8 +1800,30 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (issueStatus === "blocked" && ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason.startsWith("execution_")) return false;
+  if (issueStatus === "in_progress" && !allowsInProgressAutoCheckoutForWake(input.contextSnapshot)) return false;
 
   return true;
+}
+
+function allowsInProgressAutoCheckoutForWake(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const retryReason = readNonEmptyString(contextSnapshot?.retryReason);
+  return (
+    contextSnapshot?.resumeIntent === true ||
+    contextSnapshot?.followUpRequested === true ||
+    wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON ||
+    wakeReason === "issue_continuation_needed" ||
+    retryReason === "issue_continuation_needed" ||
+    retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+    contextSnapshot?.handoffRequired === true ||
+    readNonEmptyString(contextSnapshot?.handoffReason) === SUCCESSFUL_RUN_MISSING_STATE_REASON
+  );
+}
+
+function autoCheckoutExpectedStatusesForWake(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const statuses = ["todo", "backlog", "blocked"];
+  if (allowsInProgressAutoCheckoutForWake(contextSnapshot)) statuses.push("in_progress");
+  return statuses;
 }
 
 function shouldQueueFollowupForRunningIssueWake(input: {
@@ -2512,6 +2539,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const agentInstructions = agentInstructionsService();
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -7472,6 +7500,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function refreshStockInstructionsForRole(agent: typeof agents.$inferSelect) {
+    const targetBundleRole = resolveDefaultAgentInstructionsBundleRole(agent.role);
+    if (targetBundleRole !== "manager") return agent;
+
+    const [oldDefaultFiles, managerFiles] = await Promise.all([
+      loadDefaultAgentInstructionsBundle("default"),
+      loadDefaultAgentInstructionsBundle("manager"),
+    ]);
+    const refreshed = await agentInstructions.replaceBundleIfFilesMatch(
+      agent,
+      oldDefaultFiles,
+      managerFiles,
+    );
+    if (!refreshed.updated) return agent;
+
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: refreshed.adapterConfig,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
+    logger.info(
+      { companyId: agent.companyId, agentId: agent.id, role: agent.role },
+      "Refreshed stock instructions for manager-role agent",
+    );
+    return {
+      ...agent,
+      adapterConfig: refreshed.adapterConfig,
+    };
+  }
+
+  async function refreshStockInstructionsForManagerAgents() {
+    const managerAgents = await db
+      .select()
+      .from(agents)
+      .where(inArray(agents.role, ["cto", "cmo", "cfo", "pm"]));
+    let updated = 0;
+    let updatedManaged = 0;
+    let updatedExternal = 0;
+    const failed: Array<{ agentId: string; error: string }> = [];
+
+    for (const agent of managerAgents) {
+      try {
+        const before = await agentInstructions.getBundle(agent);
+        const refreshed = await refreshStockInstructionsForRole(agent);
+        if (refreshed === agent) continue;
+        updated += 1;
+        if (before.mode === "external") updatedExternal += 1;
+        else updatedManaged += 1;
+      } catch (error) {
+        failed.push({
+          agentId: agent.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      scanned: managerAgents.length,
+      updated,
+      updatedManaged,
+      updatedExternal,
+      failed,
+    };
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -7580,7 +7675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       run = claimed;
     }
     try {
-    const agent = await getAgent(run.agentId);
+    let agent = await getAgent(run.agentId);
     if (!agent) {
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
@@ -7595,6 +7690,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
       return;
     }
+    agent = await refreshStockInstructionsForRole(agent);
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
@@ -7617,7 +7713,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
     ) {
       try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        await issuesSvc.checkout(issueId, agent.id, autoCheckoutExpectedStatusesForWake(context), run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
@@ -10900,6 +10996,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    refreshStockInstructionsForManagerAgents,
 
     buildRunOutputSilence,
 

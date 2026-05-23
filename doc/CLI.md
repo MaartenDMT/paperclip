@@ -122,6 +122,8 @@ pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-sta
 pnpm paperclipai issue release <issue-id>
 ```
 
+Use `in_progress` in `--expected-statuses` only for an explicit resume/continuation path, such as a Paperclip `finish_successful_run_handoff` or `issue_continuation_needed` wake. Normal manual checkout should not claim an already running issue unless the current run is intentionally adopting that continuation.
+
 ## Agent Commands
 
 ```sh

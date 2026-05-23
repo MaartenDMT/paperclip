@@ -21,6 +21,7 @@ Run this checklist on every heartbeat.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to another eligible task or the wake context did not claim the issue.
 - Never retry a `409`; that task belongs to someone else.
 - Start actionable work in the same heartbeat. Do not stop at a plan unless the issue asks for planning.
+- If the wake reason is `finish_successful_run_handoff`, do not re-summarize the prior run. Immediately choose one disposition: mark the issue `done`/`cancelled`, move it to `in_review` with a real reviewer/interaction/approval, mark it `blocked` with first-class blockers or a named unblock owner, or create/link a concrete follow-up issue.
 
 Status quick guide:
 
@@ -46,6 +47,7 @@ Status quick guide:
 
 - Leave a concise issue comment with what changed, what remains, and any blockers.
 - Move the issue to `done`, `in_review`, or `blocked` only when that status has a real owner or next action.
+- Before exiting a successful run, read the issue back and verify it no longer depends on prose alone for its next step.
 - Keep this instruction folder stable. Do not create issue-specific `.md` files here for normal work products, checklists, or summaries; use Paperclip issue documents, comments, or work products instead.
 - If an issue-specific instruction file was explicitly needed, remove or archive it once every referenced issue is `done`, `cancelled`, or no longer live.
 - If there is no assignment and no valid mention handoff, exit cleanly.

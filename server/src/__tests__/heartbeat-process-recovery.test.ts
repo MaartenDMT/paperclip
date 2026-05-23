@@ -1431,6 +1431,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("allows a corrective missing-disposition handoff wake to adopt its in-progress issue", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementation(async (ctx: { runId: string }) => {
+      if (ctx.runId === runId) {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Implemented the backend detector, but did not choose a final issue state.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Implemented the backend detector, but did not choose a final issue state.",
+          provider: "test",
+          model: "test-model",
+        };
+      }
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date("2026-03-19T00:00:05.000Z"),
+          updatedAt: new Date("2026-03-19T00:00:05.000Z"),
+        })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Set the issue disposition to done.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    const handoffWakeup = await waitForValue(async () =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+        ))
+        .then((rows) => rows[0] ?? null),
+    5_000);
+    expect(handoffWakeup?.runId).toBeTruthy();
+
+    await heartbeat.resumeQueuedRuns();
+    const handoffRun = handoffWakeup?.runId
+      ? await waitForRunToSettle(heartbeat, handoffWakeup.runId, 5_000)
+      : null;
+    await waitForHeartbeatIdle(db, 5_000);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(handoffRun?.status).toBe("succeeded");
+    expect(handoffRun?.error).toBeNull();
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("done");
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;

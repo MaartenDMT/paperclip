@@ -387,6 +387,20 @@ function successfulRunHandoffStateFromActivity(row: {
   };
 }
 
+function normalizeSuccessfulRunHandoffStateForIssue(
+  issue: { status: string },
+  state: SuccessfulRunHandoffState | null | undefined,
+): SuccessfulRunHandoffState | null {
+  if (!state) return null;
+  if (!state.required) return state;
+  if (issue.status === "in_progress") return state;
+  return {
+    ...state,
+    state: "resolved",
+    required: false,
+  };
+}
+
 async function listSuccessfulRunHandoffStates(
   db: Db,
   companyId: string,
@@ -1523,7 +1537,7 @@ export function issueRoutes(
     );
     res.json(result.map((issue) => ({
       ...issue,
-      successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+      successfulRunHandoff: normalizeSuccessfulRunHandoffStateForIssue(issue, handoffStates.get(issue.id)),
     })));
   });
 
@@ -1747,7 +1761,7 @@ export function issueRoutes(
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
       productivityReview,
-      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      successfulRunHandoff: normalizeSuccessfulRunHandoffStateForIssue(issue, successfulRunHandoffStates.get(issue.id)),
       scheduledRetry,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,

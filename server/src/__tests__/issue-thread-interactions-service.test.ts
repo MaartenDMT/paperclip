@@ -1425,6 +1425,90 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     ]));
   });
 
+  it("does not include the CEO in single-department blocked issue meetings", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const engineeringHeadId = randomUUID();
+    const engineerId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Keep engineering moving",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineeringHeadId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: engineeringHeadId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Blocked engineering issue",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: engineerId,
+    });
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled.created).toBe(1);
+    expect(reconciled.meetings[0]).toEqual(expect.objectContaining({
+      issueId,
+      chairAgentId: engineeringHeadId,
+    }));
+
+    const rows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    const participants = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, rows[0]!.id));
+    const participantIds = participants.map((participant) => participant.agentId);
+    expect(participantIds).toEqual(expect.arrayContaining([engineeringHeadId, engineerId]));
+    expect(participantIds).not.toContain(ceoId);
+  });
+
   it("creates company-level meeting workflow meetings when no recent meeting exists", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

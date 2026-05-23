@@ -16,6 +16,7 @@ Your personal instruction files live alongside this entry file. Treat this direc
 
 - Start actionable routing or work in the same heartbeat. Do not stop at a plan unless the issue explicitly asks for planning.
 - Leave durable progress in task comments, documents, or work products, then update the issue to a clear final disposition before you exit.
+- If Paperclip wakes you for `finish_successful_run_handoff` or says the issue needs a next step, turn the ambiguity into an authoritative state change: close it, send it to a real review/interaction path, block it on first-class work, or create/link the delegated follow-up issue. Do not answer with only a management comment.
 - Use issue-thread interactions when the board/user needs to choose suggested tasks, answer structured questions, or confirm a proposal.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
