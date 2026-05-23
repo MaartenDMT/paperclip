@@ -1183,7 +1183,7 @@ function IssueDetailActivityTab({
 
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
@@ -1238,6 +1238,10 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  useEffect(() => {
+    if (!issue?.companyId || issue.companyId === selectedCompanyId) return;
+    setSelectedCompanyId(issue.companyId, { source: "route_sync" });
+  }, [issue?.companyId, selectedCompanyId, setSelectedCompanyId]);
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
       return null;
@@ -1343,14 +1347,14 @@ export function IssueDetail() {
   });
 
   const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryKey: queryKeys.agents.list(resolvedCompanyId!),
+    queryFn: () => agentsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
   });
   const { data: companyMembers } = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryKey: queryKeys.access.companyUserDirectory(resolvedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: session } = useQuery({
@@ -1359,9 +1363,9 @@ export function IssueDetail() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryKey: queryKeys.projects.list(resolvedCompanyId!),
+    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: boardAccess } = useQuery({
@@ -1371,8 +1375,8 @@ export function IssueDetail() {
     retry: false,
   });
   const canManageTreeControl = Boolean(
-    selectedCompanyId
-    && boardAccess?.companyIds?.includes(selectedCompanyId),
+    resolvedCompanyId
+    && boardAccess?.companyIds?.includes(resolvedCompanyId),
   );
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
@@ -1389,7 +1393,7 @@ export function IssueDetail() {
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
-    companyId: selectedCompanyId,
+    companyId: resolvedCompanyId,
     userId: currentUserId,
   });
   const { slots: issuePluginDetailSlots } = usePluginSlots({
@@ -1595,14 +1599,14 @@ export function IssueDetail() {
   }, []);
 
   const invalidateIssueCollections = useCallback(() => {
-    if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    if (resolvedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
     }
-  }, [queryClient, selectedCompanyId]);
+  }, [queryClient, resolvedCompanyId]);
   const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
     queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
       queryKeys.issues.interactions(issueId!),
@@ -1626,12 +1630,12 @@ export function IssueDetail() {
       (cached) => (cached && matchesIssueRef(cached, refs) ? applyOptimisticIssueFieldUpdate(cached, data) : cached),
     );
 
-    if (!selectedCompanyId) return;
+    if (!resolvedCompanyId) return;
     queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
+      queryKeys.issues.list(resolvedCompanyId),
       (cached) => applyOptimisticIssueFieldUpdateToCollection(cached, refs, data),
     );
-  }, [queryClient, selectedCompanyId]);
+  }, [queryClient, resolvedCompanyId]);
 
   const mergeIssueResponseIntoCaches = useCallback((refs: Iterable<string>, nextIssue: Issue) => {
     queryClient.setQueriesData<Issue>(
@@ -1639,21 +1643,21 @@ export function IssueDetail() {
       (cached) => (cached && matchesIssueRef(cached, refs) ? { ...cached, ...nextIssue } : cached),
     );
 
-    if (!selectedCompanyId) return;
+    if (!resolvedCompanyId) return;
     queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
+      queryKeys.issues.list(resolvedCompanyId),
       (cached) => cached?.map((item) => (matchesIssueRef(item, refs) ? { ...item, ...nextIssue } : item)),
     );
-  }, [queryClient, selectedCompanyId]);
+  }, [queryClient, resolvedCompanyId]);
 
   const markIssueRead = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
       }
     },
   });
@@ -1662,8 +1666,8 @@ export function IssueDetail() {
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onMutate: async (data) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
-      if (selectedCompanyId) {
-        await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      if (resolvedCompanyId) {
+        await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
       }
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
@@ -1674,13 +1678,13 @@ export function IssueDetail() {
       const previousDetailQueries = queryClient
         .getQueriesData<Issue>({ queryKey: ["issues", "detail"] })
         .filter(([, cachedIssue]) => cachedIssue && matchesIssueRef(cachedIssue, issueRefs));
-      const previousList = selectedCompanyId
-        ? queryClient.getQueryData<Issue[]>(queryKeys.issues.list(selectedCompanyId))
+      const previousList = resolvedCompanyId
+        ? queryClient.getQueryData<Issue[]>(queryKeys.issues.list(resolvedCompanyId))
         : undefined;
 
       applyOptimisticIssueCacheUpdate(issueRefs, data);
 
-      return { previousDetailQueries, previousList, selectedCompanyId };
+      return { previousDetailQueries, previousList, companyId: resolvedCompanyId };
     },
     onSuccess: ({ comment: _comment, ...nextIssue }) => {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
@@ -1693,8 +1697,8 @@ export function IssueDetail() {
       for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
         queryClient.setQueryData(queryKey, previousIssue);
       }
-      if (context?.selectedCompanyId) {
-        queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
+      if (context?.companyId) {
+        queryClient.setQueryData(queryKeys.issues.list(context.companyId), context.previousList);
       }
       pushToast({
         title: "Issue update failed",
@@ -1704,8 +1708,8 @@ export function IssueDetail() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
       }
     },
   });
@@ -1770,13 +1774,13 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: ["issues", "tree-holds", issueId ?? "pending"] }),
         queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-preview", issueId ?? "pending"] }),
       ]);
-      if (selectedCompanyId) {
+      if (resolvedCompanyId) {
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) }),
           ...(issue?.id
             ? [
-                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(selectedCompanyId, issue.id) }),
-                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByDescendantRoot(selectedCompanyId, issue.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(resolvedCompanyId, issue.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id) }),
               ]
             : []),
         ]);
@@ -2444,8 +2448,8 @@ export function IssueDetail() {
 
   const uploadAttachment = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
-      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
+      if (!resolvedCompanyId) throw new Error("No company selected");
+      return issuesApi.uploadAttachment(resolvedCompanyId, issueId!, file);
     },
     onSuccess: () => {
       setAttachmentError(null);

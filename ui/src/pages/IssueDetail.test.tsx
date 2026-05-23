@@ -67,6 +67,7 @@ const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetMobileToolbar = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
+const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 
@@ -125,7 +126,7 @@ vi.mock("../context/CompanyContext", () => ({
     selectionSource: "manual",
     loading: false,
     error: null,
-    setSelectedCompanyId: vi.fn(),
+    setSelectedCompanyId: mockSetSelectedCompanyId,
     reloadCompanies: vi.fn(),
     createCompany: vi.fn(),
   }),
@@ -804,6 +805,7 @@ describe("IssueDetail", () => {
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
+    mockSetSelectedCompanyId.mockClear();
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
   });
@@ -864,6 +866,28 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+  });
+
+  it("syncs direct issue detail links to the issue company", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      companyId: "company-2",
+      identifier: "TRA-13",
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2", { source: "route_sync" });
+    expect(mockAgentsApi.list).toHaveBeenCalledWith("company-2");
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-2");
+    expect(mockAccessApi.listUserDirectory).toHaveBeenCalledWith("company-2");
   });
 
   it("refreshes subtree pause state after resuming a hold", async () => {
