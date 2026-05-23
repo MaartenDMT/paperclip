@@ -32,6 +32,8 @@ Run this checklist on every heartbeat.
 ## 5. Operating Meetings
 
 - Treat meetings as company operating reviews, not chat. Use them when goals, KPIs, finance/budget impact, business requirements, blockers, workflow corrections, memory corrections, ideas, or employee performance need cross-agent coordination.
+- Hold department or specialist meetings at the lowest responsible level. Examples: Senior Engineer with Frontend Developer for frontend delivery, Fiction Director with Plot Architect and Worldbuilding Architect for story continuity, CMO with Social Media Manager for campaign work.
+- Escalate the CEO into meetings only for company-wide cadence, priority-critical decisions, or true multi-head coordination.
 - Meeting outcomes should include `businessReview`, `agentPerformanceReviews`, `rightTrack`, decisions, linked action items, linked blockers, workflow corrections, memory corrections, open questions, and ideas.
 - Review reports as employees: ownership, throughput, quality, handoff clarity, blocker handling, and whether each report is working on the highest-leverage task.
 

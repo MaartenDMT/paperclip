@@ -182,34 +182,34 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
 function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
   return {
     purpose: "Meetings are structured operating reviews used when company work needs recorded goals, targets, KPIs, finance context, business requirements, agent employee performance review, problems, optimizations, workflow/process changes, memory corrections, idea sharing, right-track checks, decisions, tasks, blockers, questions, or plan updates.",
-    chairRule: "The chair is the nearest department head for the affected assignee. If no manager exists, the assignee chairs; cross-department work is chaired by the closest common head or the board.",
+    chairRule: "The chair is the nearest operational owner: a specialist's manager, or the department/domain head themselves when the assignee reports directly to the CEO. The CEO is reserved for company-wide cadence, priority-critical escalations, or true multi-head coordination.",
     triggerRules: [
       {
         id: "blocked_without_edge",
         label: "Blocker hygiene",
         when: "An issue says blocked/stuck/waiting but no first-class blocker edge exists.",
-        chair: "Assignee's department head.",
+        chair: "Nearest department/domain owner; CEO only for critical or multi-head escalation.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.blocked_without_edge,
       },
       {
         id: "stale_review",
         label: "Review waiting",
         when: "An issue sits in review for more than 24 hours.",
-        chair: "Review owner or assignee's department head.",
+        chair: "Review owner or nearest department/domain owner.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_review,
       },
       {
         id: "stale_in_progress",
         label: "Execution ambiguity",
         when: "An in-progress issue has not moved for more than 72 hours.",
-        chair: "Assignee's department head.",
+        chair: "Nearest department/domain owner.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_in_progress,
       },
       {
         id: "no_recent_meetings",
         label: "No meeting activity",
         when: "Open work exists but no structured meeting was recorded in the last 7 days.",
-        chair: "Company lead or board.",
+        chair: "CEO with direct department/domain heads only.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.no_recent_meetings,
       },
     ],
@@ -918,6 +918,92 @@ export function issueThreadInteractionService(db: Db) {
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
   }
 
+  async function repairLegacySingleDepartmentWorkflowMeetingParticipants(
+    companyId: string,
+    interaction: AgentMeetingInteraction,
+    idempotencyKey: string | null,
+  ) {
+    if (!idempotencyKey?.startsWith("meeting-workflow:")) {
+      return interaction.payload.participantAgentIds;
+    }
+    if (idempotencyKey.startsWith("meeting-workflow:no_recent_meetings:")) {
+      return interaction.payload.participantAgentIds;
+    }
+
+    const participantAgentIds = interaction.payload.participantAgentIds;
+    const agentRows = await db
+      .select({ id: agents.id, reportsTo: agents.reportsTo, role: agents.role })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, companyId),
+        sql`${agents.status} <> 'terminated'`,
+      ));
+    const agentById = new Map(agentRows.map((agent) => [agent.id, agent] as const));
+    const topLevelHead =
+      agentRows.find((agent) => agent.role === "ceo" && !agent.reportsTo) ??
+      agentRows.find((agent) => !agent.reportsTo) ??
+      null;
+    if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) {
+      return participantAgentIds;
+    }
+
+    const directHeadIds = new Set(
+      agentRows
+        .filter((agent) => agent.reportsTo === topLevelHead.id)
+        .map((agent) => agent.id),
+    );
+    const relatedIssues = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, priority: issues.priority })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        sql`(${issues.id} = ${interaction.issueId} or ${issues.parentId} = ${interaction.issueId})`,
+      ));
+    if (relatedIssues.some((issue) => issue.priority === "critical")) {
+      return participantAgentIds;
+    }
+
+    const resolveHeadId = (agentId: string | null) => {
+      const assignee = agentId ? agentById.get(agentId) ?? null : null;
+      if (!assignee) return null;
+      if (assignee.reportsTo === topLevelHead.id || directHeadIds.has(assignee.id)) return assignee.id;
+      return assignee.reportsTo ?? assignee.id;
+    };
+    const relatedHeadIds = new Set<string>();
+    for (const issue of relatedIssues) {
+      const headId = resolveHeadId(issue.assigneeAgentId);
+      if (headId) relatedHeadIds.add(headId);
+    }
+    if (relatedHeadIds.size !== 1 || relatedHeadIds.has(topLevelHead.id)) {
+      return participantAgentIds;
+    }
+
+    const [departmentHeadId] = [...relatedHeadIds];
+    if (!departmentHeadId) return participantAgentIds;
+
+    const repairedParticipantIds = [
+      ...new Set([
+        departmentHeadId,
+        ...participantAgentIds.filter((agentId) => agentId !== topLevelHead.id),
+      ]),
+    ];
+    if (isDeepStrictEqual(repairedParticipantIds, participantAgentIds)) {
+      return participantAgentIds;
+    }
+
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        payload: agentMeetingPayloadSchema.parse({
+          ...interaction.payload,
+          participantAgentIds: repairedParticipantIds,
+        }),
+      })
+      .where(eq(issueThreadInteractions.id, interaction.id));
+
+    return repairedParticipantIds;
+  }
+
   async function reconcilePendingMeetingWorkflowWakeups(companyId: string) {
     const cutoff = new Date(Date.now() - PENDING_MEETING_REWAKE_MS);
     const rows = await db
@@ -961,9 +1047,14 @@ export function issueThreadInteractionService(db: Db) {
       const interaction = hydrateInteraction(row.interaction);
       if (interaction.kind !== "agent_meeting") continue;
 
+      const repairedParticipantIds = await repairLegacySingleDepartmentWorkflowMeetingParticipants(
+        companyId,
+        interaction,
+        row.interaction.idempotencyKey,
+      );
       const runnableParticipantIds = await listRunnableMeetingParticipantIds(
         companyId,
-        interaction.payload.participantAgentIds,
+        repairedParticipantIds,
       );
       if (runnableParticipantIds.length === 0) {
         const now = new Date();
@@ -1254,7 +1345,16 @@ export function issueThreadInteractionService(db: Db) {
         .from(agents)
         .where(and(eq(agents.companyId, companyId), sql`${agents.status} <> 'terminated'`));
       const agentById = new Map(companyAgentRows.map((agent) => [agent.id, agent] as const));
-      const topLevelHead = companyAgentRows.find((agent) => agent.reportsTo === null) ?? null;
+      const topLevelHead =
+        companyAgentRows.find((agent) => agent.role === "ceo" && agent.reportsTo === null) ??
+        companyAgentRows.find((agent) => agent.reportsTo === null) ??
+        null;
+      const topLevelHeadId = topLevelHead?.id ?? null;
+      const directHeadIds = new Set(
+        companyAgentRows
+          .filter((agent) => topLevelHeadId && agent.reportsTo === topLevelHeadId)
+          .map((agent) => agent.id),
+      );
 
       const blockerEdgeRows = openIssueIds.length > 0
         ? await db
@@ -1320,10 +1420,18 @@ export function issueThreadInteractionService(db: Db) {
       };
       const resolveHead = (assigneeAgentId: string | null) => {
         const assignee = assigneeAgentId ? agentById.get(assigneeAgentId) ?? null : null;
+        if (assignee && (assignee.reportsTo === topLevelHeadId || directHeadIds.has(assignee.id))) return assignee;
         if (assignee?.reportsTo) return agentById.get(assignee.reportsTo) ?? assignee;
         return assignee ?? topLevelHead;
       };
       const resolveDepartmentHeadId = (agentId: string | null) => resolveHead(agentId)?.id ?? null;
+      const companyOperatingParticipantIds = () => {
+        const headIds = [...directHeadIds].filter((agentId) => agentById.get(agentId)?.status !== "terminated");
+        return [...new Set([
+          ...(topLevelHeadId ? [topLevelHeadId] : []),
+          ...headIds,
+        ])].slice(0, 20);
+      };
       const buildRecommendation = (
         trigger: MeetingWorkflowTrigger,
         issue: typeof openIssueRows[number] | null,
@@ -1337,19 +1445,29 @@ export function issueThreadInteractionService(db: Db) {
         const relatedHeadIds = relatedAssigneeIds
           .map((agentId) => resolveDepartmentHeadId(agentId))
           .filter((agentId): agentId is string => Boolean(agentId));
-        const crossesDepartments = new Set(relatedHeadIds).size > 1;
+        const uniqueRelatedHeadIds = [...new Set(relatedHeadIds)];
+        const crossesDepartments = uniqueRelatedHeadIds.length > 1;
+        const issueIsCritical = issue?.priority === "critical";
+        const isHeadsCoordination =
+          crossesDepartments &&
+          uniqueRelatedHeadIds.every((agentId) => directHeadIds.has(agentId) || agentId === topLevelHeadId);
         const includeTopLevelHead =
           trigger === "no_recent_meetings" ||
-          crossesDepartments ||
+          issueIsCritical ||
+          isHeadsCoordination ||
           !head;
-        const participantIds = [...new Set([
+        const issueParticipantIds = [...new Set([
           ...(head ? [head.id] : []),
-          ...relatedHeadIds,
+          ...uniqueRelatedHeadIds,
           ...relatedAssigneeIds,
           ...(includeTopLevelHead && topLevelHead
             ? [topLevelHead.id]
             : []),
         ])].slice(0, 20);
+        const participantIds = trigger === "no_recent_meetings"
+          ? companyOperatingParticipantIds()
+          : issueParticipantIds;
+        const suggestedHead = trigger === "no_recent_meetings" ? topLevelHead : head;
         return {
           id: `${trigger}:${issue?.id ?? "company"}`,
           trigger,
@@ -1359,8 +1477,8 @@ export function issueThreadInteractionService(db: Db) {
           issueIdentifier: issue?.identifier ?? null,
           issueTitle: issue?.title ?? null,
           issueStatus: issue?.status as MeetingWorkflowRecommendation["issueStatus"] ?? null,
-          suggestedHeadAgentId: head?.id ?? null,
-          suggestedHeadName: head?.name ?? null,
+          suggestedHeadAgentId: suggestedHead?.id ?? null,
+          suggestedHeadName: suggestedHead?.name ?? null,
           participantAgentIds: participantIds,
           participantNames: participantIds
             .map((agentId) => agentById.get(agentId)?.name ?? null)

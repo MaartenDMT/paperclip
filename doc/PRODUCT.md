@@ -64,6 +64,8 @@ Meetings are separate operating threads for the company, similar to agile, scrum
 
 A meeting is expected to connect work back to company goals and targets, review KPI movement and finance/budget impact, clarify business requirements, assess whether work is on track, and evaluate participating agents as employees: ownership, throughput, quality, communication, handoffs, blocker handling, and whether they are working on the highest-leverage task. Business operating meetings must produce a business review and participant performance reviews when those outputs are expected. Outcomes can create or link issues for action items, blockers, workflow corrections, memory corrections, performance follow-ups, and useful ideas; anything left unlinked stays visible as an operating gap.
 
+Meeting ownership follows the company org chart. Department heads and senior/domain specialists should run local coordination, while the CEO joins company-wide cadence, priority-critical decisions, or true multi-head coordination instead of being pulled into every issue-level meeting.
+
 ## Principles
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Paperclip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.

@@ -57,6 +57,7 @@ Status quick guide:
 ## 7. Operating Meetings
 
 - Treat meetings as company operating reviews, not chat. Use them when goals, KPIs, finance/budget impact, business requirements, blockers, workflow corrections, memory corrections, ideas, or employee performance need cross-agent coordination.
+- Do not chair every department meeting. Let department heads and senior specialists run local operating meetings; join only company-wide cadence, priority-critical decisions, or true multi-head coordination.
 - Meeting outcomes should include `businessReview`, `agentPerformanceReviews`, `rightTrack`, decisions, linked action items, linked blockers, workflow corrections, memory corrections, open questions, and ideas.
 - Review agents as employees: ownership, throughput, quality, handoff clarity, blocker handling, and whether the agent is working on the highest-leverage task.
 

@@ -81,12 +81,15 @@ export function meetingService(db: Db) {
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
   }
 
-  async function pruneTopLevelHeadForSingleDepartmentBlockedWorkflowMeeting(
+  async function repairSingleDepartmentWorkflowMeetingParticipants(
     companyId: string,
     meeting: typeof meetings.$inferSelect,
     participantAgentIds: string[],
   ) {
-    if (!meeting.idempotencyKey?.startsWith("meeting-workflow:blocked_without_edge:")) {
+    if (!meeting.idempotencyKey?.startsWith("meeting-workflow:")) {
+      return participantAgentIds;
+    }
+    if (meeting.idempotencyKey.startsWith("meeting-workflow:no_recent_meetings:")) {
       return participantAgentIds;
     }
     if (!meeting.sourceIssueId) return participantAgentIds;
@@ -101,33 +104,90 @@ export function meetingService(db: Db) {
       agentRows.find((agent) => !agent.reportsTo) ??
       null;
     if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) return participantAgentIds;
+    const directHeadIds = new Set(
+      agentRows
+        .filter((agent) => agent.reportsTo === topLevelHead.id)
+        .map((agent) => agent.id),
+    );
 
     const relatedIssues = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .select({ assigneeAgentId: issues.assigneeAgentId, priority: issues.priority })
       .from(issues)
       .where(and(
         eq(issues.companyId, companyId),
         sql`(${issues.id} = ${meeting.sourceIssueId} or ${issues.parentId} = ${meeting.sourceIssueId})`,
       ));
+    if (relatedIssues.some((issue) => issue.priority === "critical")) return participantAgentIds;
+
+    const resolveHeadId = (agentId: string | null) => {
+      const assignee = agentId ? agentById.get(agentId) ?? null : null;
+      if (!assignee) return null;
+      if (assignee.reportsTo === topLevelHead.id || directHeadIds.has(assignee.id)) return assignee.id;
+      return assignee.reportsTo ?? assignee.id;
+    };
     const relatedHeadIds = new Set<string>();
     for (const issue of relatedIssues) {
-      if (!issue.assigneeAgentId) continue;
-      const assignee = agentById.get(issue.assigneeAgentId);
-      if (!assignee) continue;
-      relatedHeadIds.add(assignee.reportsTo ?? assignee.id);
+      const headId = resolveHeadId(issue.assigneeAgentId);
+      if (headId) relatedHeadIds.add(headId);
     }
 
-    if (relatedHeadIds.size !== 1 || relatedHeadIds.has(topLevelHead.id)) {
+    if (
+      relatedHeadIds.size !== 1 ||
+      relatedHeadIds.has(topLevelHead.id)
+    ) {
       return participantAgentIds;
     }
+    const [departmentHeadId] = [...relatedHeadIds];
+    const repairedParticipantIds = [
+      ...new Set([
+        departmentHeadId,
+        ...participantAgentIds.filter((agentId) => agentId !== topLevelHead.id),
+      ]),
+    ];
 
+    const insertedDepartmentHead = !participantAgentIds.includes(departmentHeadId);
+    if (insertedDepartmentHead) {
+      await db
+        .insert(meetingParticipants)
+        .values({
+          companyId,
+          meetingId: meeting.id,
+          agentId: departmentHeadId,
+          role: "participant",
+          status: "pending",
+        })
+        .onConflictDoNothing();
+    }
     await db
       .delete(meetingParticipants)
       .where(and(
         eq(meetingParticipants.meetingId, meeting.id),
         eq(meetingParticipants.agentId, topLevelHead.id),
       ));
-    return participantAgentIds.filter((agentId) => agentId !== topLevelHead.id);
+    if (meeting.chairAgentId === topLevelHead.id || !meeting.chairAgentId) {
+      await db
+        .update(meetings)
+        .set({ chairAgentId: departmentHeadId, updatedAt: new Date() })
+        .where(eq(meetings.id, meeting.id));
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "meeting_workflow",
+      action: "meeting.participants_repaired",
+      entityType: "meeting",
+      entityId: meeting.id,
+      details: {
+        reason: "lowest_responsible_level",
+        removedTopLevelHeadAgentId: topLevelHead.id,
+        insertedDepartmentHeadAgentId: insertedDepartmentHead ? departmentHeadId : null,
+        chairAgentId: meeting.chairAgentId === topLevelHead.id || !meeting.chairAgentId
+          ? departmentHeadId
+          : meeting.chairAgentId,
+        sourceIssueId: meeting.sourceIssueId,
+      },
+    });
+    return repairedParticipantIds;
   }
 
   async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
@@ -597,7 +657,7 @@ export function meetingService(db: Db) {
     let cancelledUnrunnable = 0;
     for (const meeting of rows) {
       if (meetingIdsWithActiveRuns.has(meeting.id)) continue;
-      const prunedParticipantIds = await pruneTopLevelHeadForSingleDepartmentBlockedWorkflowMeeting(
+      const prunedParticipantIds = await repairSingleDepartmentWorkflowMeetingParticipants(
         companyId,
         meeting,
         participantsByMeetingId.get(meeting.id) ?? [],
@@ -621,11 +681,14 @@ export function meetingService(db: Db) {
         .where(and(eq(meetings.id, meeting.id), eq(meetings.status, "pending")))
         .returning();
       if (!updated) continue;
+      const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
+        ? meeting.chairAgentId
+        : runnableIds[0] ?? null;
       wakeTargets.push({
         id: meeting.id,
         issueId: meeting.sourceIssueId,
         participantAgentIds: runnableIds,
-        chairAgentId: meeting.chairAgentId,
+        chairAgentId,
       });
     }
     return { meetings: wakeTargets, cancelledUnrunnable };
