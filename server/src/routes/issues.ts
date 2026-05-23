@@ -4,7 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, executionWorkspaces, heartbeatRuns, issueExecutionDecisions, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -387,18 +387,26 @@ function successfulRunHandoffStateFromActivity(row: {
   };
 }
 
+type SuccessfulRunHandoffStateWithCorrectiveStatus = SuccessfulRunHandoffState & {
+  correctiveRunStatus?: string | null;
+};
+
 function normalizeSuccessfulRunHandoffStateForIssue(
   issue: {
     status: string;
     activeRun?: { status?: string | null } | null;
   },
-  state: SuccessfulRunHandoffState | null | undefined,
+  state: SuccessfulRunHandoffStateWithCorrectiveStatus | null | undefined,
 ): SuccessfulRunHandoffState | null {
   if (!state) return null;
-  if (!state.required) return state;
-  if (issue.status === "in_progress" && !issue.activeRun) return state;
+  const { correctiveRunStatus: _correctiveRunStatus, ...publicState } = state;
+  if (!publicState.required) return publicState;
+  const correctiveRunInFlight = state.correctiveRunStatus
+    ? ["queued", "running", "scheduled"].includes(state.correctiveRunStatus)
+    : false;
+  if (issue.status === "in_progress" && !issue.activeRun && !correctiveRunInFlight) return publicState;
   return {
-    ...state,
+    ...publicState,
     state: "resolved",
     required: false,
   };
@@ -408,7 +416,7 @@ async function listSuccessfulRunHandoffStates(
   db: Db,
   companyId: string,
   issueIds: string[],
-): Promise<Map<string, SuccessfulRunHandoffState>> {
+): Promise<Map<string, SuccessfulRunHandoffStateWithCorrectiveStatus>> {
   if (issueIds.length === 0) return new Map();
   const rows = await db
     .select({
@@ -428,11 +436,26 @@ async function listSuccessfulRunHandoffStates(
     ))
     .orderBy(activityLog.entityId, desc(activityLog.createdAt), desc(activityLog.id)) as SuccessfulRunHandoffActivityRow[];
 
-  const states = new Map<string, SuccessfulRunHandoffState>();
+  const states = new Map<string, SuccessfulRunHandoffStateWithCorrectiveStatus>();
   for (const row of rows) {
     if (states.has(row.entityId)) continue;
     const state = successfulRunHandoffStateFromActivity(row);
     if (state) states.set(row.entityId, state);
+  }
+  const correctiveRunIds = [...new Set(
+    [...states.values()]
+      .map((state) => state.correctiveRunId)
+      .filter((runId): runId is string => Boolean(runId)),
+  )];
+  if (correctiveRunIds.length > 0) {
+    const correctiveRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, correctiveRunIds)));
+    const statusByRunId = new Map(correctiveRuns.map((run) => [run.id, run.status]));
+    for (const state of states.values()) {
+      state.correctiveRunStatus = state.correctiveRunId ? statusByRunId.get(state.correctiveRunId) ?? null : null;
+    }
   }
   return states;
 }
