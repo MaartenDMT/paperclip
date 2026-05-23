@@ -388,12 +388,15 @@ function successfulRunHandoffStateFromActivity(row: {
 }
 
 function normalizeSuccessfulRunHandoffStateForIssue(
-  issue: { status: string },
+  issue: {
+    status: string;
+    activeRun?: { status?: string | null } | null;
+  },
   state: SuccessfulRunHandoffState | null | undefined,
 ): SuccessfulRunHandoffState | null {
   if (!state) return null;
   if (!state.required) return state;
-  if (issue.status === "in_progress") return state;
+  if (issue.status === "in_progress" && !issue.activeRun) return state;
   return {
     ...state,
     state: "resolved",
