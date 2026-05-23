@@ -900,7 +900,10 @@ export async function startServer(): Promise<StartedServer> {
         const result = await issueThreadInteractions.reconcileMeetingWorkflow(companyId);
         created += result.created;
         for (const meeting of result.meetings) {
-          for (const agentId of meeting.participantAgentIds) {
+          const agentIdsToWake = [meeting.chairAgentId ?? meeting.participantAgentIds[0]].filter(
+            (agentId): agentId is string => Boolean(agentId),
+          );
+          for (const agentId of agentIdsToWake) {
             try {
               await heartbeat.wakeup(agentId, {
                 source: "automation",
