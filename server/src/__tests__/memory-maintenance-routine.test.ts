@@ -157,4 +157,35 @@ describeEmbeddedPostgres("memory maintenance routine service", () => {
     });
     expect(routine).toMatchObject({ status: "active", assigneeAgentId: steward.id });
   });
+
+  it("reassigns an existing routine when the assigned steward is no longer invokable", async () => {
+    const companyId = await seedCompany();
+    const oldSteward = await seedAgent(companyId, {
+      name: "Old Worktree Steward",
+      role: "worktree_steward",
+      status: "idle",
+    });
+    const svc = memoryMaintenanceRoutineService(db);
+    const created = await svc.ensureForCompany(companyId);
+    expect(created.assigneeAgentId).toBe(oldSteward.id);
+
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, oldSteward.id));
+    const newSteward = await seedAgent(companyId, {
+      name: "New Worktree Steward",
+      role: "worktree_steward",
+      status: "idle",
+    });
+    const reassigned = await svc.ensureForCompany(companyId);
+
+    expect(reassigned).toMatchObject({
+      status: "updated",
+      routineId: created.routineId,
+      assigneeAgentId: newSteward.id,
+    });
+    const [routine] = await db.select().from(routines).where(eq(routines.id, created.routineId));
+    expect(routine).toMatchObject({
+      status: "active",
+      assigneeAgentId: newSteward.id,
+    });
+  });
 });

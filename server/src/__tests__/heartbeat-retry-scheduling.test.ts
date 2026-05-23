@@ -607,9 +607,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   );
 
   it.each(["blocked", "todo", "backlog"] as const)(
-    "does not schedule issue continuation recovery when the issue is already %s",
+    "cancels a due issue continuation recovery when the issue moves to %s before retry promotion",
     async (issueStatus) => {
-      const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus });
+      const { issueId, runId, now } = await seedMaxTurnFixture();
 
       const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
         now,
@@ -618,19 +618,53 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         maxAttempts: 2,
         delayMs: 1_000,
       });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
 
-      expect(scheduled).toMatchObject({
-        outcome: "not_scheduled",
+      await db.update(issues).set({
+        status: issueStatus,
+        updatedAt: new Date(now.getTime() + 500),
+      }).where(eq(issues.id, issueId));
+
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+      const retryRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRun).toMatchObject({
+        status: "cancelled",
         errorCode: "issue_not_in_progress",
-        issueId,
       });
 
-      const retryRuns = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.retryOfRunId, runId))
-        .then((rows) => rows[0]?.count ?? 0);
-      expect(retryRuns).toBe(0);
+      const wakeupRequest = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeupRequest?.status).toBe("cancelled");
+
+      const event = await db
+        .select({
+          message: heartbeatRunEvents.message,
+          payload: heartbeatRunEvents.payload,
+        })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, scheduled.run.id))
+        .orderBy(sql`${heartbeatRunEvents.seq} desc`)
+        .then((rows) => rows[0] ?? null);
+      expect(event?.message).toContain("no longer in_progress");
+      expect(event?.payload).toMatchObject({
+        currentStatus: issueStatus,
+        requiredStatus: "in_progress",
+        scheduledRetryReason: "issue_continuation_needed",
+      });
     },
   );
 

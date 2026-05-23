@@ -1293,11 +1293,10 @@ export function issueThreadInteractionService(db: Db) {
         (meeting) => now - meeting.createdAt.getTime() <= MEETING_RECENT_WINDOW_MS,
       ).length;
       const meetingsLast7Days = legacyMeetingsLast7Days + firstClassMeetingsLast7Days;
-      if (openIssueRows.length > 0 && meetingsLast7Days === 0) {
-        const anchorIssue = openIssueRows[0] ?? null;
+      if (openIssueRows.length > 0 && meetingsLast7Days === 0 && recommendations.length === 0) {
         recommendations.push(buildRecommendation(
           "no_recent_meetings",
-          anchorIssue,
+          null,
           "Open work exists, but no structured agent meeting was recorded in the last 7 days.",
         ));
       }
@@ -1342,15 +1341,16 @@ export function issueThreadInteractionService(db: Db) {
         ...legacyPendingWakeups.meetings,
         ...firstClassPendingWakeups.meetings,
       ];
-      const coveredIssueIds = new Set<string>();
+      const coveredRecommendationKeys = new Set<string>();
       let skipped = 0;
 
       for (const recommendation of health.recommendations) {
-        if (!recommendation.issueId || coveredIssueIds.has(recommendation.issueId)) {
+        const recommendationKey = recommendation.issueId ?? recommendation.id;
+        if (coveredRecommendationKeys.has(recommendationKey)) {
           skipped += 1;
           continue;
         }
-        coveredIssueIds.add(recommendation.issueId);
+        coveredRecommendationKeys.add(recommendationKey);
 
         const meeting = await createMeetingFromRecommendation(companyId, recommendation);
         if (!meeting) {

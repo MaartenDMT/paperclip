@@ -86,15 +86,32 @@ export function meetingService(db: Db) {
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
   }
 
-  async function linkIssues(input: {
+  async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
+    const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+    if (uniqueIssueIds.length === 0) return [];
+    const rows = await txDb
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueIssueIds)));
+    const validIssueIds = new Set(rows.map((row) => row.id));
+    const invalidIssueIds = uniqueIssueIds.filter((issueId) => !validIssueIds.has(issueId));
+    if (invalidIssueIds.length > 0) {
+      throw unprocessable("Meeting result references issues outside this company or missing issues", {
+        issueIds: invalidIssueIds,
+      });
+    }
+    return uniqueIssueIds;
+  }
+
+  async function linkIssues(txDb: Db, input: {
     companyId: string;
     meetingId: string;
     issueIds: string[];
     linkKind: string;
   }) {
-    const uniqueIssueIds = [...new Set(input.issueIds.filter(Boolean))];
+    const uniqueIssueIds = await validateCompanyIssueIds(txDb, input.companyId, input.issueIds);
     if (uniqueIssueIds.length === 0) return;
-    await db
+    await txDb
       .insert(meetingIssueLinks)
       .values(uniqueIssueIds.map((issueId) => ({
         companyId: input.companyId,
@@ -258,7 +275,11 @@ export function meetingService(db: Db) {
           })
           .from(meetingIssueLinks)
           .innerJoin(issues, eq(issues.id, meetingIssueLinks.issueId))
-          .where(and(eq(meetingIssueLinks.companyId, companyId), inArray(meetingIssueLinks.meetingId, meetingIds)))
+          .where(and(
+            eq(meetingIssueLinks.companyId, companyId),
+            eq(issues.companyId, companyId),
+            inArray(meetingIssueLinks.meetingId, meetingIds),
+          ))
           .orderBy(asc(meetingIssueLinks.createdAt), asc(meetingIssueLinks.id))
       : [];
     const linkedIssuesByMeetingId = new Map<string, NonNullable<WorkMeetingSummary["linkedIssues"]>>();
@@ -322,30 +343,36 @@ export function meetingService(db: Db) {
     if (!input.meetingResult) throw unprocessable("meetingResult is required");
     const result = agentMeetingResultSchema.parse(input.meetingResult);
     const now = new Date();
-    const [updated] = await db
-      .update(meetings)
-      .set({
-        status: "answered",
-        result,
-        resolvedByAgentId: actor.agentId ?? null,
-        resolvedByUserId: actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(meetings.id, meetingId), eq(meetings.status, "pending")))
-      .returning();
-    if (!updated) throw conflict("Meeting has already been resolved");
-
-    await db
-      .update(meetingParticipants)
-      .set({ status: "answered", updatedAt: now })
-      .where(eq(meetingParticipants.meetingId, meetingId));
-    await linkIssues({
-      companyId: meeting.companyId,
-      meetingId,
-      issueIds: readIssueIdsFromMeetingResult(result),
-      linkKind: "outcome",
+    const linkedOutcomeIssueIds = readIssueIdsFromMeetingResult(result);
+    const updated = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await validateCompanyIssueIds(txDb, meeting.companyId, linkedOutcomeIssueIds);
+      const [row] = await txDb
+        .update(meetings)
+        .set({
+          status: "answered",
+          result,
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(meetings.id, meetingId), eq(meetings.status, "pending")))
+        .returning();
+      if (!row) return null;
+      await txDb
+        .update(meetingParticipants)
+        .set({ status: "answered", updatedAt: now })
+        .where(eq(meetingParticipants.meetingId, meetingId));
+      await linkIssues(txDb, {
+        companyId: meeting.companyId,
+        meetingId,
+        issueIds: linkedOutcomeIssueIds,
+        linkKind: "outcome",
+      });
+      return row;
     });
+    if (!updated) throw conflict("Meeting has already been resolved");
     await logActivity(db, {
       companyId: meeting.companyId,
       actorType: actor.agentId ? "agent" : "user",
@@ -356,7 +383,7 @@ export function meetingService(db: Db) {
       entityId: meetingId,
       details: {
         sourceIssueId: meeting.sourceIssueId,
-        linkedOutcomeIssueIds: readIssueIdsFromMeetingResult(result),
+        linkedOutcomeIssueIds,
       },
     });
     return updated;
@@ -380,6 +407,7 @@ export function meetingService(db: Db) {
 
     let resolved = 0;
     for (const row of rows) {
+      const now = new Date();
       const result = agentMeetingResultSchema.parse({
         version: 1,
         summaryMarkdown: `Source issue is already ${row.issueStatus}; Paperclip closed this stale pending meeting automatically because no live meeting remains.`,
@@ -388,17 +416,39 @@ export function meetingService(db: Db) {
         blockers: [],
         openQuestions: [],
       });
-      const [updated] = await db
-        .update(meetings)
-        .set({
-          status: "answered",
-          result,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(meetings.id, row.meeting.id), eq(meetings.status, "pending")))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [meeting] = await txDb
+          .update(meetings)
+          .set({
+            status: "answered",
+            result,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(meetings.id, row.meeting.id), eq(meetings.status, "pending")))
+          .returning();
+        if (!meeting) return null;
+        await txDb
+          .update(meetingParticipants)
+          .set({ status: "answered", updatedAt: now })
+          .where(eq(meetingParticipants.meetingId, row.meeting.id));
+        return meeting;
+      });
       if (!updated) continue;
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "meeting.auto_resolved",
+        entityType: "meeting",
+        entityId: row.meeting.id,
+        details: {
+          sourceIssueId: row.meeting.sourceIssueId,
+          sourceIssueStatus: row.issueStatus,
+          reason: "source_issue_terminal",
+        },
+      });
       resolved += 1;
     }
     return resolved;

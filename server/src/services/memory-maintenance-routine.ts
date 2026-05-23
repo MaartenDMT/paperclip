@@ -98,6 +98,37 @@ export function memoryMaintenanceRoutineService(db: Db) {
     return chooseStewardAgent(candidates);
   }
 
+  async function findAgentCandidate(companyId: string, agentId: string | null) {
+    if (!agentId) return null;
+    return db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        status: agents.status,
+        createdAt: agents.createdAt,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function isInvokableStatus(status: string) {
+    return (INVOKABLE_AGENT_STATUSES as readonly string[]).includes(status);
+  }
+
+  function shouldAssignSteward(current: AgentCandidate | null, steward: AgentCandidate | null) {
+    if (!steward) return false;
+    if (!current) return true;
+    if (!isInvokableStatus(current.status)) return true;
+    const currentScore = stewardScore(current);
+    const nextScore = stewardScore(steward);
+    if (currentScore === null) return true;
+    if (nextScore === null) return false;
+    return steward.id !== current.id && nextScore < currentScore;
+  }
+
   async function findExistingRoutine(companyId: string) {
     const markerPattern = `%${MEMORY_MAINTENANCE_ROUTINE_MARKER}%`;
     return db
@@ -166,9 +197,10 @@ export function memoryMaintenanceRoutineService(db: Db) {
     if (routine.status === "archived") {
       return { status: "unchanged" as const, routineId: routine.id, assigneeAgentId: routine.assigneeAgentId };
     }
-    if (!routine.assigneeAgentId && steward) {
+    const currentAssignee = await findAgentCandidate(companyId, routine.assigneeAgentId);
+    if (shouldAssignSteward(currentAssignee, steward)) {
       const next = await routinesSvc.update(routine.id, {
-        assigneeAgentId: steward.id,
+        assigneeAgentId: steward!.id,
         status: "active",
       }, { userId: null, agentId: null });
       if (next) {
@@ -181,7 +213,11 @@ export function memoryMaintenanceRoutineService(db: Db) {
           action: "runtime.memory_maintenance_routine.assigned",
           entityType: "routine",
           entityId: routine.id,
-          details: { assigneeAgentId: steward.id },
+          details: {
+            assigneeAgentId: steward!.id,
+            previousAssigneeAgentId: currentAssignee?.id ?? routine.assigneeAgentId,
+            previousAssigneeStatus: currentAssignee?.status ?? null,
+          },
         });
       }
     }
