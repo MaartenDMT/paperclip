@@ -99,15 +99,45 @@ const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
 
 const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpectedOutput[]> = {
-  blocked_without_edge: ["blockers", "tasks", "decisions"],
-  stale_review: ["decisions", "questions", "plan_update"],
-  stale_in_progress: ["blockers", "questions", "plan_update"],
-  no_recent_meetings: ["decisions", "tasks", "plan_update"],
+  blocked_without_edge: ["problems", "blockers", "tasks", "process", "decisions"],
+  stale_review: ["goals", "kpis", "decisions", "questions", "process"],
+  stale_in_progress: ["problems", "kpis", "optimization", "workflows", "plan_update"],
+  no_recent_meetings: ["goals", "targets", "kpis", "finance", "workflows"],
+};
+
+const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
+  blocked_without_edge: [
+    "Define the blocked business outcome, impacted goal and target, and current cost of delay.",
+    "Identify the concrete problem, owner, dependency, and missing first-class blocker edge.",
+    "Agree on the process change or escalation path that prevents this blocker from recurring.",
+  ],
+  stale_review: [
+    "Review the goal and target this work is meant to advance.",
+    "Check KPI impact, quality bar, decision owner, and financial or budget implications.",
+    "Decide the review outcome, remaining questions, and workflow or process change needed to close faster next time.",
+  ],
+  stale_in_progress: [
+    "Compare current progress against the goal, target, KPI, and expected completion path.",
+    "Surface problems, spend or budget risk, workflow friction, and missing inputs.",
+    "Choose the optimization, plan update, owner, and next measurable checkpoint.",
+  ],
+  no_recent_meetings: [
+    "Review company goals, near-term targets, KPIs, and open work health.",
+    "Inspect finance signals: budget, spend trend, cost of delay, and expected return on the active work.",
+    "Identify process and workflow optimizations, problems to escalate, and owners for the next operating cycle.",
+  ],
+};
+
+const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
+  blocked_without_edge: "Business review focus: problem clarity, blocker ownership, cost of delay, escalation path, and process prevention.",
+  stale_review: "Business review focus: goal and target fit, KPI movement, financial or budget impact, decision quality, review workflow, and process latency.",
+  stale_in_progress: "Business review focus: progress against target, KPI risk, budget burn, execution problems, workflow optimization, and plan correction.",
+  no_recent_meetings: "Business review focus: goals, targets, KPI trend, finance, cross-team problems, workflow health, and operating process improvements.",
 };
 
 function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
   return {
-    purpose: "Meetings are structured issue-thread interactions used only when coordination needs a recorded decision, task, blocker, question, or plan update.",
+    purpose: "Meetings are structured operating reviews used when company work needs recorded goals, targets, KPIs, finance context, problems, optimizations, workflow/process changes, decisions, tasks, blockers, questions, or plan updates.",
     chairRule: "The chair is the nearest department head for the affected assignee. If no manager exists, the assignee chairs; cross-department work is chaired by the closest common head or the board.",
     triggerRules: [
       {
@@ -143,17 +173,17 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
       {
         status: "triggered",
         label: "Triggered",
-        description: "A blocker, stale review, stale execution, or coordination gap requires a meeting.",
+        description: "A blocker, stale review, stale execution, or operating gap requires a business meeting.",
       },
       {
         status: "pending",
         label: "Pending",
-        description: "An agent creates an agent_meeting interaction with purpose, participants, agenda, and expected outputs.",
+        description: "An agent creates an agent_meeting interaction with purpose, participants, business agenda, and expected outputs.",
       },
       {
         status: "answered",
         label: "Answered",
-        description: "The meeting is resolved with summary, decisions, action items, blockers, and open questions.",
+        description: "The meeting is resolved with a summary, decisions, action items, blockers, open questions, and relevant goal/KPI/finance/process notes.",
       },
       {
         status: "operationalized",
@@ -726,7 +756,6 @@ export function issueThreadInteractionService(db: Db) {
       return null;
     }
 
-    const triggerLabel = recommendation.trigger.replace(/_/g, " ");
     const issueLabel = recommendation.issueIdentifier ?? recommendation.issueId;
     const data = createIssueThreadInteractionSchema.parse({
       kind: "agent_meeting",
@@ -738,17 +767,14 @@ export function issueThreadInteractionService(db: Db) {
         version: 1,
         purpose: recommendation.reason,
         participantAgentIds: recommendation.participantAgentIds,
-        agenda: [
-          `Review ${triggerLabel} on ${issueLabel}.`,
-          "Share department context, current blockers, and recent decisions.",
-          "Agree on decisions, owners, action items, blockers, open questions, and any plan updates.",
-        ],
+        agenda: MEETING_TRIGGER_AGENDAS[recommendation.trigger],
         expectedOutputs: recommendation.expectedOutputs,
         contextMarkdown: [
           `Issue: ${recommendation.issueIdentifier ?? recommendation.issueId}`,
           recommendation.issueTitle ? `Title: ${recommendation.issueTitle}` : null,
           recommendation.issueStatus ? `Status: ${recommendation.issueStatus}` : null,
           recommendation.suggestedHeadName ? `Suggested chair: ${recommendation.suggestedHeadName}` : null,
+          MEETING_TRIGGER_FOCUS[recommendation.trigger],
           "Record the outcome as a meeting result and convert action items/blockers into linked issues.",
         ].filter(Boolean).join("\n"),
       },

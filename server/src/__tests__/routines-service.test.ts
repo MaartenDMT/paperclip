@@ -485,6 +485,31 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[0]?.snapshot.triggers).toHaveLength(0);
   });
 
+  it("deletes a routine and its definition history while preserving execution issues", async () => {
+    const { routine, svc } = await seedFixture();
+    const createdTrigger = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.linkedIssueId).toBeTruthy();
+
+    await expect(svc.delete(routine.id)).resolves.toEqual({ deleted: true });
+    await expect(svc.get(routine.id)).resolves.toBeNull();
+    await expect(db.select().from(routineTriggers).where(eq(routineTriggers.id, createdTrigger.trigger.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).resolves.toHaveLength(0);
+    const [preservedIssue] = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!));
+    expect(preservedIssue).toMatchObject({
+      originKind: "manual",
+      originId: null,
+      originRunId: null,
+      originFingerprint: "default",
+    });
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 

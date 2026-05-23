@@ -111,6 +111,7 @@ const mockRoutineService = vi.hoisted(() => ({
   getTrigger: vi.fn(),
   updateTrigger: vi.fn(),
   deleteTrigger: vi.fn(),
+  delete: vi.fn(),
   rotateTriggerSecret: vi.fn(),
   runRoutine: vi.fn(),
   firePublicTrigger: vi.fn(),
@@ -191,6 +192,7 @@ describe("routine routes", () => {
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
     mockRoutineService.update.mockResolvedValue({ ...routine, assigneeAgentId: otherAgentId });
+    mockRoutineService.delete.mockResolvedValue({ deleted: true });
     mockRoutineService.listRevisions.mockResolvedValue([revision]);
     mockRoutineService.listHealth.mockResolvedValue([]);
     mockRoutineService.restoreRevision.mockResolvedValue({
@@ -498,5 +500,39 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  it("deletes a routine for an authorized board member and logs the mutation", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).delete(`/api/routines/${routineId}`);
+
+    expect(res.status).toBe(204);
+    expect(mockRoutineService.delete).toHaveBeenCalledWith(routineId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.deleted",
+      entityType: "routine",
+      entityId: routineId,
+      companyId,
+    }));
+  });
+
+  it("blocks agents from deleting routines assigned to another agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+    });
+
+    const res = await request(app).delete(`/api/routines/${routineId}`);
+
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.delete).not.toHaveBeenCalled();
   });
 });

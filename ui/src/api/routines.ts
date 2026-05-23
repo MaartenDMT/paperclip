@@ -59,6 +59,7 @@ export const routinesApi = {
     api.post<Routine>(`/companies/${companyId}/routines`, data),
   get: (id: string) => api.get<RoutineDetail>(`/routines/${id}`),
   update: (id: string, data: Record<string, unknown>) => api.patch<Routine>(`/routines/${id}`, data),
+  delete: (id: string) => api.delete<void>(`/routines/${id}`),
   listRevisions: (id: string) => api.get<RoutineRevision[]>(`/routines/${id}/revisions`),
   restoreRevision: (
     id: string,

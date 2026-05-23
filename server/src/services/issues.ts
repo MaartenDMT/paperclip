@@ -3601,6 +3601,13 @@ export function issueService(db: Db) {
       }
 
       const runnableExpectedStatuses = expectedStatuses.filter((status) => isCheckoutRunnableStatus(status));
+      const canResumeBlockedIssue =
+        checkoutRunId !== null &&
+        expectedStatuses.includes("blocked") &&
+        runnableExpectedStatuses.length > 0;
+      const allowedCurrentStatuses = canResumeBlockedIssue
+        ? [...new Set([...runnableExpectedStatuses, "blocked"])]
+        : runnableExpectedStatuses;
       if (runnableExpectedStatuses.length === 0) {
         throw conflict("Issue checkout requires an explicit reopen or follow-up path first", {
           issueId: id,
@@ -3621,7 +3628,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!currentBeforeCheckout) throw notFound("Issue not found");
-      if (!isCheckoutRunnableStatus(currentBeforeCheckout.status)) {
+      if (!allowedCurrentStatuses.includes(currentBeforeCheckout.status as typeof allowedCurrentStatuses[number])) {
         throw conflict("Issue checkout requires an explicit reopen or follow-up path first", {
           issueId: currentBeforeCheckout.id,
           status: currentBeforeCheckout.status,
@@ -3654,7 +3661,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
-            inArray(issues.status, runnableExpectedStatuses),
+            inArray(issues.status, allowedCurrentStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),

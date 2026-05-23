@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
 
 const {
   createAppMock,
@@ -202,6 +206,7 @@ vi.mock("../adapters/registry.js", () => ({
 
 import { startServer } from "../index.ts";
 import { logger } from "../middleware/logger.js";
+import { heartbeatService } from "../services/index.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -345,6 +350,9 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+
+    if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
@@ -395,5 +403,55 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("does not start heartbeat scheduling from an auto-shifted secondary port", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+    }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    await startServer();
+
+    expect(heartbeatService).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { requestedPort: 3100, listenPort: 3110 },
+      "Heartbeat scheduler disabled because this server is not the primary Paperclip control-plane process",
+    );
+  });
+
+  it("does not start heartbeat scheduling when another process owns the scheduler lease", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-scheduler-owner-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "control-plane-scheduler.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        requestedPort: 3100,
+        listenPort: 3100,
+      }),
+      "utf8",
+    );
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+    }));
+
+    await startServer();
+
+    expect(heartbeatService).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedPort: 3100,
+        listenPort: 3100,
+        lockPath: expect.stringContaining("control-plane-scheduler.lock"),
+      }),
+      "Control-plane scheduler disabled because another Paperclip server owns the scheduler lease",
+    );
   });
 });

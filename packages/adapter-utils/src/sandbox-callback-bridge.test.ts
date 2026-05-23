@@ -922,6 +922,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/routines/r-1/runs" },
       { method: "POST", path: "/api/companies/co-1/routines" },
       { method: "PATCH", path: "/api/routines/r-1" },
+      { method: "DELETE", path: "/api/routines/r-1" },
       { method: "POST", path: "/api/routines/r-1/run" },
       { method: "POST", path: "/api/routines/r-1/triggers" },
       { method: "PATCH", path: "/api/routine-triggers/t-1" },

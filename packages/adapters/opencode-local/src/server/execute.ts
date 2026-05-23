@@ -98,6 +98,7 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  onLog: AdapterExecutionContext["onLog"];
 }) {
   const model = requireOpenCodeModelId(input.model);
   const defaultProbeTimeoutSec =
@@ -107,6 +108,10 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   const probeTimeoutSec = input.timeoutSec > 0
     ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
     : defaultProbeTimeoutSec;
+  await input.onLog(
+    "stdout",
+    `[paperclip] Checking OpenCode model availability on the remote execution target (timeout ${probeTimeoutSec}s).\n`,
+  );
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -122,7 +127,11 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   );
 
   if (probe.timedOut) {
-    throw new Error(`\`opencode models\` timed out on the remote execution target after ${probeTimeoutSec}s.`);
+    await input.onLog(
+      "stderr",
+      `[paperclip] Warning: \`opencode models\` timed out on the remote execution target after ${probeTimeoutSec}s; continuing with configured model ${model} so the run can surface provider/runtime errors directly.\n`,
+    );
+    return;
   }
 
   if ((probe.exitCode ?? 1) !== 0) {
@@ -434,6 +443,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        onLog,
       });
     }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {

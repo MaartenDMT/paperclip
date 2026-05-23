@@ -690,7 +690,6 @@ function buildFallbackDigest(opts: {
   runId: string;
   status: string;
   resultText: string;
-  stdoutExcerpt: string | null | undefined;
   nextAction: string | null | undefined;
 }): string {
   const clip = (s: string | null | undefined, n: number): string => {
@@ -723,14 +722,6 @@ function buildFallbackDigest(opts: {
   ];
   if (summary) lines.push(`- Summary: ${summary}`);
   if (opts.nextAction) lines.push(`- Next action (from run): ${clip(opts.nextAction, 400)}`);
-  const tail = clip(opts.stdoutExcerpt, 600);
-  if (tail) {
-    lines.push("- Stdout excerpt:");
-    lines.push("");
-    lines.push("```");
-    lines.push(tail);
-    lines.push("```");
-  }
   return lines.join("\n") + "\n";
 }
 
@@ -762,6 +753,139 @@ function extractIssueIds(text: string): string[] {
   return [...set];
 }
 
+function readIssueIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is string => typeof entry === "string" && (entry.match(ISSUE_RE)?.length ?? 0) > 0,
+  );
+}
+
+function extractIssueIdsFromRunContext(contextSnapshot: Record<string, unknown> | null | undefined): string[] {
+  if (!contextSnapshot || typeof contextSnapshot !== "object") return [];
+  const set = new Set<string>();
+  const scalarCandidates = [
+    contextSnapshot.issueId,
+    contextSnapshot.taskId,
+    contextSnapshot.sourceIssueId,
+  ];
+  for (const candidate of scalarCandidates) {
+    if (typeof candidate !== "string") continue;
+    for (const match of candidate.match(ISSUE_RE) ?? []) set.add(match);
+  }
+  for (const candidate of readIssueIdList(contextSnapshot.issueIds)) set.add(candidate);
+  for (const candidate of readIssueIdList(contextSnapshot.sourceIssueIds)) set.add(candidate);
+  return [...set];
+}
+
+export function collectTouchedIssueIds(opts: {
+  contextSnapshot?: Record<string, unknown> | null;
+  resultText?: string | null;
+  nextAction?: string | null;
+}): string[] {
+  const set = new Set<string>();
+  for (const id of extractIssueIdsFromRunContext(opts.contextSnapshot)) set.add(id);
+  for (const id of extractIssueIds(`${opts.resultText ?? ""}\n${opts.nextAction ?? ""}`)) set.add(id);
+  return [...set];
+}
+
+function summarizeIssueRefs(issueIds: string[], limit = 12): string {
+  if (issueIds.length === 0) return "no issue touched";
+  const shown = issueIds.slice(0, limit).map((id) => `[[${id}]]`);
+  const remaining = issueIds.length - shown.length;
+  return remaining > 0 ? `${shown.join(", ")} (+${remaining} more)` : shown.join(", ");
+}
+
+function upsertFrontmatterUpdated(markdown: string, yyyyMmDd: string): string {
+  if (!markdown.startsWith("---\n")) return markdown;
+  return markdown.replace(/^updated:\s.*$/m, `updated: ${yyyyMmDd}`);
+}
+
+function appendIfMissing(file: string, marker: string, block: string): void {
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  if (existing.includes(marker)) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, existing + block, "utf8");
+}
+
+export function ensureVaultDailyPage(dateKey: string, vaultRoot = VAULT): string {
+  const dailyDir = path.join(vaultRoot, "daily");
+  const file = path.join(dailyDir, `${dateKey}.md`);
+  if (!fs.existsSync(file)) {
+    const body = `---
+title: ${dateKey}
+created: ${dateKey}
+updated: ${dateKey}
+type: run
+tags: [paperclip, daily]
+status: active
+sources: []
+---
+
+# ${dateKey}
+`;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body, "utf8");
+  } else {
+    const current = fs.readFileSync(file, "utf8");
+    const updated = upsertFrontmatterUpdated(current, dateKey);
+    if (updated !== current) fs.writeFileSync(file, updated, "utf8");
+  }
+  return file;
+}
+
+export function ensureParaDailyPage(dateKey: string, vaultRoot = VAULT): string {
+  const file = path.join(path.dirname(vaultRoot), `${dateKey}.md`);
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `# ${dateKey}\n`, "utf8");
+  }
+  return file;
+}
+
+function appendDailyEntries(opts: {
+  stamp: string;
+  dateKey: string;
+  agentSlug: string;
+  agentName: string;
+  runId: string;
+  status: string;
+  touched: string[];
+  missed: string[];
+  summary: string;
+  nextAction: string | null | undefined;
+}): void {
+  const touchedSummary = summarizeIssueRefs(opts.touched, 10);
+  const missedSummary = opts.missed.length > 0 ? summarizeIssueRefs(opts.missed, 10) : "none";
+  const summary = opts.summary || "No structured summary recorded.";
+  const nextAction = opts.nextAction?.trim() || "None recorded.";
+
+  const vaultMarker = `- Run: \`${opts.runId.slice(0, 8)}\` status=\`${opts.status}\`.`;
+  const vaultEntry = [
+    "",
+    `## [${opts.stamp}] [[${opts.agentSlug}]] heartbeat`,
+    vaultMarker,
+    `- Touched: ${touchedSummary}.`,
+    `- Durable writes missed: ${missedSummary}.`,
+    `- Summary: ${summary}`,
+    `- Next: ${nextAction}`,
+    "",
+  ].join("\n");
+  appendIfMissing(ensureVaultDailyPage(opts.dateKey), vaultMarker, vaultEntry);
+
+  const paraMarker = `## ${opts.stamp} — ${opts.agentName}`;
+  const paraEntry = [
+    "",
+    paraMarker,
+    `- Run: \`${opts.runId.slice(0, 8)}\` status=\`${opts.status}\``,
+    `- Touched: ${touchedSummary}`,
+    `- Durable writes missed: ${missedSummary}`,
+    `- Summary: ${summary}`,
+    `- Next: ${nextAction}`,
+    "",
+  ].join("\n");
+  appendIfMissing(ensureParaDailyPage(opts.dateKey), paraMarker, paraEntry);
+}
+
 /**
  * The actual hook. Registered under the name "vault-memory" against
  * `run.after.success`.
@@ -779,15 +903,20 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
   const slug = slugify(agent.name);
   ensureAgentPage(slug, agent.name, agent.role ?? "");
 
-  // Extract issue mentions from result + stdout.
+  // Prefer explicit run context plus structured summaries. Stdout excerpts are
+  // too noisy and can mention hundreds of unrelated issue ids.
   const resultText =
     run.resultJson && typeof run.resultJson === "object"
       ? JSON.stringify(run.resultJson)
       : (run.resultJson as string | null) ?? "";
-  const blob = `${resultText}\n${run.stdoutExcerpt ?? ""}\n${run.nextAction ?? ""}`;
-  const touched = extractIssueIds(blob);
+  const touched = collectTouchedIssueIds({
+    contextSnapshot: run.contextSnapshot,
+    resultText,
+    nextAction: run.nextAction,
+  });
 
   const stamp = fmtStamp(finishedAt);
+  const dateKey = finishedAt.toISOString().slice(0, 10);
   const missed: string[] = [];
   for (const id of touched) {
     ensureIssuePage(id);
@@ -804,22 +933,46 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
       runId: run.id,
       status: run.status,
       resultText,
-      stdoutExcerpt: run.stdoutExcerpt,
       nextAction: run.nextAction,
     });
     for (const id of missed) appendFallbackDigest(id, digest);
   }
 
+  let summary = "";
+  try {
+    const parsed = JSON.parse(resultText || "null");
+    if (parsed && typeof parsed === "object") {
+      const candidate =
+        (parsed as Record<string, unknown>).summary ??
+        (parsed as Record<string, unknown>).message ??
+        (parsed as Record<string, unknown>).result ??
+        (parsed as Record<string, unknown>).output;
+      if (typeof candidate === "string") summary = candidate.trim().slice(0, 400);
+    }
+  } catch {
+    summary = resultText.trim().slice(0, 400);
+  }
+  appendDailyEntries({
+    stamp,
+    dateKey,
+    agentSlug: slug,
+    agentName: agent.name,
+    runId: run.id,
+    status: run.status,
+    touched,
+    missed,
+    summary,
+    nextAction: run.nextAction,
+  });
+
   const action = missed.length > 0 ? "noncompliant-autodigest" : "run";
-  const touchedRef = touched.length
-    ? touched.map((i) => `[[${i}]]`).join(", ")
-    : "no issue touched";
+  const touchedRef = summarizeIssueRefs(touched);
   const lines = [
     `\n## [${stamp}] ${action} | [[${slug}]] heartbeat`,
     `- Changed: ${agent.name} completed run ${run.id.slice(0, 8)} (\`${run.status}\`); touched ${touchedRef}.`,
     `- Evidence: heartbeat_run ${run.id}.`,
     missed.length > 0
-      ? `- Next: [[${slug}]] missed durable writes on ${missed.map((i) => `[[${i}]]`).join(", ")} — update those pages or justify in comment.`
+      ? `- Next: [[${slug}]] missed durable writes on ${summarizeIssueRefs(missed)} — update those pages or justify in comment.`
       : `- Next: review surfaced facts for [[${slug}]] role page if material.`,
   ];
   fs.appendFileSync(path.join(VAULT, "log.md"), lines.join("\n") + "\n");

@@ -56,6 +56,7 @@ import {
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 // Output-silence watchdog thresholds. Lower defaults than the historical 1h/4h
 // so a crashed adapter doesn't hold an agent's queue for hours. Override with
@@ -834,11 +835,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function resolveStaleRunSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
     const issueId = issueIdFromRunContext(run.contextSnapshot);
-    if (!issueId) return null;
     const [issue] = await db
       .select()
       .from(issues)
-      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId), isNull(issues.hiddenAt)))
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          issueId ? or(eq(issues.id, issueId), eq(issues.executionRunId, run.id)) : eq(issues.executionRunId, run.id),
+          isNull(issues.hiddenAt),
+        ),
+      )
       .limit(1);
     return issue ?? null;
   }
@@ -1496,6 +1502,294 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   }
 
+  function isTerminalHeartbeatRunStatus(status: string | null | undefined) {
+    return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+      status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+    );
+  }
+
+  async function resolveTerminalStaleRunEvaluationIssue(issue: typeof issues.$inferSelect) {
+    if (issue.originKind !== STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND) return null;
+    if (["done", "cancelled"].includes(issue.status)) return null;
+
+    const staleRunId = readNonEmptyString(issue.originId);
+    if (!staleRunId) return null;
+
+    const staleRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        errorCode: heartbeatRuns.errorCode,
+        finishedAt: heartbeatRuns.finishedAt,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, staleRunId)))
+      .then((rows) => rows[0] ?? null);
+    if (!staleRun || !isTerminalHeartbeatRunStatus(staleRun.status)) return null;
+
+    const sourceIssueId = issueIdFromRunContext(staleRun.contextSnapshot);
+    const sourceIssue = sourceIssueId
+      ? await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, sourceIssueId)))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const sourceIssueTerminal = Boolean(
+      sourceIssue && ["done", "cancelled"].includes(sourceIssue.status),
+    );
+    const prefix = await getCompanyIssuePrefix(issue.companyId);
+    const openRecoveryWrappers = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, issue.id),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+    const sourceBlockerIds = sourceIssue && sourceIssue.status === "blocked"
+      ? await existingUnresolvedBlockerIssueIds(issue.companyId, sourceIssue.id)
+      : [];
+    const removableBlockerIds = new Set([
+      issue.id,
+      ...openRecoveryWrappers.map((recoveryIssue) => recoveryIssue.id),
+    ]);
+    const remainingSourceBlockerIds = sourceBlockerIds.filter((blockerId) => !removableBlockerIds.has(blockerId));
+    const sourceOnlyBlockedByThisReview = Boolean(
+      sourceIssue &&
+      sourceIssue.status === "blocked" &&
+      sourceBlockerIds.length > 0 &&
+      remainingSourceBlockerIds.length === 0,
+    );
+    if (sourceIssueId && !sourceIssueTerminal && !sourceOnlyBlockedByThisReview) return null;
+
+    for (const recoveryIssue of openRecoveryWrappers) {
+      const recoveryUpdated = await issuesSvc.update(recoveryIssue.id, { status: "done" });
+      if (!recoveryUpdated) continue;
+      await issuesSvc.addComment(recoveryIssue.id, [
+        "Paperclip closed this recovery wrapper because the source stale-run review was resolved automatically.",
+        "",
+        `- Source review: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+        `- Monitored run: ${runUiLink({ id: staleRun.id, agentId: staleRun.agentId }, prefix)}`,
+        `- Run status: \`${staleRun.status}\``,
+        "",
+        "Next action: none on this wrapper.",
+      ].join("\n"), {}, { authorType: "system" });
+      await logActivity(db, {
+        companyId: recoveryIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: staleRun.id,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: recoveryIssue.id,
+        details: {
+          identifier: recoveryIssue.identifier,
+          status: "done",
+          previousStatus: recoveryIssue.status,
+          source: "recovery.resolve_terminal_stale_run_evaluation_wrapper",
+          sourceIssueId: issue.id,
+          staleRunId: staleRun.id,
+        },
+      });
+    }
+
+    const updated = await issuesSvc.update(issue.id, {
+      status: "done",
+      blockedByIssueIds: [],
+    });
+    if (!updated) return null;
+
+    await issuesSvc.addComment(issue.id, [
+      sourceIssueTerminal
+        ? "Paperclip closed this stale-run review automatically because the monitored run is already terminal and its source issue is already resolved."
+        : sourceOnlyBlockedByThisReview
+          ? "Paperclip closed this stale-run review automatically because the monitored run is already terminal and the source issue was blocked only by this obsolete review."
+        : "Paperclip closed this stale-run review automatically because the monitored run is already terminal and has no source issue to recover.",
+      "",
+      `- Monitored run: ${runUiLink({ id: staleRun.id, agentId: staleRun.agentId }, prefix)}`,
+      `- Run status: \`${staleRun.status}\``,
+      sourceIssue
+        ? `- Source issue: ${issueUiLink(sourceIssue, prefix)} (\`${sourceIssue.status}\`)`
+        : "- Source issue: none",
+      `- Error code: \`${staleRun.errorCode ?? "none"}\``,
+      `- Finished at: ${staleRun.finishedAt?.toISOString() ?? "unknown"}`,
+      `- Last output at: ${staleRun.lastOutputAt?.toISOString() ?? "none recorded"}`,
+      "",
+      "Next action: none unless a new run fingerprint creates fresh evidence.",
+    ].join("\n"), {}, { authorType: "system" });
+
+    if (sourceOnlyBlockedByThisReview && sourceIssue) {
+      await issuesSvc.update(sourceIssue.id, {
+        status: "todo",
+        blockedByIssueIds: remainingSourceBlockerIds,
+      });
+      await issuesSvc.addComment(sourceIssue.id, [
+        "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete stale-run review.",
+        "",
+        `- Cleared stale review: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+        `- Monitored run: ${runUiLink({ id: staleRun.id, agentId: staleRun.agentId }, prefix)}`,
+        `- Run status: \`${staleRun.status}\``,
+        `- Error code: \`${staleRun.errorCode ?? "none"}\``,
+        "",
+        "Next action: assigned owner should resume or retry the source issue normally.",
+      ].join("\n"), {}, { authorType: "system" });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: sourceIssue.assigneeAgentId ?? null,
+        runId: staleRun.id,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: sourceIssue.id,
+        details: {
+          identifier: sourceIssue.identifier,
+          status: "todo",
+          previousStatus: sourceIssue.status,
+          source: "recovery.resolve_terminal_stale_run_source_resume",
+          staleRunEvaluationIssueId: issue.id,
+          staleRunId: staleRun.id,
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: staleRun.id,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "done",
+        previousStatus: issue.status,
+        source: "recovery.resolve_terminal_stale_run_evaluation",
+        staleRunId: staleRun.id,
+        staleRunStatus: staleRun.status,
+        staleRunErrorCode: staleRun.errorCode ?? null,
+      },
+    });
+
+    return updated;
+  }
+
+  async function resolveObsoleteStrandedRecoveryIssue(issue: typeof issues.$inferSelect) {
+    if (!isStrandedIssueRecoveryIssue(issue)) return null;
+    if (["done", "cancelled"].includes(issue.status)) return null;
+
+    const sourceIssueId = readNonEmptyString(issue.originId);
+    if (!sourceIssueId) return null;
+
+    const sourceIssue = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, sourceIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue) return null;
+
+    const sourceIssueTerminal = ["done", "cancelled"].includes(sourceIssue.status);
+    const sourceBlockerIds = sourceIssue.status === "blocked"
+      ? await existingUnresolvedBlockerIssueIds(issue.companyId, sourceIssue.id)
+      : [];
+    const sourceOnlyBlockedByThisWrapper = (
+      sourceIssue.status === "blocked" &&
+      sourceBlockerIds.length > 0 &&
+      sourceBlockerIds.every((blockerId) => blockerId === issue.id)
+    );
+    if (!sourceIssueTerminal && !sourceOnlyBlockedByThisWrapper) return null;
+
+    const prefix = await getCompanyIssuePrefix(issue.companyId);
+    const updated = await issuesSvc.update(issue.id, {
+      status: "done",
+      blockedByIssueIds: [],
+    });
+    if (!updated) return null;
+
+    await issuesSvc.addComment(issue.id, [
+      sourceIssueTerminal
+        ? "Paperclip closed this recovery wrapper automatically because the source issue is already resolved."
+        : "Paperclip closed this recovery wrapper automatically because it was the source issue's only unresolved blocker.",
+      "",
+      `- Source issue: ${issueUiLink(sourceIssue, prefix)} (\`${sourceIssue.status}\`)`,
+      "",
+      "Next action: none on this wrapper.",
+    ].join("\n"), {}, { authorType: "system" });
+
+    if (sourceOnlyBlockedByThisWrapper) {
+      await issuesSvc.update(sourceIssue.id, {
+        status: "todo",
+        blockedByIssueIds: [],
+      });
+      await issuesSvc.addComment(sourceIssue.id, [
+        "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete recovery wrapper.",
+        "",
+        `- Cleared recovery wrapper: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+        "",
+        "Next action: assigned owner should resume or retry the source issue normally.",
+      ].join("\n"), {}, { authorType: "system" });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: sourceIssue.assigneeAgentId ?? null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: sourceIssue.id,
+        details: {
+          identifier: sourceIssue.identifier,
+          status: "todo",
+          previousStatus: sourceIssue.status,
+          source: "recovery.resolve_obsolete_stranded_source_resume",
+          recoveryIssueId: issue.id,
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "done",
+        previousStatus: issue.status,
+        source: "recovery.resolve_obsolete_stranded_recovery",
+        sourceIssueId: sourceIssue.id,
+        sourceIssueStatus: sourceIssue.status,
+      },
+    });
+
+    return updated;
+  }
+
   async function buildNestedStrandedRecoveryLine(issue: typeof issues.$inferSelect, prefix: string) {
     const sourceIssueId = readNonEmptyString(issue.originId);
     const sourceIssue = sourceIssueId
@@ -1964,8 +2258,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress"]),
-          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["todo", "in_progress", "blocked"]),
         ),
       );
 
@@ -1983,6 +2276,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      const terminalStaleRunEvaluation = await resolveTerminalStaleRunEvaluationIssue(issue);
+      if (terminalStaleRunEvaluation) {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
+      const obsoleteStrandedRecovery = await resolveObsoleteStrandedRecoveryIssue(issue);
+      if (obsoleteStrandedRecovery) {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
@@ -1991,6 +2298,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issue.status === "blocked") {
         result.skipped += 1;
         continue;
       }

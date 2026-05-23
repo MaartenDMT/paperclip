@@ -311,6 +311,76 @@ describe("opencode remote execution", () => {
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 
+  it("continues remote execution when the OpenCode model discovery probe times out", async () => {
+    runAdapterExecutionTargetProcess.mockImplementationOnce(
+      async () =>
+        ({
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: true,
+          stdout: "",
+          stderr: "",
+          pid: 456,
+          startedAt: new Date().toISOString(),
+        }) as never,
+    );
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-model-timeout-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const logs: string[] = [];
+
+    const result = await execute({
+      runId: "run-ssh-model-timeout",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async (_stream, message) => {
+        logs.push(message);
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionParams).toMatchObject({ sessionId: "session_123" });
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    expect((runAdapterExecutionTargetProcess.mock.calls[0]?.[3] as string[] | undefined) ?? []).toEqual(["models"]);
+    expect((runAdapterExecutionTargetProcess.mock.calls[1]?.[3] as string[] | undefined) ?? []).toContain("run");
+    expect(logs.join("")).toContain("`opencode models` timed out");
+  });
+
   it("includes Paperclip task context in the OpenCode stdin prompt", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-task-"));
     cleanupDirs.push(rootDir);

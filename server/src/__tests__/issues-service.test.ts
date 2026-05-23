@@ -3413,4 +3413,32 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBeNull();
   });
+
+  it("allows a blocked issue to resume when a run supplies blocked plus a runnable follow-up status", async () => {
+    const { issueId, agentId } = await seedCheckoutIssue("blocked");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: (
+        await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0])
+      ).companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "blocked"], runId);
+
+    expect(checkedOut?.status).toBe("in_progress");
+    expect(checkedOut?.assigneeAgentId).toBe(agentId);
+    expect(checkedOut?.checkoutRunId).toBe(runId);
+    expect(checkedOut?.executionRunId).toBe(runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
 });

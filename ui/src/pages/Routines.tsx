@@ -16,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { buildMissingDepartmentRoutinePlans } from "../lib/department-routines";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { EmptyState } from "../components/EmptyState";
@@ -62,6 +63,14 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
   if (!element) return;
   element.style.height = "auto";
   element.style.height = `${element.scrollHeight}px`;
+}
+
+function getLocalTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "UTC";
+  }
 }
 
 type RoutinesTab = "routines" | "runs";
@@ -385,6 +394,73 @@ export function Routines() {
     },
   });
 
+  const createDepartmentRoutines = useMutation({
+    mutationFn: async () => {
+      const project = (projects ?? []).find((entry) => entry.status !== "completed" && entry.status !== "cancelled")
+        ?? projects?.[0]
+        ?? null;
+      const plans = buildMissingDepartmentRoutinePlans({
+        agents: agents ?? [],
+        existingRoutines: routines ?? [],
+        projectId: project?.id ?? null,
+        goalId: project?.goalId ?? null,
+      });
+      const timezone = getLocalTimezone();
+      for (const plan of plans) {
+        const routine = await routinesApi.create(selectedCompanyId!, {
+          title: plan.title,
+          description: plan.description,
+          assigneeAgentId: plan.assigneeAgentId,
+          projectId: plan.projectId,
+          goalId: plan.goalId,
+          priority: plan.priority,
+          status: "active",
+          concurrencyPolicy: plan.concurrencyPolicy,
+          catchUpPolicy: plan.catchUpPolicy,
+        });
+        await routinesApi.createTrigger(routine.id, {
+          kind: plan.trigger.kind,
+          label: plan.trigger.label,
+          cronExpression: plan.trigger.cronExpression,
+          timezone,
+        });
+      }
+      return plans.length;
+    },
+    onSuccess: async (count) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
+      pushToast({
+        title: count > 0 ? "Department routines created" : "Department routines already exist",
+        body: count > 0
+          ? `Created ${count} optimized routine${count === 1 ? "" : "s"} for the current org.`
+          : "No missing department routine templates were found for active department heads.",
+        tone: count > 0 ? "success" : "info",
+      });
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Failed to create department routines",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not create the default routines.",
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteRoutine = useMutation({
+    mutationFn: (id: string) => routinesApi.delete(id),
+    onSuccess: async () => {
+      pushToast({ title: "Routine deleted", tone: "success" });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Failed to delete routine",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not delete the routine.",
+        tone: "error",
+      });
+    },
+  });
+
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [composerOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -478,6 +554,12 @@ export function Routines() {
     });
   }
 
+  function handleDeleteRoutine(routine: RoutineListItem) {
+    const confirmed = window.confirm(`Delete routine "${routine.title}"? This removes its triggers and run history.`);
+    if (!confirmed) return;
+    deleteRoutine.mutate(routine.id);
+  }
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Repeat} message="Select a company to view routines." />;
   }
@@ -497,10 +579,20 @@ export function Routines() {
             Recurring work definitions that materialize into auditable execution issues.
           </p>
         </div>
-        <Button onClick={() => setComposerOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create routine
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            onClick={() => createDepartmentRoutines.mutate()}
+            disabled={createDepartmentRoutines.isPending || (agents ?? []).length === 0}
+          >
+            <Layers className="mr-2 h-4 w-4" />
+            Department routines
+          </Button>
+          <Button onClick={() => setComposerOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create routine
+          </Button>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -921,6 +1013,7 @@ export function Routines() {
                         onRunNow={handleRunNow}
                         onToggleEnabled={handleToggleEnabled}
                         onToggleArchived={handleToggleArchived}
+                        onDelete={handleDeleteRoutine}
                       />
                     ))}
                   </CollapsibleContent>

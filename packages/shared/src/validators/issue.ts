@@ -576,6 +576,14 @@ export const agentMeetingExpectedOutputSchema = z.enum([
   "blockers",
   "questions",
   "plan_update",
+  "goals",
+  "targets",
+  "kpis",
+  "finance",
+  "problems",
+  "optimization",
+  "workflows",
+  "process",
 ]);
 
 export const agentMeetingPayloadSchema = z.object({

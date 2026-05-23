@@ -63,9 +63,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   disableRunNow = false,
   disableToggle = false,
   hideArchiveAction = false,
+  hideDeleteAction = false,
   onRunNow,
   onToggleEnabled,
   onToggleArchived,
+  onDelete,
 }: {
   routine: TRoutine;
   projectById: Map<string, RoutineListProjectSummary>;
@@ -80,9 +82,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   disableRunNow?: boolean;
   disableToggle?: boolean;
   hideArchiveAction?: boolean;
+  hideDeleteAction?: boolean;
   onRunNow: (routine: TRoutine) => void;
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
+  onDelete?: (routine: TRoutine) => void;
 }) {
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
@@ -186,6 +190,14 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
                 disabled={isStatusPending}
               >
                 {routine.status === "archived" ? "Restore" : "Archive"}
+              </DropdownMenuItem>
+            ) : null}
+            {!hideDeleteAction && onDelete ? (
+              <DropdownMenuItem
+                onClick={() => onDelete(routine)}
+                disabled={isStatusPending}
+              >
+                Delete
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>

@@ -1,7 +1,8 @@
 /// <reference path="./types/express.d.ts" />
 import { existsSync } from "node:fs";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -48,6 +49,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import type {
@@ -56,6 +58,8 @@ import type {
 } from "./routes/instance-database-backups.js";
 
 const startupDebugEnabled = process.env.PAPERCLIP_DEBUG_STARTUP === "true";
+const CONTROL_PLANE_SCHEDULER_LEASE_FILENAME = "control-plane-scheduler.lock";
+const CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS = 10 * 60 * 1000;
 
 function startupDebug(message: string) {
   if (!startupDebugEnabled) return;
@@ -89,6 +93,114 @@ type EmbeddedPostgresCtor = new (opts: {
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
+
+type ControlPlaneSchedulerLeaseFile = {
+  pid?: number;
+  startedAt?: string;
+  updatedAt?: string;
+  requestedPort?: number;
+  listenPort?: number;
+};
+
+type ControlPlaneSchedulerLease = {
+  acquired: boolean;
+  lockPath: string;
+  release: () => Promise<void>;
+};
+
+function isPidAlive(pid: number | null | undefined): boolean {
+  if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseLeaseFile(raw: string): ControlPlaneSchedulerLeaseFile | null {
+  try {
+    const parsed = JSON.parse(raw) as ControlPlaneSchedulerLeaseFile;
+    return typeof parsed === "object" && parsed !== null ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function acquireControlPlaneSchedulerLease(input: {
+  requestedPort: number;
+  listenPort: number;
+}): Promise<ControlPlaneSchedulerLease> {
+  const lockPath = resolve(resolvePaperclipInstanceRoot(), CONTROL_PLANE_SCHEDULER_LEASE_FILENAME);
+  const now = new Date();
+  const lease: Required<ControlPlaneSchedulerLeaseFile> = {
+    pid: process.pid,
+    startedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    requestedPort: input.requestedPort,
+    listenPort: input.listenPort,
+  };
+  const writeLease = async () => {
+    await mkdir(dirname(lockPath), { recursive: true });
+    await writeFile(lockPath, `${JSON.stringify(lease, null, 2)}\n`, { flag: "wx" });
+  };
+
+  try {
+    await writeLease();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    const existing = await readFile(lockPath, "utf8").then(parseLeaseFile, () => null);
+    const existingUpdatedAt = existing?.updatedAt ? Date.parse(existing.updatedAt) : Number.NaN;
+    const existingAgeMs = Number.isFinite(existingUpdatedAt)
+      ? Date.now() - existingUpdatedAt
+      : CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS + 1;
+    const existingOwnerAlive = isPidAlive(existing?.pid);
+    if (existingOwnerAlive && existingAgeMs < CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS) {
+      return {
+        acquired: false,
+        lockPath,
+        release: async () => {},
+      };
+    }
+    await unlink(lockPath).catch(() => undefined);
+    try {
+      await writeLease();
+    } catch (writeErr) {
+      if ((writeErr as NodeJS.ErrnoException).code === "EEXIST") {
+        return {
+          acquired: false,
+          lockPath,
+          release: async () => {},
+        };
+      }
+      throw writeErr;
+    }
+  }
+
+  const refresh = setInterval(() => {
+    const refreshed = {
+      ...lease,
+      updatedAt: new Date().toISOString(),
+    };
+    void writeFile(lockPath, `${JSON.stringify(refreshed, null, 2)}\n`).catch((err) => {
+      logger.warn({ err, lockPath }, "Failed to refresh Paperclip scheduler ownership lease");
+    });
+  }, Math.max(5_000, Math.min(60_000, CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS / 3)));
+  refresh.unref?.();
+
+  return {
+    acquired: true,
+    lockPath,
+    release: async () => {
+      clearInterval(refresh);
+      const existing = await readFile(lockPath, "utf8").then(parseLeaseFile, () => null);
+      if (existing?.pid === process.pid) {
+        await unlink(lockPath).catch(() => undefined);
+      }
+    },
+  };
+}
 
 
 export interface StartedServer {
@@ -544,6 +656,18 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  const isPrimaryPortProcess = listenPort === requestedListenPort;
+  const controlPlaneSchedulerLease =
+    isPrimaryPortProcess && (config.heartbeatSchedulerEnabled || config.databaseBackupEnabled)
+      ? await acquireControlPlaneSchedulerLease({ requestedPort: requestedListenPort, listenPort })
+      : null;
+  const isPrimaryControlPlaneProcess = isPrimaryPortProcess && (controlPlaneSchedulerLease?.acquired ?? true);
+  if ((config.heartbeatSchedulerEnabled || config.databaseBackupEnabled) && controlPlaneSchedulerLease && !controlPlaneSchedulerLease.acquired) {
+    logger.warn(
+      { requestedPort: requestedListenPort, listenPort, lockPath: controlPlaneSchedulerLease.lockPath },
+      "Control-plane scheduler disabled because another Paperclip server owns the scheduler lease",
+    );
+  }
   startupDebug(`startServer: listen port resolved to ${listenPort}`);
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
@@ -683,6 +807,9 @@ export async function startServer(): Promise<StartedServer> {
     feedbackExportService: feedback,
     databaseBackupService: {
       runManualBackup: async () => {
+        if (!isPrimaryControlPlaneProcess) {
+          throw conflict("Database backups can only run from the primary Paperclip server process");
+        }
         const result = await runServerDatabaseBackup("manual");
         if (!result) {
           throw conflict("Database backup already in progress");
@@ -759,7 +886,7 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
-  if (config.heartbeatSchedulerEnabled) {
+  if (config.heartbeatSchedulerEnabled && isPrimaryControlPlaneProcess) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const issueThreadInteractions = issueThreadInteractionService(db as any);
@@ -933,9 +1060,14 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+  } else if (config.heartbeatSchedulerEnabled) {
+    logger.warn(
+      { requestedPort: requestedListenPort, listenPort },
+      "Heartbeat scheduler disabled because this server is not the primary Paperclip control-plane process",
+    );
   }
   
-  if (config.databaseBackupEnabled) {
+  if (config.databaseBackupEnabled && isPrimaryControlPlaneProcess) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -951,6 +1083,11 @@ export async function startServer(): Promise<StartedServer> {
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+  } else if (config.databaseBackupEnabled) {
+    logger.warn(
+      { requestedPort: requestedListenPort, listenPort, backupDir: config.databaseBackupDir },
+      "Automatic database backups disabled because this server is not the primary Paperclip control-plane process",
+    );
   }
   
   // Wait for external adapters to finish loading before accepting requests.
@@ -1048,6 +1185,8 @@ export async function startServer(): Promise<StartedServer> {
         telemetryClient.stop();
         await telemetryClient.flush();
       }
+
+      await controlPlaneSchedulerLease?.release();
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");

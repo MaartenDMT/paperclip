@@ -1105,6 +1105,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect((rows[0]!.payload as any).participantAgentIds).toEqual(
       expect.arrayContaining([ceoId, engineeringHeadId, marketingHeadId, engineerId, marketerId]),
     );
+    expect((rows[0]!.payload as any).expectedOutputs).toEqual([
+      "goals",
+      "kpis",
+      "decisions",
+      "questions",
+      "process",
+    ]);
+    expect((rows[0]!.payload as any).agenda).toEqual(expect.arrayContaining([
+      expect.stringContaining("goal and target"),
+      expect.stringContaining("KPI"),
+      expect.stringContaining("workflow"),
+    ]));
+    expect((rows[0]!.payload as any).contextMarkdown).toContain("Business review focus");
+    expect((rows[0]!.payload as any).contextMarkdown).toContain("financial or budget impact");
 
     const duplicate = await interactionsSvc.reconcileMeetingWorkflow(companyId);
     expect(duplicate.created).toBe(0);

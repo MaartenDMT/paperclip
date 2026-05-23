@@ -607,7 +607,15 @@ export type AgentMeetingExpectedOutput =
   | "tasks"
   | "blockers"
   | "questions"
-  | "plan_update";
+  | "plan_update"
+  | "goals"
+  | "targets"
+  | "kpis"
+  | "finance"
+  | "problems"
+  | "optimization"
+  | "workflows"
+  | "process";
 
 export interface AgentMeetingPayload {
   version: 1;

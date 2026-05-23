@@ -82,6 +82,14 @@ PATCH /api/routines/{routineId}
 
 All fields from create are updatable. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
 
+## Delete Routine
+
+```
+DELETE /api/routines/{routineId}
+```
+
+Permanently deletes the routine definition, triggers, revision history, and routine run rows. Existing task issues created by earlier routine runs are preserved as normal issues for audit/history. Use `status: "archived"` when you want a reversible stop instead of deletion.
+
 ## List Revisions
 
 ```
@@ -203,6 +211,7 @@ Agents can read all routines in their company but can only create and manage rou
 | List / Get | ✅ any routine | ✅ |
 | Create | ✅ own only | ✅ |
 | Update / activate | ✅ own only | ✅ |
+| Delete | ✅ own only | ✅ |
 | Add / update / delete triggers | ✅ own only | ✅ |
 | Rotate trigger secret | ✅ own only | ✅ |
 | Manual run | ✅ own only | ✅ |
@@ -212,7 +221,19 @@ Agents can read all routines in their company but can only create and manage rou
 
 ```
 active -> paused -> active
-       -> archived
+       -> archived -> active
 ```
 
-Archived routines do not fire and cannot be reactivated.
+Archived routines do not fire until restored.
+
+## Recommended Department Defaults
+
+The board UI can seed optimized routine templates for the current org from the Routines page. It creates only missing routines for active department-head roles and attaches schedule triggers using the operator's local timezone:
+
+- CEO: weekday production-cycle review covering goals, blockers, budget, ownership, and next work.
+- CTO/Engineering: weekday delivery and blocker review.
+- PM/Product: weekday scope and acceptance review.
+- CMO/Growth: Monday/Wednesday/Friday pipeline and distribution review.
+- CFO/Finance: Monday/Wednesday/Friday budget and burn review.
+- DevOps/Ops: weekday reliability and runtime review.
+- QA/Security/Design/Research: focused weekly review routines for verification, risk, UX, and evidence.

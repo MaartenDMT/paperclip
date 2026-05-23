@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  collectTouchedIssueIds,
+  ensureParaDailyPage,
+  ensureVaultDailyPage,
   normalizeVaultIssueLinks,
   prepareGraphifyCompactCorpus,
   releaseGraphifyExtractLock,
@@ -84,6 +87,34 @@ describe("vault memory output sanitation", () => {
 
     expect(sanitizeGraphReportWikilinks(vault)).toBe(0);
     await expect(fs.readFile(report, "utf8")).resolves.toBe("- [[_COMMUNITY_Community 0|Community 0]]\n");
+  });
+});
+
+describe("vault memory issue selection", () => {
+  it("prefers explicit run context and ignores unrelated issue ids in stdout-like text", () => {
+    const touched = collectTouchedIssueIds({
+      contextSnapshot: {
+        issueId: "REA-1584",
+        issueIds: ["REA-2511"],
+        sourceIssueIds: ["REA-2436"],
+      },
+      resultText: JSON.stringify({ summary: "Resolved REA-1584 with REA-2511 context." }),
+      nextAction: "Update REA-1584 and REA-2511 only.",
+    });
+
+    expect(touched).toEqual(["REA-1584", "REA-2511", "REA-2436"]);
+  });
+});
+
+describe("daily memory pages", () => {
+  it("creates vault and para daily notes in the expected locations", async () => {
+    const vault = await tempVault();
+
+    const vaultDaily = ensureVaultDailyPage("2026-05-22", vault);
+    const paraDaily = ensureParaDailyPage("2026-05-22", vault);
+
+    await expect(fs.readFile(vaultDaily, "utf8")).resolves.toContain("# 2026-05-22");
+    await expect(fs.readFile(paraDaily, "utf8")).resolves.toContain("# 2026-05-22");
   });
 });
 

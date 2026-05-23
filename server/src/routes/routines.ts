@@ -211,6 +211,28 @@ export function routineRoutes(
     res.json(updated);
   });
 
+  router.delete("/routines/:id", async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const result = await svc.delete(routine.id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.deleted",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { title: routine.title, deleted: result.deleted },
+    });
+    res.status(204).end();
+  });
+
   router.post("/routines/:id/revisions/:revisionId/restore", async (req, res) => {
     const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
     if (!routine) {

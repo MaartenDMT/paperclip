@@ -109,6 +109,8 @@ function AgentMeetingCard({
   interaction: AgentMeetingInteraction;
   agentMap?: Map<string, Agent>;
 }) {
+  const formatExpectedOutput = (output: string) => output === "kpis" ? "KPIs" : output.replace(/_/g, " ");
+
   return (
     <div className="space-y-4">
       <div className="rounded-sm border border-border/70 p-3">
@@ -132,7 +134,7 @@ function AgentMeetingCard({
           <div className="mt-2 flex flex-wrap gap-1.5">
             {interaction.payload.expectedOutputs.map((output) => (
               <span key={output} className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
-                {output.replace(/_/g, " ")}
+                {formatExpectedOutput(output)}
               </span>
             ))}
           </div>

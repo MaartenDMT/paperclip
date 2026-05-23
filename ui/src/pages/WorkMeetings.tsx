@@ -12,9 +12,24 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { timeAgo } from "../lib/timeAgo";
 
-const EXPECTED_OUTPUTS = ["decisions", "tasks", "blockers", "questions", "plan_update"] as const;
+const EXPECTED_OUTPUTS = [
+  "goals",
+  "targets",
+  "kpis",
+  "finance",
+  "problems",
+  "optimization",
+  "workflows",
+  "process",
+  "decisions",
+  "tasks",
+  "blockers",
+  "questions",
+  "plan_update",
+] as const;
 
 function formatOutput(value: string) {
+  if (value === "kpis") return "KPIs";
   return value.replace(/_/g, " ");
 }
 

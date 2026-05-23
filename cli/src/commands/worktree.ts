@@ -1625,11 +1625,11 @@ function parseGitWorktreeList(cwd: string): GitWorktreeListEntry[] {
   });
   const entries: GitWorktreeListEntry[] = [];
   let current: Partial<GitWorktreeListEntry> = {};
-  for (const line of raw.split("\n")) {
+  for (const line of raw.split(/\r?\n/)) {
     if (line.startsWith("worktree ")) {
-      current = { worktree: line.slice("worktree ".length) };
+      current = { worktree: line.slice("worktree ".length).trim() };
     } else if (line.startsWith("branch ")) {
-      current.branch = line.slice("branch ".length);
+      current.branch = line.slice("branch ".length).trim();
     } else if (line === "bare") {
       current.bare = true;
     } else if (line === "detached") {

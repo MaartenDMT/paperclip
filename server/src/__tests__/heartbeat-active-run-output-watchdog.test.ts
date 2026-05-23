@@ -7,6 +7,7 @@ import {
   createDb,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueComments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -326,7 +327,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   it("does not create stale-run evaluations for recovery-owned source issues", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     for (const originKind of ["stranded_issue_recovery", "stale_active_run_evaluation"] as const) {
-      const { companyId } = await seedRecoveryOwnedRunningRun({
+      const { companyId, runId } = await seedRecoveryOwnedRunningRun({
         now,
         ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
         originKind,
@@ -339,11 +340,275 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       const evaluations = await db
         .select()
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stale_active_run_evaluation"),
+            eq(issues.originFingerprint, `stale_active_run:${companyId}:${runId}`),
+          ),
+        );
       expect(evaluations).toHaveLength(0);
 
       await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
     }
+  });
+
+  it("closes terminal no-source stale-run evaluations and their recovery wrappers", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: {} })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      parentId: evaluation?.id,
+      originKind: "stranded_issue_recovery",
+      originId: evaluation?.id,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${evaluation?.id}:test`,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: evaluation!.id,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        errorCode: "process_lost",
+        finishedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(evaluation?.id);
+    const [resolvedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(resolvedEvaluation?.status).toBe("done");
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const blockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, evaluation!.id));
+    expect(blockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, evaluation!.id));
+    expect(comments.some((comment) => comment.body.includes("monitored run is already terminal"))).toBe(true);
+  });
+
+  it("closes terminal stale-run evaluations when the source issue is already done", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      parentId: evaluation?.id,
+      originKind: "stranded_issue_recovery",
+      originId: evaluation?.id,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${evaluation?.id}:terminal-source`,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: evaluation!.id,
+    });
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        livenessState: "completed",
+        livenessReason: "Issue is done",
+        finishedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(evaluation?.id);
+    const [resolvedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(resolvedEvaluation?.status).toBe("done");
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const blockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, evaluation!.id));
+    expect(blockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, evaluation!.id));
+    expect(comments.some((comment) => comment.body.includes("source issue is already resolved"))).toBe(true);
+  });
+
+  it("returns source issues to todo when terminal stale-run reviews are their only blocker", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      parentId: evaluation?.id,
+      originKind: "stranded_issue_recovery",
+      originId: evaluation?.id,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${evaluation?.id}:source-resume`,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: evaluation!.id,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        errorCode: "process_lost",
+        livenessState: "failed",
+        livenessReason: "Run ended with failed (process_lost)",
+        finishedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(evaluation?.id);
+    const [resolvedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(resolvedEvaluation?.status).toBe("done");
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue?.status).toBe("todo");
+    const sourceBlockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId));
+    expect(sourceBlockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body.includes("returned this source issue to `todo`"))).toBe(true);
+  });
+
+  it("returns source issues to todo when obsolete recovery wrappers are their only blocker", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${issueId}:obsolete-wrapper`,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: issueId,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", errorCode: "process_lost", finishedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(recoveryIssueId);
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue?.status).toBe("todo");
+    const sourceBlockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId));
+    expect(sourceBlockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body.includes("obsolete recovery wrapper"))).toBe(true);
   });
 
   it("records watchdog decisions through recovery owner authorization", async () => {

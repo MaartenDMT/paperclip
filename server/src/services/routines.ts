@@ -1779,6 +1779,30 @@ export function routineService(
       });
     },
 
+    delete: async (id: string): Promise<{ deleted: boolean }> => {
+      const existing = await getRoutineById(id);
+      if (!existing) return { deleted: false };
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${id} for update`);
+        await txDb
+          .delete(pluginManagedResources)
+          .where(and(eq(pluginManagedResources.resourceKind, "routine"), eq(pluginManagedResources.resourceId, id)));
+        await txDb
+          .update(issues)
+          .set({
+            originKind: "manual",
+            originId: null,
+            originRunId: null,
+            originFingerprint: "default",
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.companyId, existing.companyId), eq(issues.originKind, "routine_execution"), eq(issues.originId, id)));
+        await txDb.delete(routines).where(eq(routines.id, id));
+      });
+      return { deleted: true };
+    },
+
     createTrigger: async (
       routineId: string,
       input: CreateRoutineTrigger,

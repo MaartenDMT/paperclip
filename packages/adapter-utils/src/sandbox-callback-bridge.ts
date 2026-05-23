@@ -89,6 +89,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/routines\/[^/]+\/runs$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "PATCH", path: /^\/api\/routines\/[^/]+$/ },
+  { method: "DELETE", path: /^\/api\/routines\/[^/]+$/ },
   { method: "POST", path: /^\/api\/routines\/[^/]+\/run$/ },
   { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
   { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },

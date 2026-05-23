@@ -641,7 +641,7 @@ async function directoryExists(value: string) {
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
   const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
   const paths = new Set<string>();
-  for (const line of output.split("\n")) {
+  for (const line of output.split(/\r?\n/)) {
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;
