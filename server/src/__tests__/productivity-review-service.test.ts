@@ -212,6 +212,159 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
 
+  it("keeps direct CEO report productivity reviews with the operational owner", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const departmentHeadId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const createdAt = new Date("2026-04-28T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Direct Report Review Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: departmentHeadId,
+        companyId,
+        name: "Fiction Director",
+        role: "general",
+        status: "idle",
+        reportsTo: ceoId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fiction production cycle",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: departmentHeadId,
+      originKind: "manual",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await insertRuns({
+      companyId,
+      agentId: departmentHeadId,
+      issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({ now, companyId });
+    const reviews = await listProductivityReviews(companyId);
+
+    expect(result.created).toBe(1);
+    expect(reviews[0]?.assigneeAgentId).toBe(departmentHeadId);
+    expect(reviews[0]?.assigneeAgentId).not.toBe(ceoId);
+  });
+
+  it("repairs existing direct CEO report productivity reviews off the CEO queue", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const departmentHeadId = randomUUID();
+    const issueId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const createdAt = new Date("2026-04-28T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Existing Direct Report Review Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: departmentHeadId,
+        companyId,
+        name: "Fiction Director",
+        role: "general",
+        status: "idle",
+        reportsTo: ceoId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Fiction production cycle",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: departmentHeadId,
+        originKind: "manual",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        startedAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: reviewIssueId,
+        companyId,
+        parentId: issueId,
+        title: "Review productivity for fiction production cycle",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: ceoId,
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: issueId,
+        originFingerprint: `productivity-review:${issueId}`,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+
+    const result = await productivityReviewService(db).reconcileOpenProductivityReviewOwners({ now, companyId });
+    const [review] = await listProductivityReviews(companyId);
+
+    expect(result.reassigned).toBe(1);
+    expect(result.reassignedReviewIssueIds).toEqual([reviewIssueId]);
+    expect(review?.assigneeAgentId).toBe(departmentHeadId);
+    expect(review?.assigneeAgentId).not.toBe(ceoId);
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

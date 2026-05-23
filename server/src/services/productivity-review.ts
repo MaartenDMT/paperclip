@@ -546,7 +546,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
     const candidateIds: string[] = [];
-    if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
+    if (sourceAgent.reportsTo) {
+      const manager = await getAgent(sourceAgent.reportsTo);
+      if (manager?.role === "ceo" && sourceAgent.role !== "ceo") {
+        candidateIds.push(sourceAgent.id);
+      } else {
+        candidateIds.push(sourceAgent.reportsTo);
+      }
+    }
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
     if (sourceIssue.projectId) {
       const project = await db
@@ -663,13 +670,20 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
+      const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+      const ownerReassigned = await reassignOpenReviewOwnerIfNeeded({
+        review: existing,
+        sourceIssue: evidence.sourceIssue,
+        ownerAgentId,
+        now: evidence.generatedAt,
+      });
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
       if (
         refreshState.count >= opts.thresholds.maxRefreshComments ||
         evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
       ) {
-        return { kind: "existing" as const, reviewIssueId: existing.id };
+        return { kind: ownerReassigned ? "updated" as const : "existing" as const, reviewIssueId: existing.id };
       }
       await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
       await logActivity(db, {
@@ -679,7 +693,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         action: "issue.productivity_review_updated",
         entityType: "issue",
         entityId: existing.id,
-        agentId: existing.assigneeAgentId,
+        agentId: ownerAgentId ?? existing.assigneeAgentId,
         details: {
           source: "productivity_review.reconcile",
           sourceIssueId: evidence.sourceIssue.id,
@@ -687,6 +701,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
+          ownerReassigned,
         },
       });
       return { kind: "updated" as const, reviewIssueId: existing.id };
@@ -776,6 +791,139 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  async function reassignOpenReviewOwnerIfNeeded(input: {
+    review: IssueRow;
+    sourceIssue: IssueRow;
+    ownerAgentId: string | null;
+    now: Date;
+  }) {
+    if (!input.ownerAgentId || input.ownerAgentId === input.review.assigneeAgentId) return false;
+
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: input.ownerAgentId,
+        updatedAt: input.now,
+      })
+      .where(and(eq(issues.companyId, input.review.companyId), eq(issues.id, input.review.id)));
+
+    await logActivity(db, {
+      companyId: input.review.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.productivity_review_updated",
+      entityType: "issue",
+      entityId: input.review.id,
+      agentId: input.ownerAgentId,
+      details: {
+        source: "productivity_review.owner_repair",
+        sourceIssueId: input.sourceIssue.id,
+        previousAssigneeAgentId: input.review.assigneeAgentId,
+        nextAssigneeAgentId: input.ownerAgentId,
+      },
+    });
+
+    if (deps?.enqueueWakeup) {
+      await deps.enqueueWakeup(input.ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: input.review.id,
+          sourceIssueId: input.sourceIssue.id,
+          ownerRepaired: true,
+        }),
+        requestedByActorType: "system",
+        requestedByActorId: "productivity_review",
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: input.review.id,
+          taskId: input.review.id,
+          wakeReason: "issue_assigned",
+          source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          sourceIssueId: input.sourceIssue.id,
+          productivityReviewOwnerRepaired: true,
+        }),
+      });
+    }
+
+    return true;
+  }
+
+  async function reconcileOpenProductivityReviewOwners(opts?: {
+    now?: Date;
+    companyId?: string;
+  }) {
+    const now = opts?.now ?? new Date();
+    const openReviews = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+          sql`${issues.originId} is not null`,
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(MAX_CANDIDATE_ISSUES);
+
+    let scanned = 0;
+    let reassigned = 0;
+    let skipped = 0;
+    let failed = 0;
+    const reassignedReviewIssueIds: string[] = [];
+
+    for (const review of openReviews) {
+      scanned += 1;
+      if (!review.originId) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const sourceIssue = await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, review.companyId), eq(issues.id, review.originId)))
+          .then((rows) => rows[0] ?? null);
+        if (!sourceIssue?.assigneeAgentId) {
+          skipped += 1;
+          continue;
+        }
+        const sourceAgent = await getAgent(sourceIssue.assigneeAgentId);
+        if (!sourceAgent || sourceAgent.companyId !== sourceIssue.companyId) {
+          skipped += 1;
+          continue;
+        }
+        const ownerAgentId = await resolveReviewOwnerAgentId(sourceIssue, sourceAgent);
+        const changed = await reassignOpenReviewOwnerIfNeeded({
+          review,
+          sourceIssue,
+          ownerAgentId,
+          now,
+        });
+        if (changed) {
+          reassigned += 1;
+          reassignedReviewIssueIds.push(review.id);
+        }
+      } catch (err) {
+        failed += 1;
+        logger.warn(
+          {
+            err,
+            companyId: review.companyId,
+            reviewIssueId: review.id,
+            sourceIssueId: review.originId,
+          },
+          "productivity review owner repair skipped malformed review",
+        );
+      }
+    }
+
+    return { scanned, reassigned, skipped, failed, reassignedReviewIssueIds };
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -783,6 +931,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const ownerRepair = await reconcileOpenProductivityReviewOwners({ now, companyId: opts?.companyId });
     const candidates = await db
       .select()
       .from(issues)
@@ -808,8 +957,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       creationCapped: 0,
       skipped: 0,
       failed: 0,
+      reassigned: ownerRepair.reassigned,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
+      reassignedReviewIssueIds: ownerRepair.reassignedReviewIssueIds,
     };
 
     const prefixCache = new Map<string, string>();
@@ -926,6 +1077,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   return {
     reconcileProductivityReviews,
+    reconcileOpenProductivityReviewOwners,
     isProductivityReviewContinuationHoldActive,
     recordContinuationHold,
   };
