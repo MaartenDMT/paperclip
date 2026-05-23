@@ -1289,7 +1289,7 @@ function IssueChatUserMessage({
     </Avatar>
   );
   const messageBody = (
-    <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
+    <div className={cn("flex min-w-0 w-full max-w-[min(64rem,85%)] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
@@ -1300,7 +1300,7 @@ function IssueChatUserMessage({
       </div>
       <div
         className={cn(
-          "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
+          "min-w-0 w-full max-w-full overflow-hidden break-words rounded-2xl px-4 py-2.5",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
             : "bg-muted",
