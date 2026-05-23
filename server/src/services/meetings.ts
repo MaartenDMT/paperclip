@@ -125,6 +125,8 @@ export function meetingService(db: Db) {
       .where(and(
         eq(issues.companyId, companyId),
         sql`(${issues.id} = ${meeting.sourceIssueId} or ${issues.parentId} = ${meeting.sourceIssueId})`,
+        sql`${issues.status} not in ('done', 'cancelled')`,
+        sql`${issues.hiddenAt} is null`,
       ));
     if (relatedIssues.some((issue) => issue.priority === "critical")) {
       return { participantAgentIds, repaired: false, cancelledRunIds: [] as string[] };

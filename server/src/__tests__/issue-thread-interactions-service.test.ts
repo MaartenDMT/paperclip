@@ -1719,6 +1719,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const ceoId = randomUUID();
     const ctoId = randomUUID();
     const issueId = randomUUID();
+    const doneChildIssueId = randomUUID();
     const meetingId = randomUUID();
     const runId = randomUUID();
 
@@ -1760,6 +1761,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "blocked",
       priority: "high",
       assigneeAgentId: ctoId,
+    });
+    await db.insert(issues).values({
+      id: doneChildIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Completed CEO follow-up",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: ceoId,
     });
     await db.insert(meetings).values({
       id: meetingId,
