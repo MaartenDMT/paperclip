@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -90,6 +91,8 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("Do not call bare numeric paths like `/api/issues/2631`");
     expect(decision.instruction).toContain("read the issue back and verify");
     expect(decision.instruction).toContain("do not use Bash-only command chains like `&&` or `ls -la`");
+    expect(decision.instruction).toContain(REAL_WORK_HANDOFF_REQUIRED_ACTION);
+    expect(decision.instruction).toContain("acceptance criteria");
   });
 
   it("does not queue when the issue already has a valid disposition", () => {
@@ -281,6 +284,7 @@ describe("successful run handoff decision", () => {
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "issue_link", identifier: "PAP-2" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),
+          expect.objectContaining({ type: "key_value", label: "Suggested action", value: REAL_WORK_HANDOFF_REQUIRED_ACTION }),
         ]),
       }),
       expect.objectContaining({

@@ -1871,7 +1871,7 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   return merged;
 }
 
-function enrichWakeContextSnapshot(input: {
+export function normalizeWakeupContext(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
   source: WakeupOptions["source"];
@@ -1880,6 +1880,7 @@ function enrichWakeContextSnapshot(input: {
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]);
+  const meetingIdFromPayload = readNonEmptyString(payload?.["meetingId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
@@ -1893,6 +1894,9 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["taskId"]) && issueIdFromPayload) {
     contextSnapshot.taskId = issueIdFromPayload;
+  }
+  if (!readNonEmptyString(contextSnapshot["meetingId"]) && meetingIdFromPayload) {
+    contextSnapshot.meetingId = meetingIdFromPayload;
   }
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;
@@ -1930,6 +1934,7 @@ function enrichWakeContextSnapshot(input: {
 }
 
 const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+  "meetingId",
   "interactionId",
   "interactionKind",
   "interactionStatus",
@@ -1937,7 +1942,8 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
 ] as const;
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined) {
-  return readNonEmptyString(payload?.mutation) === "interaction";
+  const mutation = readNonEmptyString(payload?.mutation);
+  return mutation === "interaction" || mutation === "meeting_workflow";
 }
 
 function clearInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>) {
@@ -2009,6 +2015,7 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const meetingId = readNonEmptyString(input.contextSnapshot.meetingId);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -2026,7 +2033,7 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !meetingId) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -2127,8 +2134,10 @@ async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
+    interactionId: readNonEmptyString(input.contextSnapshot.interactionId),
     interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
     interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    meetingId,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -2198,7 +2207,12 @@ export function buildPaperclipTaskMarkdown(input: {
     body: string;
   } | null;
   interaction?: {
+    id?: string | null;
     kind?: string | null;
+    status?: string | null;
+  } | null;
+  meeting?: {
+    id?: string | null;
     status?: string | null;
   } | null;
 }) {
@@ -2232,11 +2246,12 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   const issue = input.issue;
   const wakeComment = input.wakeComment ?? null;
+  const meetingId = input.meeting?.id?.trim() || null;
   const acceptedPlanContinuation =
     !wakeComment &&
     input.interaction?.kind === "request_confirmation" &&
     input.interaction.status === "accepted";
-  if (!issue && !wakeComment) return null;
+  if (!issue && !wakeComment && !meetingId) return null;
 
   const lines = [
     "Paperclip task context:",
@@ -2269,6 +2284,35 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  if (!meetingId && issue && input.interaction?.kind === "agent_meeting" && input.interaction.status === "pending") {
+    const interactionId = input.interaction.id?.trim() || null;
+    lines.push(
+      "",
+      "Pending agent meeting response requirement:",
+      "This wake is for a pending agent meeting. Resolve it before treating the heartbeat as complete.",
+    );
+    if (interactionId) {
+      lines.push(
+        `- Respond with POST /api/issues/${issue.id}/interactions/${interactionId}/respond`,
+        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      );
+    } else {
+      lines.push(
+        `- Fetch /api/issues/${issue.id}/interactions and find the pending agent_meeting interaction before responding.`,
+        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      );
+    }
+  }
+  if (meetingId && input.interaction?.kind === "agent_meeting" && input.interaction.status === "pending") {
+    lines.push(
+      "",
+      "Pending company meeting response requirement:",
+      "This wake is for a first-class Paperclip meeting thread. Resolve the meeting before treating the heartbeat as complete.",
+      `- Respond with POST /api/meetings/${meetingId}/respond`,
+      "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      "- Meeting threads are separate from issue threads. Link outcome items to issues by setting issueId, or create/update issues through the API before responding when the meeting creates real work.",
+    );
   }
   if (issue) {
     const issueCode = issue.identifier || issue.id;
@@ -5236,13 +5280,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
+    const requiresInProgressScheduledRetry =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON || retryReason === "issue_continuation_needed";
+    if (requiresInProgressScheduledRetry && issue.status !== "in_progress") {
       return {
         allowed: false,
-        reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`,
+        reason:
+          retryReason === "issue_continuation_needed"
+            ? `Scheduled continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`
+            : `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`,
         errorCode: "issue_not_in_progress",
         issueId,
-        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress" },
+        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress", retryReason },
       };
     }
 
@@ -6758,12 +6807,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
+    const requiresInProgressRetry =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON || retryReason === "issue_continuation_needed";
+    if (requiresInProgressRetry && issue.status !== "in_progress") {
       return {
         stale: true,
         errorCode: "issue_not_in_progress",
-        reason: `Cancelled because max-turn continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`,
-        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress" },
+        reason:
+          retryReason === "issue_continuation_needed"
+            ? `Cancelled because continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`
+            : `Cancelled because max-turn continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress", retryReason },
       };
     }
 
@@ -7705,7 +7759,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
       wakeComment: wakeCommentContext,
       interaction: {
+        id: readNonEmptyString(context.interactionId),
         kind: readNonEmptyString(context.interactionKind),
+        status: readNonEmptyString(context.interactionStatus),
+      },
+      meeting: {
+        id: readNonEmptyString(context.meetingId),
         status: readNonEmptyString(context.interactionStatus),
       },
     });
@@ -9128,7 +9187,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const {
           contextSnapshot: promotedContextSnapshot,
           taskKey: promotedTaskKey,
-        } = enrichWakeContextSnapshot({
+        } = normalizeWakeupContext({
           contextSnapshot: promotedContextSeed,
           reason: promotedReason,
           source: promotedSource,
@@ -9440,7 +9499,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueIdFromPayload,
       taskKey,
       wakeCommentId,
-    } = enrichWakeContextSnapshot({
+    } = normalizeWakeupContext({
       contextSnapshot,
       reason,
       source,

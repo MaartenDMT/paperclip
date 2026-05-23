@@ -649,6 +649,53 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("must not start implementation work on the planning issue itself");
   });
 
+  it("renders agent meeting response instructions with the interaction id", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "agent_meeting_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        status: "blocked",
+      },
+      interactionId: "meeting-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("pending agent meeting");
+    expect(prompt).toContain("/api/issues/issue-1/interactions/meeting-1/respond");
+    expect(prompt).toContain("meetingResult");
+    expect(prompt).toContain("memoryCorrections");
+    expect(prompt).toContain("ideas");
+  });
+
+  it("renders first-class company meeting response instructions with meeting id", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "agent_meeting_requested",
+      meetingId: "meeting-thread-1",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        status: "blocked",
+      },
+      interactionId: "legacy-meeting-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("/api/meetings/meeting-thread-1/respond");
+    expect(prompt).toContain("first-class company coordination threads");
+    expect(prompt).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
+  });
+
   it("keeps accepted-plan guidance when stale comment ids have no loaded comments", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

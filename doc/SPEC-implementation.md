@@ -70,8 +70,10 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
 - Manager overview for department heads to see direct-report subtree health, blockers, review waits, and active runs
-- Structured issue-thread interactions for agent coordination, including agent meetings that capture decisions, action items, blockers, and open questions
-- Work meeting health monitoring that shows whether agents are actually recording meetings, which issues should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers
+- Structured issue-thread interactions for issue-local coordination, approvals, questions, and task suggestions
+- First-class company meeting threads for agent coordination, separate from issue threads, that can link to issues while capturing decisions, action items, blockers, right-track checks, workflow corrections, memory corrections, open questions, and ideas
+- Work meeting health monitoring that shows whether agents are actually recording meetings, which issues or company-level gaps should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers
+- Runtime-maintained memory cleanup routines that assign a steward-like agent to audit and optimize shared Karpathy/Obsidian memory and per-agent PARA memory files, applying meeting-derived memory corrections or creating follow-up issues when correction is unsafe or ambiguous
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -110,6 +112,7 @@ A lightweight scheduler/worker in the server process handles:
 - heartbeat trigger checks
 - stuck run detection
 - budget threshold checks
+- scheduled routines, including the built-in steward memory maintenance routine
 
 Separate queue infrastructure is not required for V1.
 
@@ -523,6 +526,7 @@ All endpoints are under `/api` and return JSON.
 - `GET /companies/:companyId/issues`
 - `GET /companies/:companyId/work-meetings`
 - `GET /companies/:companyId/work-meetings/health`
+- `POST /meetings/:meetingId/respond`
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`

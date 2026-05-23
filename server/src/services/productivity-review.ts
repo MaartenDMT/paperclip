@@ -636,9 +636,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       "## Manager Decision",
       "",
-      "- Close as productive if this pattern is expected.",
-      "- Continue with a snooze window if the current work should keep running without repeat review spam.",
+      "- Close as productive only when the source issue's acceptance criteria are actually satisfied or the current execution path is intentionally expected.",
+      "- If evidence shows a confirmed defect, production blocker, repeated plan-only work, or repeated `needs_followup`, create/link a concrete implementation issue assigned to the responsible specialist and block the source issue on it.",
+      "- Continue with a snooze window only when the current run is doing real implementation work and has a concrete next action.",
       "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      "- Do not resolve this review with another monitor, status summary, or transcript review as the only outcome.",
     ].join("\n");
   }
 

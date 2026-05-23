@@ -13,7 +13,10 @@ import {
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
-import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
+import {
+  REAL_WORK_HANDOFF_REQUIRED_ACTION,
+  SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+} from "../services/recovery/index.ts";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
@@ -2151,11 +2154,19 @@ describe("heartbeat comment wake batching", () => {
       }, 20_000);
 
       const recoveryIssue = await db
-        .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId })
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          description: issues.description,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.originId, issueId)))
         .then((rows) => rows.find((issue) => issue.originKind === "stranded_issue_recovery") ?? null);
       expect(recoveryIssue?.originId).toBe(issueId);
+      expect(recoveryIssue?.description).toContain(REAL_WORK_HANDOFF_REQUIRED_ACTION);
+      expect(recoveryIssue?.description).toContain("confirmed product defect or production blocker");
+      expect(recoveryIssue?.description).toContain("Do not resolve this recovery issue");
 
       await heartbeat.drainActiveRunExecutions({ companyId });
       await waitFor(async () => {

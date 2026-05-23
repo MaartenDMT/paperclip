@@ -614,6 +614,10 @@ export type AgentMeetingExpectedOutput =
   | "finance"
   | "problems"
   | "optimization"
+  | "right_track"
+  | "workflow_corrections"
+  | "memory_corrections"
+  | "idea_sharing"
   | "workflows"
   | "process";
 
@@ -641,6 +645,29 @@ export interface AgentMeetingResult {
     issueId?: string | null;
   }>;
   openQuestions: string[];
+  rightTrack?: {
+    status: "on_track" | "at_risk" | "off_track";
+    rationale: string;
+    corrections?: string[];
+  } | null;
+  workflowCorrections?: Array<{
+    summary: string;
+    target?: string | null;
+    issueId?: string | null;
+  }>;
+  memoryCorrections?: Array<{
+    system: "karpathy-memory" | "para-memory" | "other";
+    filePath?: string | null;
+    correction: string;
+    rationale?: string | null;
+    issueId?: string | null;
+  }>;
+  ideas?: Array<{
+    title: string;
+    summary: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
@@ -687,10 +714,21 @@ export interface AgentMeetingInteraction extends IssueThreadInteractionBase {
 export interface WorkMeetingSummary {
   id: string;
   companyId: string;
-  issueId: string;
+  threadKind?: "meeting" | "issue_interaction";
+  issueId: string | null;
   issueIdentifier: string | null;
-  issueTitle: string;
-  issueStatus: IssueStatus;
+  issueTitle: string | null;
+  issueStatus: IssueStatus | null;
+  linkedIssues?: Array<{
+    issueId: string;
+    identifier: string | null;
+    title: string;
+    status: IssueStatus;
+    linkKind: string;
+  }>;
+  sourceIssueId?: string | null;
+  meetingType?: string | null;
+  chairAgentId?: string | null;
   title: string | null;
   status: IssueThreadInteractionStatus;
   purpose: string;

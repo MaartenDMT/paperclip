@@ -617,6 +617,13 @@
       "when": 1778874266887,
       "tag": "0087_heartbeat_runs_company_created_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779537600000,
+      "tag": "0088_first_class_meetings",
+      "breakpoints": true
     }
   ]
 }

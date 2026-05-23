@@ -39,6 +39,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   issueThreadInteractionService,
+  memoryMaintenanceRoutineService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -890,6 +891,8 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const issueThreadInteractions = issueThreadInteractionService(db as any);
+    const memoryMaintenance = memoryMaintenanceRoutineService(db as any);
+    let lastMemoryMaintenanceRoutineReconcileAt = 0;
     const reconcileMeetings = async (source: "startup" | "periodic") => {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
       let created = 0;
@@ -905,6 +908,7 @@ export async function startServer(): Promise<StartedServer> {
                 reason: "agent_meeting_requested",
                 payload: {
                   issueId: meeting.issueId,
+                  meetingId: meeting.id,
                   interactionId: meeting.id,
                   mutation: "meeting_workflow",
                   chairAgentId: meeting.chairAgentId,
@@ -914,6 +918,7 @@ export async function startServer(): Promise<StartedServer> {
                 contextSnapshot: {
                   issueId: meeting.issueId,
                   taskId: meeting.issueId,
+                  meetingId: meeting.id,
                   interactionId: meeting.id,
                   interactionKind: "agent_meeting",
                   wakeReason: "agent_meeting_requested",
@@ -930,6 +935,16 @@ export async function startServer(): Promise<StartedServer> {
         }
       }
       return { companies: companyIds.length, created };
+    };
+    const reconcileMemoryMaintenanceRoutines = async (source: "startup" | "periodic") => {
+      const now = Date.now();
+      if (source === "periodic" && now - lastMemoryMaintenanceRoutineReconcileAt < 15 * 60 * 1000) {
+        return { companies: 0, created: 0, updated: 0, unchanged: 0, skipped: true };
+      }
+      lastMemoryMaintenanceRoutineReconcileAt = now;
+      const companyIds = await instanceSettingsService(db).listCompanyIds();
+      const result = await memoryMaintenance.ensureForCompanies(companyIds);
+      return { ...result, skipped: false };
     };
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -979,6 +994,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...meetings }, "startup meeting workflow reconciliation created meetings");
         }
       })
+      .then(async () => {
+        const memoryRoutines = await reconcileMemoryMaintenanceRoutines("startup");
+        if (memoryRoutines.created > 0 || memoryRoutines.updated > 0) {
+          logger.warn({ ...memoryRoutines }, "startup memory maintenance routine reconciliation changed routines");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -1013,6 +1034,16 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "meeting workflow tick failed");
+        });
+
+      void reconcileMemoryMaintenanceRoutines("periodic")
+        .then((result) => {
+          if (!result.skipped && (result.created > 0 || result.updated > 0)) {
+            logger.info({ ...result }, "memory maintenance routine tick changed routines");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "memory maintenance routine tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure

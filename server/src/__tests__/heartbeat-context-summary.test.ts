@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
   mergeCoalescedContextSnapshot,
+  normalizeWakeupContext,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
@@ -114,6 +115,52 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(assignment).toContain("& \"C:\\Program Files\\Graphify\\graphify.exe\" query");
   });
+
+  it("adds rich meeting response fields to pending agent meeting guidance", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+    });
+
+    expect(meetingWake).toContain("/api/issues/issue-1/interactions/meeting-1/respond");
+    expect(meetingWake).toContain("rightTrack");
+    expect(meetingWake).toContain("workflowCorrections");
+    expect(meetingWake).toContain("memoryCorrections");
+    expect(meetingWake).toContain("ideas");
+  });
+
+  it("prefers first-class meeting response guidance when meeting id is present", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "legacy-meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+      meeting: {
+        id: "meeting-thread-1",
+        status: "pending",
+      },
+    });
+
+    expect(meetingWake).toContain("/api/meetings/meeting-thread-1/respond");
+    expect(meetingWake).toContain("Meeting threads are separate from issue threads");
+    expect(meetingWake).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
@@ -162,6 +209,40 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionKind).toBe("request_confirmation");
     expect(merged.interactionStatus).toBe("accepted");
     expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
+  });
+});
+
+describe("normalizeWakeupContext", () => {
+  it("preserves pending agent meeting interaction context on meeting workflow wakes", () => {
+    const contextSnapshot = {
+      issueId: "issue-1",
+      meetingId: "meeting-thread-1",
+      interactionId: "meeting-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      continuationPolicy: "wake_assignee",
+    };
+
+    normalizeWakeupContext({
+      contextSnapshot,
+      reason: "agent_meeting_requested",
+      source: "automation",
+      triggerDetail: "system",
+      payload: {
+        mutation: "meeting_workflow",
+        issueId: "issue-1",
+        meetingId: "meeting-thread-1",
+        interactionId: "meeting-1",
+      },
+    });
+
+    expect(contextSnapshot).toMatchObject({
+      interactionId: "meeting-1",
+      meetingId: "meeting-thread-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      continuationPolicy: "wake_assignee",
+    });
   });
 });
 

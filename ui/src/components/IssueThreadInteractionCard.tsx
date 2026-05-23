@@ -110,6 +110,12 @@ function AgentMeetingCard({
   agentMap?: Map<string, Agent>;
 }) {
   const formatExpectedOutput = (output: string) => output === "kpis" ? "KPIs" : output.replace(/_/g, " ");
+  const result = interaction.result;
+  const renderIssueRef = (issueId?: string | null) => issueId ? (
+    <Link to={`/issues/${issueId}`} className="text-primary underline-offset-2 hover:underline">
+      issue {issueId.slice(0, 8)}
+    </Link>
+  ) : null;
 
   return (
     <div className="space-y-4">
@@ -159,15 +165,95 @@ function AgentMeetingCard({
         </div>
       ) : null}
 
-      {interaction.result ? (
-        <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-3">
-          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
-            Outcomes
+        {result ? (
+          <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+              Outcomes
+            </div>
+            <MarkdownBody className="mt-2">{result.summaryMarkdown}</MarkdownBody>
+
+            {result.rightTrack ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Right track
+                </div>
+                <p className="mt-2 text-sm text-foreground">
+                  <span className="font-medium">{formatExpectedOutput(result.rightTrack.status)}:</span>{" "}
+                  {result.rightTrack.rationale}
+                </p>
+                {result.rightTrack.corrections?.length ? (
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {result.rightTrack.corrections.map((correction, index) => (
+                      <li key={`${index}-${correction}`} className="flex gap-2">
+                        <span>{index + 1}.</span>
+                        <span>{correction}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {result.workflowCorrections?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Workflow corrections
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.workflowCorrections.map((correction, index) => (
+                    <li key={`${index}-${correction.summary}`}>
+                      <span>{correction.summary}</span>
+                      {correction.target ? <span className="text-muted-foreground"> · {correction.target}</span> : null}
+                      {correction.issueId ? <span className="text-muted-foreground"> · {renderIssueRef(correction.issueId)}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {result.memoryCorrections?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Memory corrections
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.memoryCorrections.map((correction, index) => (
+                    <li key={`${index}-${correction.correction}`}>
+                      <span className="font-medium">{correction.system}</span>
+                      {correction.filePath ? <span className="text-muted-foreground"> · {correction.filePath}</span> : null}
+                      <div>{correction.correction}</div>
+                      {correction.rationale ? <div className="text-muted-foreground">{correction.rationale}</div> : null}
+                      {correction.issueId ? <div className="text-muted-foreground">{renderIssueRef(correction.issueId)}</div> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {result.ideas?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Ideas
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.ideas.map((idea, index) => (
+                    <li key={`${index}-${idea.title}`}>
+                      <span className="font-medium">{idea.title}</span>
+                      <div>{idea.summary}</div>
+                      {idea.ownerAgentId ? (
+                        <div className="text-muted-foreground">
+                          Owner: {agentMap?.get(idea.ownerAgentId)?.name ?? idea.ownerAgentId.slice(0, 8)}
+                        </div>
+                      ) : null}
+                      {idea.issueId ? <div className="text-muted-foreground">{renderIssueRef(idea.issueId)}</div> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
-          <MarkdownBody className="mt-2">{interaction.result.summaryMarkdown}</MarkdownBody>
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </div>
   );
 }
 

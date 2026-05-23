@@ -206,6 +206,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain("create/link a concrete implementation issue");
+    expect(reviews[0]?.description).toContain("Do not resolve this review with another monitor");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });

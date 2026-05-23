@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createIssueThreadInteractionSchema } from "./validators/issue.js";
+import { createIssueThreadInteractionSchema, respondIssueThreadInteractionSchema } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
   it("parses request_confirmation payloads with default no-wake continuation", () => {
@@ -47,13 +47,57 @@ describe("issue thread interaction schemas", () => {
           "22222222-2222-4222-8222-222222222222",
         ],
         agenda: ["Review evidence", "Choose owner", "Create follow-up tasks"],
-        expectedOutputs: ["decisions", "tasks", "blockers"],
+        expectedOutputs: ["decisions", "tasks", "blockers", "memory_corrections", "idea_sharing"],
       },
     });
 
     expect(parsed.kind).toBe("agent_meeting");
     if (parsed.kind !== "agent_meeting") return;
-    expect(parsed.payload.expectedOutputs).toEqual(["decisions", "tasks", "blockers"]);
+    expect(parsed.payload.expectedOutputs).toEqual(["decisions", "tasks", "blockers", "memory_corrections", "idea_sharing"]);
+  });
+
+  it("parses rich agent meeting results with memory and workflow corrections", () => {
+    const parsed = respondIssueThreadInteractionSchema.parse({
+      meetingResult: {
+        version: 1,
+        summaryMarkdown: "We are at risk, but the fix path is clear.",
+        decisions: ["Keep the current owner and add a memory correction follow-up."],
+        actionItems: [{
+          title: "Create a child issue for the workflow correction",
+          ownerAgentId: null,
+          issueId: null,
+        }],
+        blockers: [],
+        openQuestions: ["Should para-memory keep this as an evergreen rule?"],
+        rightTrack: {
+          status: "at_risk",
+          rationale: "The issue is valid, but stale memory is causing repeated wrong writes.",
+          corrections: ["Update the affected memory file before the next implementation run."],
+        },
+        workflowCorrections: [{
+          summary: "Require agents to verify memory writes after updating meeting notes.",
+          target: "meeting workflow",
+          issueId: null,
+        }],
+        memoryCorrections: [{
+          system: "karpathy-memory",
+          filePath: "memory/agents/meetings.md",
+          correction: "The previous meeting note points at the wrong owner.",
+          rationale: "Agents are using that stale owner in follow-up tasks.",
+          issueId: null,
+        }],
+        ideas: [{
+          title: "Meeting digest",
+          summary: "Create a lightweight digest issue after cross-agent meetings.",
+          ownerAgentId: null,
+          issueId: null,
+        }],
+      },
+    });
+
+    expect(parsed.meetingResult?.rightTrack?.status).toBe("at_risk");
+    expect(parsed.meetingResult?.memoryCorrections?.[0]?.system).toBe("karpathy-memory");
+    expect(parsed.meetingResult?.ideas?.[0]?.title).toBe("Meeting digest");
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {

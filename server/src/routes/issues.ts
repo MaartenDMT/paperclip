@@ -59,6 +59,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  meetingService,
   clampIssueListLimit,
   documentService,
   logActivity,
@@ -3764,6 +3765,33 @@ export function issueRoutes(
     res.json(health);
   });
 
+  router.post("/meetings/:meetingId/respond", validate(respondIssueThreadInteractionSchema), async (req, res) => {
+    const meetingId = req.params.meetingId as string;
+    const meetingsSvc = meetingService(db);
+    const meeting = await meetingsSvc.getById(meetingId);
+    if (!meeting) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    assertCompanyAccess(req, meeting.companyId);
+
+    const actor = getActorInfo(req);
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId || !(await meetingsSvc.isParticipant(meetingId, actorAgentId))) {
+        throw forbidden("Only meeting participants can respond to this meeting");
+      }
+    } else {
+      assertBoard(req);
+    }
+
+    const updated = await meetingsSvc.respond(meetingId, req.body, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    res.json(updated);
+  });
+
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -3978,12 +4006,15 @@ export function issueRoutes(
 
       const actor = getActorInfo(req);
       if (req.actor.type === "agent") {
+        const actorAgentId = req.actor.agentId;
         const currentInteraction = await issueThreadInteractionService(db).getById(interactionId);
         const actorIsMeetingParticipant =
+          typeof actorAgentId === "string"
+          &&
           currentInteraction?.kind === "agent_meeting"
           && currentInteraction.issueId === issue.id
           && currentInteraction.companyId === issue.companyId
-          && currentInteraction.payload.participantAgentIds.includes(req.actor.agentId);
+          && currentInteraction.payload.participantAgentIds.includes(actorAgentId);
         if (!actorIsMeetingParticipant && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       } else {
         assertBoard(req);

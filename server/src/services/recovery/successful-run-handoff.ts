@@ -11,6 +11,8 @@ export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
   "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+export const REAL_WORK_HANDOFF_REQUIRED_ACTION =
+  "Confirmed remaining product work must become a first-class executable follow-up issue assigned to the responsible owner and linked as a blocker; do not leave review, monitor, or summary comments as the only outcome.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -218,7 +220,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
             issueLinkRow("Recovery issue", input.recoveryIssue),
             agentLinkRow("Recovery owner", input.recoveryOwner),
             agentLinkRow("Source assignee", input.sourceAssignee),
-            keyValueRow("Suggested action", "choose and record a valid issue disposition without copying transcript content"),
+            keyValueRow("Suggested action", REAL_WORK_HANDOFF_REQUIRED_ACTION),
           ],
         },
         {
@@ -338,6 +340,9 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "",
     "**Is there more work to do?**",
     `4. Either delegate follow-up work (create/link a follow-up issue and block this one on it, or close this issue if its scope is independently complete) or record an explicit continuation path with \`resumeIntent: true\`, \`resumeFromRunId: ${input.sourceRunId}\`, and a concrete next action.`,
+    "",
+    "**Was a concrete defect or production blocker found?**",
+    `5. ${REAL_WORK_HANDOFF_REQUIRED_ACTION} The follow-up issue must include acceptance criteria and enough context for the owner to implement, not just re-review the transcript.`,
     "",
     "Comments, document revisions, work-product writes, and continuation summaries are supporting evidence only — they do not satisfy this handoff unless the issue state/path also records one valid disposition.",
   ].join("\n");

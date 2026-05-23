@@ -30,6 +30,12 @@ export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
+export { meetingService } from "./meetings.js";
+export {
+  memoryMaintenanceRoutineService,
+  MEMORY_MAINTENANCE_ROUTINE_MARKER,
+  MEMORY_MAINTENANCE_ROUTINE_TITLE,
+} from "./memory-maintenance-routine.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";

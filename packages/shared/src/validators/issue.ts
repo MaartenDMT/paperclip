@@ -582,6 +582,10 @@ export const agentMeetingExpectedOutputSchema = z.enum([
   "finance",
   "problems",
   "optimization",
+  "right_track",
+  "workflow_corrections",
+  "memory_corrections",
+  "idea_sharing",
   "workflows",
   "process",
 ]);
@@ -591,7 +595,7 @@ export const agentMeetingPayloadSchema = z.object({
   purpose: z.string().trim().min(1).max(1000),
   participantAgentIds: z.array(z.string().uuid()).min(1).max(20),
   agenda: z.array(z.string().trim().min(1).max(240)).min(1).max(20),
-  expectedOutputs: z.array(agentMeetingExpectedOutputSchema).min(1).max(5),
+  expectedOutputs: z.array(agentMeetingExpectedOutputSchema).min(1).max(8),
   contextMarkdown: z.string().max(20000).nullable().optional(),
 }).superRefine((value, ctx) => {
   const seen = new Set<string>();
@@ -622,6 +626,29 @@ export const agentMeetingResultSchema = z.object({
     issueId: z.string().uuid().nullable().optional(),
   })).max(50),
   openQuestions: z.array(z.string().trim().min(1).max(1000)).max(50),
+  rightTrack: z.object({
+    status: z.enum(["on_track", "at_risk", "off_track"]),
+    rationale: z.string().trim().min(1).max(2000),
+    corrections: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+  }).nullable().optional(),
+  workflowCorrections: z.array(z.object({
+    summary: z.string().trim().min(1).max(1000),
+    target: z.string().trim().min(1).max(240).nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+  memoryCorrections: z.array(z.object({
+    system: z.enum(["karpathy-memory", "para-memory", "other"]),
+    filePath: z.string().trim().min(1).max(1000).nullable().optional(),
+    correction: z.string().trim().min(1).max(2000),
+    rationale: z.string().trim().min(1).max(2000).nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+  ideas: z.array(z.object({
+    title: z.string().trim().min(1).max(240),
+    summary: z.string().trim().min(1).max(2000),
+    ownerAgentId: z.string().uuid().nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
 });
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

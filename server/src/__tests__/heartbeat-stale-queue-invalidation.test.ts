@@ -1061,4 +1061,66 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
+
+  it.each(["todo", "blocked", "backlog"] as const)(
+    "cancels queued continuation recovery when the issue is already %s before the run starts",
+    async (issueStatus) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Continuation recovery should not reopen itself",
+        status: issueStatus,
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+
+      const { runId, wakeupRequestId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        invocationSource: "automation",
+        contextExtras: {
+          retryReason: "issue_continuation_needed",
+        },
+      });
+
+      await heartbeat.resumeQueuedRuns();
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "cancelled";
+      });
+
+      const [run, wakeup] = await Promise.all([
+        db
+          .select({
+            status: heartbeatRuns.status,
+            errorCode: heartbeatRuns.errorCode,
+            resultJson: heartbeatRuns.resultJson,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(run?.status).toBe("cancelled");
+      expect(run?.errorCode).toBe("issue_not_in_progress");
+      expect(run?.resultJson).toMatchObject({ stopReason: "issue_not_in_progress" });
+      expect(wakeup?.status).toBe("skipped");
+      expect(wakeup?.error).toContain("no longer in_progress");
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    },
+  );
 });

@@ -166,6 +166,10 @@ vi.mock("../services/index.js", () => ({
         monthlyMonths: 1,
       },
     })),
+    listCompanyIds: vi.fn(async () => []),
+  })),
+  memoryMaintenanceRoutineService: vi.fn(() => ({
+    ensureForCompanies: vi.fn(async () => ({ companies: 0, created: 0, updated: 0, unchanged: 0 })),
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({

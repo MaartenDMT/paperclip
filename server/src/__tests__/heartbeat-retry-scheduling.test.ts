@@ -606,6 +606,34 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     },
   );
 
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "does not schedule issue continuation recovery when the issue is already %s",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus });
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        retryReason: "issue_continuation_needed",
+        wakeReason: "issue_continuation_needed",
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+
+      expect(scheduled).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: "issue_not_in_progress",
+        issueId,
+      });
+
+      const retryRuns = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId))
+        .then((rows) => rows[0]?.count ?? 0);
+      expect(retryRuns).toBe(0);
+    },
+  );
+
   it("does not queue max-turn continuations after the configured cap", async () => {
     const { runId, now } = await seedMaxTurnFixture({ scheduledRetryAttempt: 2 });
 

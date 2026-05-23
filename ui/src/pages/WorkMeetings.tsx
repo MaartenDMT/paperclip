@@ -41,7 +41,12 @@ function statusClasses(status: string) {
 }
 
 function issueHref(meeting: WorkMeetingSummary) {
-  return `/issues/${meeting.issueIdentifier ?? meeting.issueId}`;
+  const target = meeting.issueIdentifier ?? meeting.issueId;
+  return target ? `/issues/${target}` : null;
+}
+
+function issueLabel(meeting: WorkMeetingSummary) {
+  return meeting.issueIdentifier ?? (meeting.issueId ? meeting.issueId.slice(0, 8) : "company");
 }
 
 function hasStalePendingMeeting(meeting: WorkMeetingSummary) {
@@ -131,11 +136,11 @@ export function WorkMeetings() {
         description: [
           `Created from work meeting: ${meeting.title ?? meeting.purpose}`,
           "",
-          `Source issue: ${meeting.issueIdentifier ?? meeting.issueId}`,
+          meeting.issueId ? `Source issue: ${meeting.issueIdentifier ?? meeting.issueId}` : "Source: company meeting",
           "",
           meeting.result?.summaryMarkdown ?? "",
         ].join("\n"),
-        parentId: meeting.issueId,
+        parentId: meeting.issueId ?? null,
         assigneeAgentId: item.ownerAgentId ?? null,
         status: item.ownerAgentId ? "todo" : "backlog",
         priority: "medium",
@@ -151,29 +156,33 @@ export function WorkMeetings() {
     mutationFn: async ({ meeting, index }: { meeting: WorkMeetingSummary; index: number }) => {
       const blocker = meeting.result?.blockers[index];
       if (!blocker || !selectedCompanyId) return null;
-      const sourceIssue = await issuesApi.get(meeting.issueId);
       const created = await issuesApi.create(selectedCompanyId, {
         title: `Unblock: ${blocker.summary}`,
         description: [
           `Created from work meeting: ${meeting.title ?? meeting.purpose}`,
           "",
-          `This blocker was recorded against ${meeting.issueIdentifier ?? meeting.issueId}.`,
+          meeting.issueId
+            ? `This blocker was recorded against ${meeting.issueIdentifier ?? meeting.issueId}.`
+            : "This blocker was recorded in a company meeting.",
           "",
           meeting.result?.summaryMarkdown ?? "",
         ].join("\n"),
-        parentId: meeting.issueId,
+        parentId: meeting.issueId ?? null,
         assigneeAgentId: blocker.ownerAgentId ?? null,
         status: blocker.ownerAgentId ? "todo" : "backlog",
         priority: "high",
       });
-      const existingBlockers = sourceIssue.blockedBy?.map((item) => item.id) ?? [];
-      await issuesApi.update(meeting.issueId, {
-        blockedByIssueIds: [...new Set([...existingBlockers, created.id])],
-      });
+      if (meeting.issueId) {
+        const sourceIssue = await issuesApi.get(meeting.issueId);
+        const existingBlockers = sourceIssue.blockedBy?.map((item) => item.id) ?? [];
+        await issuesApi.update(meeting.issueId, {
+          blockedByIssueIds: [...new Set([...existingBlockers, created.id])],
+        });
+      }
       return created;
     },
     onSuccess: (issue) => {
-      setActionMessage(issue ? `Created blocker ${issue.identifier ?? issue.id.slice(0, 8)} and linked it.` : null);
+      setActionMessage(issue ? `Created blocker ${issue.identifier ?? issue.id.slice(0, 8)}.` : null);
       if (selectedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.workMeetings(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue?.id ?? "") });
@@ -290,7 +299,7 @@ export function WorkMeetings() {
               >
                 <div className="grid gap-3 lg:grid-cols-[120px_minmax(0,1fr)_130px_220px_120px] lg:items-start">
                   <div className="flex flex-wrap items-center gap-2 lg:block">
-                    <span className="font-mono text-xs text-muted-foreground">{meeting.issueIdentifier ?? meeting.issueId.slice(0, 8)}</span>
+                    <span className="font-mono text-xs text-muted-foreground">{issueLabel(meeting)}</span>
                     <span className="text-xs text-muted-foreground lg:mt-1 lg:block">{timeAgo(meeting.createdAt)}</span>
                   </div>
 
@@ -487,11 +496,15 @@ function MeetingDetailModal({
         <div className="border-b border-border bg-muted/35 px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <Link to={issueHref(meeting)} className="font-mono text-xs text-muted-foreground hover:text-foreground">
-                {meeting.issueIdentifier ?? meeting.issueId.slice(0, 8)}
-              </Link>
+              {issueHref(meeting) ? (
+                <Link to={issueHref(meeting)!} className="font-mono text-xs text-muted-foreground hover:text-foreground">
+                  {issueLabel(meeting)}
+                </Link>
+              ) : (
+                <span className="font-mono text-xs text-muted-foreground">company meeting</span>
+              )}
               <h2 className="mt-1 truncate text-base font-semibold">{meeting.title ?? meeting.purpose}</h2>
-              <p className="mt-1 truncate text-sm text-muted-foreground">{meeting.issueTitle}</p>
+              <p className="mt-1 truncate text-sm text-muted-foreground">{meeting.issueTitle ?? "Company coordination thread"}</p>
             </div>
             <button type="button" onClick={onClose} className="rounded border border-border bg-background p-1 text-muted-foreground hover:text-foreground" aria-label="Close meeting detail">
               <X className="h-4 w-4" />
@@ -502,7 +515,9 @@ function MeetingDetailModal({
         <div className="max-h-[calc(100vh-6.5rem)] overflow-y-auto p-4 md:max-h-[calc(100vh-8rem)]">
           <div className="flex flex-wrap gap-1.5">
             <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusClasses(meeting.status)}`}>{meeting.status}</span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{meeting.issueStatus}</span>
+            {meeting.issueStatus ? (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{meeting.issueStatus}</span>
+            ) : null}
             {hasStalePendingMeeting(meeting) ? (
               <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-300">stale pending</span>
             ) : null}
@@ -562,7 +577,7 @@ function MeetingDetailModal({
                 </>
               ) : (
                 <section className="mt-5 border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
-                  This meeting is pending. Record outcomes on the source issue to close the decision loop.
+                  This meeting is pending. Respond to the meeting thread to close the decision loop.
                 </section>
               )}
             </div>

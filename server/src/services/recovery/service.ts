@@ -35,6 +35,7 @@ import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
   type SuccessfulRunHandoffNotice,
@@ -1883,12 +1884,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Latest handoff run status: \`${input.latestRun?.status ?? "unknown"}\``,
         `- Normalized cause: \`${SUCCESSFUL_RUN_MISSING_STATE_REASON}\``,
         `- Missing disposition: \`${missingDisposition}\``,
-        "- Suggested manager action: choose and record a valid issue disposition without copying transcript content.",
+        `- Suggested manager action: ${REAL_WORK_HANDOFF_REQUIRED_ACTION}`,
         "",
         "## Required Action",
         "",
         "- Inspect the source issue and run metadata, not raw transcript excerpts.",
-        "- Choose a valid issue disposition: `done`/`cancelled`, `in_review` with an owner, `blocked` with first-class blockers, delegated follow-up work, or an explicit continuation path.",
+        "- If the source issue is genuinely complete, mark it `done` or `cancelled` with evidence.",
+        "- If the remaining issue is a confirmed product defect or production blocker, create/link a first-class executable follow-up issue assigned to the responsible specialist, include acceptance criteria, and block the source issue on it.",
+        "- If it needs review or external input, move it to `in_review` or `blocked` only with a named owner, first-class blocker, pending interaction, or approval path.",
+        "- If the same assignee should continue, record an explicit continuation path with `resumeIntent`, `resumeFromRunId`, and a concrete next action.",
+        "- Do not resolve this recovery issue by adding another review, monitor, or summary comment without changing the source issue's execution path.",
         "- When the source issue has a clear owner and disposition, mark this recovery issue done.",
       ].join("\n");
     }
