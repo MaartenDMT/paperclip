@@ -2921,8 +2921,11 @@ export function agentRoutes(
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      const actorAgentId = req.actor.agentId ?? null;
+      const isSelf = actorAgentId === id;
+      const isDirectReport = actorAgentId != null && agent.reportsTo === actorAgentId;
+      if (!isSelf && !isDirectReport) {
+        res.status(403).json({ error: "Agent can only invoke itself or direct reports" });
         return;
       }
     } else {
@@ -2989,8 +2992,11 @@ export function agentRoutes(
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      const actorAgentId = req.actor.agentId ?? null;
+      const isSelf = actorAgentId === id;
+      const isDirectReport = actorAgentId != null && agent.reportsTo === actorAgentId;
+      if (!isSelf && !isDirectReport) {
+        res.status(403).json({ error: "Agent can only invoke itself or direct reports" });
         return;
       }
     } else {
