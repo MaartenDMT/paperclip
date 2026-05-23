@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+type RequestActor = NonNullable<Express.Request["actor"]>;
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -91,7 +93,7 @@ function registerModuleMocks() {
 
 async function createApp(
   db: Record<string, unknown> = {},
-  actor: Record<string, unknown> = defaultBoardActor,
+  actor: RequestActor = defaultBoardActor,
 ) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -100,7 +102,7 @@ async function createApp(
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    req.actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -683,6 +685,79 @@ describe("agent live run routes", () => {
         },
       ),
       (baseUrl) => request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("direct reports");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows agent-authenticated legacy heartbeat invokes for direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Direct Report",
+      adapterType: "codex_local",
+      reportsTo: managerId,
+    });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-direct-report-invoke",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      source: "on_demand",
+      requestedByActorType: "agent",
+      requestedByActorId: managerId,
+    }));
+  });
+
+  it("blocks agent-authenticated legacy heartbeat invokes for non-direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Not Direct Report",
+      adapterType: "codex_local",
+      reportsTo: null,
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
     );
 
     expect(res.status).toBe(403);
