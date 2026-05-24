@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -287,7 +286,6 @@ function isCheckoutRunnableStatus(
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
-const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -316,9 +314,9 @@ function truncateByCodePoint(value: string, maxChars: number): string {
   return Array.from(value).slice(0, maxChars).join("");
 }
 
-function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
+function truncateTextPreview(value: string | null | undefined, maxChars: number): string | null {
   if (value == null) return null;
-  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
+  return truncateByCodePoint(value, maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {
@@ -1466,18 +1464,7 @@ const issueListSelect = {
   goalId: issues.goalId,
   parentId: issues.parentId,
   title: issues.title,
-  description: sql<string | null>`
-    CASE
-      WHEN ${issues.description} IS NULL THEN NULL
-      ELSE encode(
-        substring(
-          convert_to(${issues.description}, current_setting('server_encoding'))
-          FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_BYTES}
-        ),
-        'base64'
-      )
-    END
-  `,
+  description: sql<string | null>`left(${issues.description}, ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})`,
   status: issues.status,
   workMode: issues.workMode,
   priority: issues.priority,
@@ -2468,7 +2455,6 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
@@ -2476,7 +2462,6 @@ export function issueService(db: Db) {
         .orderBy(
           hasSearch ? asc(searchOrder) : asc(priorityOrder),
           asc(priorityOrder),
-          desc(canonicalLastActivityAt),
           desc(issues.updatedAt),
           desc(issues.id),
         );
@@ -2485,7 +2470,7 @@ export function issueService(db: Db) {
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
-        description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
+        description: truncateTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);

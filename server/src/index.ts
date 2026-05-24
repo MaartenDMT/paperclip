@@ -40,6 +40,7 @@ import {
   instanceSettingsService,
   issueThreadInteractionService,
   memoryMaintenanceRoutineService,
+  executionWorkspaceService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -892,6 +893,7 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any, { pluginWorkerManager });
     const issueThreadInteractions = issueThreadInteractionService(db as any);
     const memoryMaintenance = memoryMaintenanceRoutineService(db as any);
+    const executionWorkspaces = executionWorkspaceService(db as any);
     let lastMemoryMaintenanceRoutineReconcileAt = 0;
     const reconcileMeetings = async (source: "startup" | "periodic") => {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
@@ -948,6 +950,9 @@ export async function startServer(): Promise<StartedServer> {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
       const result = await memoryMaintenance.ensureForCompanies(companyIds);
       return { ...result, skipped: false };
+    };
+    const reconcileStaleSharedExecutionWorkspaces = async () => {
+      return executionWorkspaces.reconcileStaleSharedWorkspaces();
     };
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -1009,6 +1014,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...memoryRoutines }, "startup memory maintenance routine reconciliation changed routines");
         }
       })
+      .then(async () => {
+        const staleWorkspaces = await reconcileStaleSharedExecutionWorkspaces();
+        if (staleWorkspaces.archived > 0 || staleWorkspaces.detachedIssues > 0) {
+          logger.warn({ ...staleWorkspaces }, "startup stale shared execution workspace reconciliation archived workspaces");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -1053,6 +1064,16 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "memory maintenance routine tick failed");
+        });
+
+      void reconcileStaleSharedExecutionWorkspaces()
+        .then((result) => {
+          if (result.archived > 0 || result.detachedIssues > 0) {
+            logger.info({ ...result }, "stale shared execution workspace tick archived workspaces");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "stale shared execution workspace tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
