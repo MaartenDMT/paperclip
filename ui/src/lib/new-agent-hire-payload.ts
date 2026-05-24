@@ -1,4 +1,5 @@
 import type { CreateConfigValues } from "../components/AgentConfigForm";
+import { codexModelDefaultsForRole } from "./codex-agent-model-defaults";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 export function buildNewAgentHirePayload(input: {
@@ -19,6 +20,17 @@ export function buildNewAgentHirePayload(input: {
     configValues,
     adapterConfig,
   } = input;
+  const codexDefaults =
+    configValues.adapterType === "codex_local"
+      ? codexModelDefaultsForRole(effectiveRole)
+      : null;
+  const cheapModel =
+    configValues.cheapModel
+      ?? codexDefaults?.fallbackModel
+      ?? "";
+  const cheapModelEnabled =
+    configValues.cheapModelEnabled
+      ?? Boolean(codexDefaults);
 
   return {
     name: name.trim(),
@@ -32,8 +44,11 @@ export function buildNewAgentHirePayload(input: {
     runtimeConfig: buildNewAgentRuntimeConfig({
       heartbeatEnabled: configValues.heartbeatEnabled,
       intervalSec: configValues.intervalSec,
-      cheapModel: configValues.cheapModel,
-      cheapModelEnabled: configValues.cheapModelEnabled,
+      cheapModel,
+      cheapModelEnabled,
+      cheapModelProvider: configValues.cheapModelProvider ?? codexDefaults?.fallbackProvider,
+      cheapModelReasoningEffort:
+        configValues.cheapModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,
     }),
     budgetMonthlyCents: 0,
   };

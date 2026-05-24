@@ -29,6 +29,10 @@ import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import {
+  CODEX_LOCAL_ROLE_DEFAULT_PRIMARY_MODELS,
+  codexModelDefaultsForRole,
+} from "../lib/codex-agent-model-defaults";
+import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
@@ -38,11 +42,17 @@ import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclip
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
+  role?: string,
 ): CreateConfigValues {
   const { adapterType: _discard, ...defaults } = defaultCreateValues;
   const nextValues: CreateConfigValues = { ...defaults, adapterType };
   if (adapterType === "codex_local") {
-    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+    const codexDefaults = codexModelDefaultsForRole(role);
+    nextValues.model = codexDefaults.primaryModel;
+    nextValues.cheapModel = codexDefaults.fallbackModel;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelProvider = codexDefaults.fallbackProvider;
+    nextValues.cheapModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
     nextValues.dangerouslyBypassSandbox =
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
@@ -121,9 +131,36 @@ export function NewAgent() {
     if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"], effectiveRole);
     });
-  }, [presetAdapterType]);
+  }, [presetAdapterType, effectiveRole]);
+
+  useEffect(() => {
+    if (configValues.adapterType !== "codex_local") return;
+    const codexDefaults = codexModelDefaultsForRole(effectiveRole);
+    setConfigValues((prev) => {
+      if (prev.adapterType !== "codex_local") return prev;
+      const currentModel = prev.model || DEFAULT_CODEX_LOCAL_MODEL;
+      const canUpdatePrimary = CODEX_LOCAL_ROLE_DEFAULT_PRIMARY_MODELS.includes(currentModel);
+      if (
+        (!canUpdatePrimary || currentModel === codexDefaults.primaryModel) &&
+        prev.cheapModel === codexDefaults.fallbackModel &&
+        prev.cheapModelEnabled === true &&
+        prev.cheapModelProvider === codexDefaults.fallbackProvider &&
+        prev.cheapModelReasoningEffort === codexDefaults.fallbackReasoningEffort
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ...(canUpdatePrimary ? { model: codexDefaults.primaryModel } : {}),
+        cheapModel: codexDefaults.fallbackModel,
+        cheapModelEnabled: true,
+        cheapModelProvider: codexDefaults.fallbackProvider,
+        cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+      };
+    });
+  }, [configValues.adapterType, effectiveRole]);
 
   useEffect(() => {
     if (hasInitializedSkillSelection || !companySkills) return;

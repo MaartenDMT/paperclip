@@ -37,9 +37,9 @@ import {
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
+import { codexModelDefaultsForRole } from "../lib/codex-agent-model-defaults";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -318,12 +318,13 @@ export function OnboardingWizard() {
 
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
+    const codexDefaults = codexModelDefaultsForRole("ceo");
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
       model:
         adapterType === "codex_local"
-          ? model || DEFAULT_CODEX_LOCAL_MODEL
+          ? model || codexDefaults.primaryModel
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "cursor"
@@ -445,7 +446,14 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType,
         adapterConfig: buildAdapterConfig(),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        runtimeConfig: adapterType === "codex_local"
+          ? buildNewAgentRuntimeConfig({
+              cheapModel: codexModelDefaultsForRole("ceo").fallbackModel,
+              cheapModelEnabled: true,
+              cheapModelProvider: codexModelDefaultsForRole("ceo").fallbackProvider,
+              cheapModelReasoningEffort: codexModelDefaultsForRole("ceo").fallbackReasoningEffort,
+            })
+          : buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
         await approvalsApi.approve(
@@ -755,7 +763,7 @@ export function OnboardingWizard() {
                             setAdapterType(nextType);
                             if (nextType === "codex_local") {
                               if (!model) {
-                                setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                                setModel(codexModelDefaultsForRole("ceo").primaryModel);
                               }
                               return;
                             }

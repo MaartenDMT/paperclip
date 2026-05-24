@@ -51,6 +51,26 @@ describe("buildNewAgentRuntimeConfig", () => {
     expect(config.heartbeat).toMatchObject({ enabled: true, intervalSec: 600 });
   });
 
+  it("stores provider-aware fallback profile config when provided", () => {
+    const config = buildNewAgentRuntimeConfig({
+      cheapModel: "gpt-5.3-codex",
+      cheapModelEnabled: true,
+      cheapModelProvider: "openai",
+      cheapModelReasoningEffort: "high",
+    });
+
+    expect(config.modelProfiles).toEqual({
+      cheap: {
+        enabled: true,
+        adapterConfig: {
+          provider: "openai",
+          model: "gpt-5.3-codex",
+          modelReasoningEffort: "high",
+        },
+      },
+    });
+  });
+
   it("omits modelProfiles when no cheap model is configured", () => {
     const config = buildNewAgentRuntimeConfig({ heartbeatEnabled: false });
     expect(config.modelProfiles).toBeUndefined();
