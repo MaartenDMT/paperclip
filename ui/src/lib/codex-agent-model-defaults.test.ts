@@ -11,6 +11,8 @@ describe("codexModelDefaultsForRole", () => {
     expect(codexModelDefaultsForRole("ceo")).toEqual({
       useCase: "strong",
       primaryModel: "gpt-5.4",
+      fallbackAdapterType: "codex_local",
+      fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
       fallbackModel: "gpt-5.3-codex",
       fallbackReasoningEffort: "high",
@@ -23,6 +25,8 @@ describe("codexModelDefaultsForRole", () => {
     expect(codexModelDefaultsForRole("engineer")).toEqual({
       useCase: "middle",
       primaryModel: "gpt-5.3-codex",
+      fallbackAdapterType: "codex_local",
+      fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
       fallbackModel: "gpt-5.2",
       fallbackReasoningEffort: "medium",
@@ -35,6 +39,8 @@ describe("codexModelDefaultsForRole", () => {
     expect(codexModelDefaultsForRole("general")).toEqual({
       useCase: "weaker",
       primaryModel: "gpt-5.2",
+      fallbackAdapterType: "codex_local",
+      fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
       fallbackModel: "gpt-5.4-mini",
       fallbackReasoningEffort: "low",

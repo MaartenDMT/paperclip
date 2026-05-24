@@ -51,6 +51,8 @@ function createValuesForAdapterType(
     nextValues.model = codexDefaults.primaryModel;
     nextValues.cheapModel = codexDefaults.fallbackModel;
     nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = codexDefaults.fallbackAdapterType;
+    nextValues.cheapModelCommand = codexDefaults.fallbackCommand;
     nextValues.cheapModelProvider = codexDefaults.fallbackProvider;
     nextValues.cheapModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
     nextValues.dangerouslyBypassSandbox =
@@ -146,6 +148,8 @@ export function NewAgent() {
         (!canUpdatePrimary || currentModel === codexDefaults.primaryModel) &&
         prev.cheapModel === codexDefaults.fallbackModel &&
         prev.cheapModelEnabled === true &&
+        prev.cheapModelAdapterType === codexDefaults.fallbackAdapterType &&
+        prev.cheapModelCommand === codexDefaults.fallbackCommand &&
         prev.cheapModelProvider === codexDefaults.fallbackProvider &&
         prev.cheapModelReasoningEffort === codexDefaults.fallbackReasoningEffort
       ) {
@@ -156,6 +160,8 @@ export function NewAgent() {
         ...(canUpdatePrimary ? { model: codexDefaults.primaryModel } : {}),
         cheapModel: codexDefaults.fallbackModel,
         cheapModelEnabled: true,
+        cheapModelAdapterType: codexDefaults.fallbackAdapterType,
+        cheapModelCommand: codexDefaults.fallbackCommand,
         cheapModelProvider: codexDefaults.fallbackProvider,
         cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
       };

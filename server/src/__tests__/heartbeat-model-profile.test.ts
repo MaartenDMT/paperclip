@@ -112,6 +112,55 @@ describe("heartbeat model profile application", () => {
     expect(merged).toEqual({ model: "primary" });
   });
 
+  it("applies runtime profile config with an adapter override even when the primary adapter has no matching profile", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              adapterType: "codex_local",
+              command: "codex",
+              provider: "openai",
+              model: "gpt-5.3-codex",
+              modelReasoningEffort: "high",
+            },
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: {
+        command: "claude",
+        model: "claude-opus-4-7",
+      },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      applied: "cheap",
+      configSource: "agent_runtime",
+      adapterType: "codex_local",
+      adapterConfig: {
+        adapterType: "codex_local",
+        command: "codex",
+        provider: "openai",
+        model: "gpt-5.3-codex",
+        modelReasoningEffort: "high",
+      },
+    });
+    expect(merged).toMatchObject({
+      command: "codex",
+      model: "gpt-5.3-codex",
+      provider: "openai",
+    });
+  });
+
   it("normalizes a wake payload model profile into run context", () => {
     const contextSnapshot = normalizeModelProfileWakeContext({
       contextSnapshot: {},

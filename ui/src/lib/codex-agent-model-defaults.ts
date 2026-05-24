@@ -7,6 +7,8 @@ export type CodexModelUseCase = "strong" | "middle" | "weaker";
 export interface CodexModelDefaults {
   useCase: CodexModelUseCase;
   primaryModel: string;
+  fallbackAdapterType: "codex_local";
+  fallbackCommand: "codex";
   fallbackProvider: typeof CODEX_LOCAL_FALLBACK_PROVIDER;
   fallbackModel: string;
   fallbackReasoningEffort: "low" | "medium" | "high";
@@ -16,6 +18,8 @@ const CODEX_MODEL_DEFAULTS_BY_USE_CASE: Record<CodexModelUseCase, CodexModelDefa
   strong: {
     useCase: "strong",
     primaryModel: "gpt-5.4",
+    fallbackAdapterType: "codex_local",
+    fallbackCommand: "codex",
     fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
     fallbackModel: "gpt-5.3-codex",
     fallbackReasoningEffort: "high",
@@ -23,6 +27,8 @@ const CODEX_MODEL_DEFAULTS_BY_USE_CASE: Record<CodexModelUseCase, CodexModelDefa
   middle: {
     useCase: "middle",
     primaryModel: "gpt-5.3-codex",
+    fallbackAdapterType: "codex_local",
+    fallbackCommand: "codex",
     fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
     fallbackModel: "gpt-5.2",
     fallbackReasoningEffort: "medium",
@@ -30,6 +36,8 @@ const CODEX_MODEL_DEFAULTS_BY_USE_CASE: Record<CodexModelUseCase, CodexModelDefa
   weaker: {
     useCase: "weaker",
     primaryModel: "gpt-5.2",
+    fallbackAdapterType: "codex_local",
+    fallbackCommand: "codex",
     fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
     fallbackModel: "gpt-5.4-mini",
     fallbackReasoningEffort: "low",

@@ -446,14 +446,17 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType,
         adapterConfig: buildAdapterConfig(),
-        runtimeConfig: adapterType === "codex_local"
-          ? buildNewAgentRuntimeConfig({
-              cheapModel: codexModelDefaultsForRole("ceo").fallbackModel,
-              cheapModelEnabled: true,
-              cheapModelProvider: codexModelDefaultsForRole("ceo").fallbackProvider,
-              cheapModelReasoningEffort: codexModelDefaultsForRole("ceo").fallbackReasoningEffort,
-            })
-          : buildNewAgentRuntimeConfig()
+        runtimeConfig: (() => {
+          const codexDefaults = codexModelDefaultsForRole("ceo");
+          return buildNewAgentRuntimeConfig({
+            cheapModel: codexDefaults.fallbackModel,
+            cheapModelEnabled: true,
+            cheapModelAdapterType: codexDefaults.fallbackAdapterType,
+            cheapModelCommand: codexDefaults.fallbackCommand,
+            cheapModelProvider: codexDefaults.fallbackProvider,
+            cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+          });
+        })()
       });
       if (hire.approval) {
         await approvalsApi.approve(

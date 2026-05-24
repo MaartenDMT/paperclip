@@ -55,6 +55,8 @@ describe("buildNewAgentRuntimeConfig", () => {
     const config = buildNewAgentRuntimeConfig({
       cheapModel: "gpt-5.3-codex",
       cheapModelEnabled: true,
+      cheapModelAdapterType: "codex_local",
+      cheapModelCommand: "codex",
       cheapModelProvider: "openai",
       cheapModelReasoningEffort: "high",
     });
@@ -63,6 +65,8 @@ describe("buildNewAgentRuntimeConfig", () => {
       cheap: {
         enabled: true,
         adapterConfig: {
+          adapterType: "codex_local",
+          command: "codex",
           provider: "openai",
           model: "gpt-5.3-codex",
           modelReasoningEffort: "high",

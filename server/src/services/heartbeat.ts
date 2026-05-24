@@ -1100,6 +1100,7 @@ export interface ModelProfileApplication {
   applied: ModelProfileKey | null;
   configSource: AppliedModelProfileConfigSource | null;
   fallbackReason: string | null;
+  adapterType: string | null;
   adapterConfig: Record<string, unknown> | null;
 }
 
@@ -1200,23 +1201,26 @@ export function resolveModelProfileApplication(input: {
       applied: null,
       configSource: null,
       fallbackReason: null,
+      adapterType: null,
       adapterConfig: null,
     };
   }
 
   const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
-  if (!adapterProfile) {
+  const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
+  const runtimeAdapterType = readNonEmptyString(runtimeProfile.adapterConfig.adapterType);
+  if (!adapterProfile && !runtimeAdapterType) {
     return {
       requested,
       requestedBy,
       applied: null,
       configSource: null,
       fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
+      adapterType: null,
       adapterConfig: null,
     };
   }
 
-  const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
   if (!runtimeProfile.enabled) {
     return {
       requested,
@@ -1224,20 +1228,24 @@ export function resolveModelProfileApplication(input: {
       applied: null,
       configSource: null,
       fallbackReason: "agent_runtime_profile_disabled",
+      adapterType: null,
       adapterConfig: null,
     };
   }
+
+  const adapterConfig = {
+    ...parseObject(adapterProfile?.adapterConfig),
+    ...runtimeProfile.adapterConfig,
+  };
 
   return {
     requested,
     requestedBy,
     applied: requested,
-    configSource: runtimeProfile.configured ? "agent_runtime" : "adapter_default",
+    configSource: runtimeProfile.configured || runtimeAdapterType ? "agent_runtime" : "adapter_default",
     fallbackReason: null,
-    adapterConfig: {
-      ...parseObject(adapterProfile.adapterConfig),
-      ...runtimeProfile.adapterConfig,
-    },
+    adapterType: runtimeAdapterType,
+    adapterConfig,
   };
 }
 
@@ -1263,6 +1271,7 @@ function modelProfileRunMetadata(
     applied: modelProfile.applied,
     configSource: modelProfile.configSource,
     fallbackReason: modelProfile.fallbackReason,
+    adapterType: modelProfile.adapterType,
   };
 }
 
@@ -7966,6 +7975,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
+    const effectiveAdapterType = modelProfileApplication.adapterType ?? agent.adapterType;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
@@ -8569,9 +8579,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      const adapter = getServerAdapter(effectiveAdapterType);
+      const adapterAgent = {
+        ...agent,
+        adapterType: effectiveAdapterType,
+        adapterConfig: mergedConfig,
+      };
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, effectiveAdapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -8579,14 +8594,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+            adapterType: effectiveAdapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: adapterAgent,
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,

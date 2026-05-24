@@ -20,10 +20,7 @@ export function buildNewAgentHirePayload(input: {
     configValues,
     adapterConfig,
   } = input;
-  const codexDefaults =
-    configValues.adapterType === "codex_local"
-      ? codexModelDefaultsForRole(effectiveRole)
-      : null;
+  const codexDefaults = codexModelDefaultsForRole(effectiveRole);
   const cheapModel =
     configValues.cheapModel
       ?? codexDefaults?.fallbackModel
@@ -46,6 +43,8 @@ export function buildNewAgentHirePayload(input: {
       intervalSec: configValues.intervalSec,
       cheapModel,
       cheapModelEnabled,
+      cheapModelAdapterType: configValues.cheapModelAdapterType ?? codexDefaults.fallbackAdapterType,
+      cheapModelCommand: configValues.cheapModelCommand ?? codexDefaults.fallbackCommand,
       cheapModelProvider: configValues.cheapModelProvider ?? codexDefaults?.fallbackProvider,
       cheapModelReasoningEffort:
         configValues.cheapModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,

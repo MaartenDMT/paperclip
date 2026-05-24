@@ -42,26 +42,28 @@ describe("buildNewAgentHirePayload", () => {
     });
   });
 
-  it("adds role-based Codex fallback model profile when a Codex agent has no explicit cheap fallback", () => {
+  it("adds role-based Codex fallback model profile when an agent has no explicit cheap fallback", () => {
     expect(
       buildNewAgentHirePayload({
         name: "CEO",
         effectiveRole: "ceo",
         configValues: {
           ...defaultCreateValues,
-          adapterType: "codex_local",
-          model: "gpt-5.4",
+          adapterType: "claude_local",
+          model: "claude-opus-4-7",
         },
-        adapterConfig: { model: "gpt-5.4" },
+        adapterConfig: { model: "claude-opus-4-7" },
       }),
     ).toMatchObject({
-      adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.4" },
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-4-7" },
       runtimeConfig: {
         modelProfiles: {
           cheap: {
             enabled: true,
             adapterConfig: {
+              adapterType: "codex_local",
+              command: "codex",
               provider: "openai",
               model: "gpt-5.3-codex",
               modelReasoningEffort: "high",

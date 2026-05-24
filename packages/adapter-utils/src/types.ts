@@ -484,6 +484,8 @@ export interface CreateConfigValues {
    */
   cheapModel?: string;
   cheapModelEnabled?: boolean;
+  cheapModelAdapterType?: string;
+  cheapModelCommand?: string;
   cheapModelProvider?: string;
   cheapModelReasoningEffort?: string;
   chrome: boolean;
