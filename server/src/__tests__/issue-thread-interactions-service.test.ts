@@ -1294,6 +1294,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       sourceIssueId: issueId,
       idempotencyKey: `meeting-workflow:stale_review:${issueId}`,
     });
+    expect(rows[0]!.title).toContain("Review waiting");
+    expect(rows[0]!.title).toContain("Review launch plan");
     const participants = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, rows[0]!.id));
     expect(participants.map((participant) => participant.agentId)).toEqual(
       expect.arrayContaining([ceoId, engineeringHeadId, marketingHeadId, engineerId, marketerId]),
@@ -1514,6 +1516,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const rows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
     expect(rows).toHaveLength(1);
+    expect(rows[0]!.title).toContain("Blocked work");
+    expect(rows[0]!.title).toContain("Blocked engineering issue");
     const participants = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, rows[0]!.id));
     const participantIds = participants.map((participant) => participant.agentId);
     expect(participantIds).toEqual(expect.arrayContaining([engineeringHeadId, engineerId]));
@@ -1636,6 +1640,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       meetingType: "standup",
       idempotencyKey: "meeting-workflow:no_recent_meetings:company",
       status: "pending",
+      title: "Operating review: company work health",
     });
     const links = await db.select().from(meetingIssueLinks).where(eq(meetingIssueLinks.meetingId, rows[0]!.id));
     expect(links).toHaveLength(0);

@@ -455,6 +455,12 @@ export function OnboardingWizard() {
             cheapModelCommand: codexDefaults.fallbackCommand,
             cheapModelProvider: codexDefaults.fallbackProvider,
             cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+            fallbackModel: codexDefaults.fallbackModel,
+            fallbackModelEnabled: true,
+            fallbackModelAdapterType: codexDefaults.fallbackAdapterType,
+            fallbackModelCommand: codexDefaults.fallbackCommand,
+            fallbackModelProvider: codexDefaults.fallbackProvider,
+            fallbackModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
           });
         })()
       });

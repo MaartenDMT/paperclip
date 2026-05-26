@@ -171,6 +171,20 @@ describe("graphify compact corpus", () => {
     await expect(fs.stat(path.join(corpus, "log.md"))).rejects.toThrow();
   });
 
+  it("removes stale excluded log files from an existing compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.mkdir(corpus, { recursive: true });
+    await fs.writeFile(path.join(corpus, "log.md"), "# stale log\n", "utf8");
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000, 250)).toMatchObject({
+      files: 1,
+      removed: 1,
+    });
+    await expect(fs.stat(path.join(corpus, "log.md"))).rejects.toThrow();
+  });
+
   it("keeps only the most recent bounded issue pages in the compact corpus", async () => {
     const vault = await tempVault();
     const corpus = path.join(vault, ".graphify-corpus");
@@ -189,6 +203,54 @@ describe("graphify compact corpus", () => {
     });
     await expect(fs.readFile(path.join(corpus, "issues", "REA-2.md"), "utf8")).resolves.toContain("REA-2");
     await expect(fs.stat(path.join(corpus, "issues", "REA-1.md"))).rejects.toThrow();
+  });
+
+  it("keeps only the most recent bounded agent pages in the compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.mkdir(path.join(vault, "agents"), { recursive: true });
+    const older = path.join(vault, "agents", "older-agent.md");
+    const newer = path.join(vault, "agents", "newer-agent.md");
+    await fs.writeFile(older, "# older\n", "utf8");
+    await fs.writeFile(newer, "# newer\n", "utf8");
+    const olderTime = new Date("2026-05-20T10:00:00Z");
+    const newerTime = new Date("2026-05-21T10:00:00Z");
+    await fs.utimes(older, olderTime, olderTime);
+    await fs.utimes(newer, newerTime, newerTime);
+
+    const previousLimit = process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES;
+    process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES = "1";
+    try {
+      expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000, 250)).toMatchObject({
+        files: 1,
+        written: 1,
+      });
+    } finally {
+      if (previousLimit == null) delete process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES;
+      else process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES = previousLimit;
+    }
+
+    await expect(fs.readFile(path.join(corpus, "agents", "newer-agent.md"), "utf8")).resolves.toContain(
+      "newer",
+    );
+    await expect(fs.stat(path.join(corpus, "agents", "older-agent.md"))).rejects.toThrow();
+  });
+
+  it("excludes unsupported note classes from the compact corpus", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.mkdir(path.join(vault, "daily"), { recursive: true });
+    await fs.writeFile(path.join(vault, "daily", "2026-05-23.md"), "# daily\n", "utf8");
+    await fs.writeFile(path.join(vault, "MEMORY.md"), "# memory\n", "utf8");
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000, 250)).toMatchObject({
+      files: 2,
+      written: 2,
+    });
+    await expect(fs.readFile(path.join(corpus, "MEMORY.md"), "utf8")).resolves.toContain("memory");
+    await expect(fs.readFile(path.join(corpus, "issues", "REA-1.md"), "utf8")).resolves.toContain("REA-1");
+    await expect(fs.stat(path.join(corpus, "daily", "2026-05-23.md"))).rejects.toThrow();
   });
 
   it("does not rewrite unchanged compact corpus files", async () => {

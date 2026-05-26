@@ -74,6 +74,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     resultJson?: Record<string, unknown> | null;
     adapterType?: "codex_local" | "claude_local";
     agentName?: string;
+    runtimeConfig?: Record<string, unknown>;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
@@ -92,10 +93,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "active",
       adapterType,
       adapterConfig: {},
-      runtimeConfig: {
+      runtimeConfig: input.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
+        },
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
         },
       },
       permissions: {},
@@ -286,7 +296,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryOfRunId: sourceRunId,
       scheduledRetryAttempt: 1,
       scheduledRetryReason: "transient_failure",
-      contextSnapshot: expect.objectContaining({ modelProfile: "cheap" }),
+      contextSnapshot: expect.objectContaining({ modelProfile: "fallback" }),
     });
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
 
@@ -309,6 +319,60 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("treats provider quota failures as fallback-lane retries even without adapter errorFamily metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+
+    await seedRetryFixture({
+      companyId,
+      agentId,
+      runId: sourceRunId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: null,
+      resultJson: {
+        stderr: "Kimi request failed: usage limit reached for the current account",
+      },
+      adapterType: "claude_local",
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      modelProfile: "fallback",
+      errorFamily: "provider_quota",
+    });
   });
 
   it("schedules max-turn continuations with distinct retry metadata", async () => {

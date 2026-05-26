@@ -1,14 +1,15 @@
-export const RECOVERY_MODEL_PROFILE_KEY = "cheap" as const;
+import type { ModelProfileKey } from "@paperclipai/shared";
 
 export function withRecoveryModelProfileHint<T extends Record<string, unknown>>(
   input: T,
-): T & { modelProfile: typeof RECOVERY_MODEL_PROFILE_KEY } {
+  modelProfile: ModelProfileKey = "cheap",
+): T & { modelProfile: ModelProfileKey } {
   return {
     ...input,
-    modelProfile: RECOVERY_MODEL_PROFILE_KEY,
+    modelProfile,
   };
 }
 
-export function recoveryAssigneeAdapterOverrides() {
-  return { modelProfile: RECOVERY_MODEL_PROFILE_KEY };
+export function recoveryAssigneeAdapterOverrides(modelProfile: ModelProfileKey = "cheap") {
+  return { modelProfile };
 }

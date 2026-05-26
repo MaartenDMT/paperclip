@@ -16,6 +16,16 @@ const cheapProfile: AdapterModelProfileDefinition = {
   source: "adapter_default",
 };
 
+const fallbackProfile: AdapterModelProfileDefinition = {
+  key: "fallback",
+  label: "Fallback",
+  adapterConfig: {
+    model: "adapter-fallback",
+    modelReasoningEffort: "low",
+  },
+  source: "adapter_default",
+};
+
 describe("heartbeat model profile application", () => {
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
     const modelProfile = resolveModelProfileApplication({
@@ -168,5 +178,34 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("applies the fallback profile key from wake context", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [fallbackProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          fallback: {
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "fallback" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "fallback",
+      applied: "fallback",
+      configSource: "agent_runtime",
+      adapterType: "codex_local",
+      adapterConfig: {
+        adapterType: "codex_local",
+        model: "gpt-5.4-mini",
+      },
+    });
   });
 });

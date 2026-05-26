@@ -26,6 +26,9 @@ describe("buildMissingDepartmentRoutinePlans", () => {
       goalId: "goal-1",
       trigger: { cronExpression: "30 8 * * 1-5" },
     });
+    expect(plans.find((plan) => plan.assigneeAgentId === "cto-1")?.description).toContain(
+      "instead of retaining implementation work with the department head",
+    );
   });
 
   it("skips department routines that already exist by normalized title", () => {

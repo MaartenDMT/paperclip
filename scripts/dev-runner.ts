@@ -8,7 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
-import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { createCompatibleDevServiceIdentities, createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
@@ -192,15 +192,26 @@ const devService = createDevServiceIdentity({
   port: serverPort,
 });
 
-const existingRunner = await findAdoptableLocalService({
-  serviceKey: devService.serviceKey,
-  cwd: repoRoot,
-  envFingerprint: devService.envFingerprint,
+let existingRunner: Awaited<ReturnType<typeof findAdoptableLocalService>> | null = null;
+for (const candidate of createCompatibleDevServiceIdentities({
+  mode,
+  forwardedArgs,
+  networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
-});
+})) {
+  existingRunner = await findAdoptableLocalService({
+    serviceKey: candidate.serviceKey,
+    cwd: repoRoot,
+    envFingerprint: candidate.envFingerprint,
+    port: serverPort,
+  });
+  if (existingRunner) {
+    break;
+  }
+}
 if (existingRunner) {
   console.log(
-    `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
+    `[paperclip] ${existingRunner.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
   );
   process.exit(0);
 }

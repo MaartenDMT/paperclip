@@ -28,6 +28,13 @@ export function buildNewAgentHirePayload(input: {
   const cheapModelEnabled =
     configValues.cheapModelEnabled
       ?? Boolean(codexDefaults);
+  const fallbackModel =
+    configValues.fallbackModel
+      ?? codexDefaults?.fallbackModel
+      ?? "";
+  const fallbackModelEnabled =
+    configValues.fallbackModelEnabled
+      ?? Boolean(codexDefaults);
 
   return {
     name: name.trim(),
@@ -48,6 +55,13 @@ export function buildNewAgentHirePayload(input: {
       cheapModelProvider: configValues.cheapModelProvider ?? codexDefaults?.fallbackProvider,
       cheapModelReasoningEffort:
         configValues.cheapModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,
+      fallbackModel,
+      fallbackModelEnabled,
+      fallbackModelAdapterType: configValues.fallbackModelAdapterType ?? codexDefaults.fallbackAdapterType,
+      fallbackModelCommand: configValues.fallbackModelCommand ?? codexDefaults.fallbackCommand,
+      fallbackModelProvider: configValues.fallbackModelProvider ?? codexDefaults?.fallbackProvider,
+      fallbackModelReasoningEffort:
+        configValues.fallbackModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,
     }),
     budgetMonthlyCents: 0,
   };

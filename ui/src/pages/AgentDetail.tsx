@@ -1389,6 +1389,8 @@ function formatAttentionLabel(value: string) {
       return "Review";
     case "stale_meeting":
       return "Stale meeting";
+    case "manager_implementation_load":
+      return "Manager-held work";
     default:
       return value.replace(/_/g, " ");
   }
@@ -1403,7 +1405,7 @@ function ManagerCommandCenter({ overview }: { overview: ManagerOverviewRecord })
         <div>
           <h3 className="text-sm font-medium">Team Command Center</h3>
           <p className="text-xs text-muted-foreground">
-            {overview.rollup.directReports} direct reports · {overview.rollup.openIssues} open issues
+            {overview.rollup.directReports} direct reports · {overview.rollup.executableIssues} executable · {overview.rollup.coordinationIssues} coordination
           </p>
         </div>
         {attentionReports.length > 0 && (
@@ -1415,10 +1417,10 @@ function ManagerCommandCenter({ overview }: { overview: ManagerOverviewRecord })
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <SummaryMetric label="Active runs" value={overview.rollup.activeRuns} />
-        <SummaryMetric label="In progress" value={overview.rollup.inProgressIssues} />
-        <SummaryMetric label="In review" value={overview.rollup.inReviewIssues} />
+        <SummaryMetric label="Executable" value={overview.rollup.executableIssues} />
+        <SummaryMetric label="Coordination" value={overview.rollup.coordinationIssues} />
+        <SummaryMetric label="Manager-held" value={overview.rollup.managerHeldExecutableIssues} />
         <SummaryMetric label="Blocked" value={overview.rollup.blockedIssues} />
-        <SummaryMetric label="Missing blockers" value={overview.rollup.blockerTextWithoutEdges} />
       </div>
 
       <div className="border border-border rounded-lg overflow-hidden">
@@ -1435,7 +1437,13 @@ function ManagerCommandCenter({ overview }: { overview: ManagerOverviewRecord })
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <span>{roleLabels[report.agent.role] ?? report.agent.role}</span>
                   <StatusBadge status={report.agent.status} />
-                  <span>{report.counts.openIssues} open</span>
+                  <span>{report.counts.executableIssues} executable</span>
+                  <span>{report.counts.coordinationIssues} coordination</span>
+                  {report.counts.managerHeldExecutableIssues > 0 ? (
+                    <span className="text-amber-700 dark:text-amber-300">
+                      {report.counts.managerHeldExecutableIssues} manager-held
+                    </span>
+                  ) : null}
                   <span>{report.counts.activeRuns} runs</span>
                   <span>{report.counts.recentMeetings} meetings</span>
                 </div>
@@ -1467,7 +1475,12 @@ function ManagerCommandCenter({ overview }: { overview: ManagerOverviewRecord })
                       <span className="mx-1 text-muted-foreground">·</span>
                       {issue.title}
                     </span>
-                    <StatusBadge status={issue.status} />
+                    <span className="flex shrink-0 items-center gap-1">
+                      {issue.workloadKind === "coordination" ? (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">coordination</span>
+                      ) : null}
+                      <StatusBadge status={issue.status} />
+                    </span>
                   </Link>
                 ))}
               </div>

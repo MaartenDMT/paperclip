@@ -121,7 +121,8 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    o.modelProfiles?.cheap !== undefined ||
+    o.modelProfiles?.fallback !== undefined
   );
 }
 
@@ -419,6 +420,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
+  const [fallbackModelOpen, setFallbackModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
   // Cheap model profile state — only relevant when the adapter advertises
@@ -433,14 +435,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
     enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
   });
-  const adapterCheapDefault = useMemo(() => {
-    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
-  }, [adapterCheapProfileDefinitions]);
-  const adapterCheapDefaultModel = useMemo(() => {
-    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
+  function readAdapterProfileDefinition(key: "cheap" | "fallback") {
+    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === key) ?? null;
+  }
+  function readAdapterProfileDefaultModel(key: "cheap" | "fallback") {
+    const adapterConfig = readAdapterProfileDefinition(key)?.adapterConfig ?? {};
     const value = (adapterConfig as Record<string, unknown>).model;
     return typeof value === "string" ? value : "";
-  }, [adapterCheapDefault]);
+  }
+  const adapterCheapDefaultModel = useMemo(
+    () => readAdapterProfileDefaultModel("cheap"),
+    [adapterCheapProfileDefinitions],
+  );
+  const adapterFallbackDefaultModel = useMemo(
+    () => readAdapterProfileDefaultModel("fallback"),
+    [adapterCheapProfileDefinitions],
+  );
 
   function buildAdapterConfigForTest(): Record<string, unknown> {
     if (isCreate) {
@@ -580,19 +590,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  // Cheap profile read/write helpers. Edit-mode values come from
-  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
-  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
+  function readProfileFromAgent(key: "cheap" | "fallback") {
     const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
+    const profile = (profiles[key] ?? {}) as Record<string, unknown>;
+    const profileAdapterConfig = (profile.adapterConfig ?? {}) as Record<string, unknown>;
+    const exists = Object.keys(profile).length > 0;
     return {
-      enabled: cheap.enabled !== false,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
+      enabled: exists ? profile.enabled !== false : false,
+      model: typeof profileAdapterConfig.model === "string" ? profileAdapterConfig.model : "",
     };
-  }, [runtimeConfig]);
+  }
+  const cheapProfileFromAgent = useMemo(() => readProfileFromAgent("cheap"), [runtimeConfig]);
+  const fallbackProfileFromAgent = useMemo(() => readProfileFromAgent("fallback"), [runtimeConfig]);
   const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
+  const fallbackOverlay = !isCreate ? overlay.modelProfiles?.fallback : undefined;
   const currentCheapEnabled = isCreate
     ? val!.cheapModelEnabled ?? false
     : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
@@ -603,6 +614,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         if (typeof overlayModel === "string") return overlayModel;
         return cheapProfileFromAgent.model;
       })();
+  const currentFallbackEnabled = isCreate
+    ? val!.fallbackModelEnabled ?? false
+    : fallbackOverlay?.enabled ?? fallbackProfileFromAgent.enabled;
+  const currentFallbackModel = isCreate
+    ? val!.fallbackModel ?? ""
+    : (() => {
+        const overlayModel = (fallbackOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
+        if (typeof overlayModel === "string") return overlayModel;
+        return fallbackProfileFromAgent.model;
+      })();
 
   function setCheapEnabled(next: boolean) {
     if (isCreate) {
@@ -612,6 +633,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setOverlay((prev) => ({
       ...prev,
       modelProfiles: {
+        ...(prev.modelProfiles ?? {}),
         cheap: {
           ...(prev.modelProfiles?.cheap ?? {}),
           enabled: next,
@@ -634,7 +656,49 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return {
         ...prev,
         modelProfiles: {
+          ...(prev.modelProfiles ?? {}),
           cheap: {
+            ...existing,
+            adapterConfig: nextAdapterConfig,
+          },
+        },
+      };
+    });
+  }
+
+  function setFallbackEnabled(next: boolean) {
+    if (isCreate) {
+      set!({ fallbackModelEnabled: next });
+      return;
+    }
+    setOverlay((prev) => ({
+      ...prev,
+      modelProfiles: {
+        ...(prev.modelProfiles ?? {}),
+        fallback: {
+          ...(prev.modelProfiles?.fallback ?? {}),
+          enabled: next,
+        },
+      },
+    }));
+  }
+
+  function setFallbackModel(next: string) {
+    if (isCreate) {
+      set!({ fallbackModel: next });
+      return;
+    }
+    setOverlay((prev) => {
+      const existing = prev.modelProfiles?.fallback ?? {};
+      const nextAdapterConfig = {
+        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
+        model: next || undefined,
+      };
+      return {
+        ...prev,
+        modelProfiles: {
+          ...(prev.modelProfiles ?? {}),
+          fallback: {
             ...existing,
             adapterConfig: nextAdapterConfig,
           },
@@ -1031,7 +1095,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
 
               {supportsModelProfiles && (
-                <CheapModelSection
+                <ModelProfileSection
+                  title="Cheap model"
+                  description="Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged."
+                  emptyModelWarning="No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note."
                   enabled={currentCheapEnabled}
                   model={currentCheapModel}
                   models={models}
@@ -1041,6 +1108,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onModelChange={setCheapModel}
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
+                />
+              )}
+              {supportsModelProfiles && (
+                <ModelProfileSection
+                  title="Fallback model"
+                  description="Used for provider/model failover when the primary lane is unavailable. Keep this separate from the cheap lane."
+                  emptyModelWarning="No fallback model selected and the adapter has no default. Provider-failure retries will fall back to the cheap lane or remain on the primary model."
+                  enabled={currentFallbackEnabled}
+                  model={currentFallbackModel}
+                  models={models}
+                  adapterType={adapterType}
+                  adapterDefaultModel={adapterFallbackDefaultModel}
+                  onEnabledChange={setFallbackEnabled}
+                  onModelChange={setFallbackModel}
+                  open={fallbackModelOpen}
+                  onOpenChange={setFallbackModelOpen}
                 />
               )}
 
@@ -1726,7 +1809,10 @@ function ModelDropdown({
   );
 }
 
-function CheapModelSection({
+function ModelProfileSection({
+  title,
+  description,
+  emptyModelWarning,
   enabled,
   model,
   models,
@@ -1737,6 +1823,9 @@ function CheapModelSection({
   open,
   onOpenChange,
 }: {
+  title: string;
+  description: string;
+  emptyModelWarning: string;
   enabled: boolean;
   model: string;
   models: AdapterModel[];
@@ -1754,10 +1843,8 @@ function CheapModelSection({
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Cheap model</div>
-          <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{title}</div>
+          <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
       </div>
@@ -1785,7 +1872,7 @@ function CheapModelSection({
       ) : null}
       {enabled && !model && !adapterDefaultModel ? (
         <p className="text-[11px] text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
+          {emptyModelWarning}
         </p>
       ) : null}
     </div>

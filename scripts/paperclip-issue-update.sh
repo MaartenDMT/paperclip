@@ -102,9 +102,43 @@ if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERC
   exit 1
 fi
 
-curl -sS -X PATCH \
-  "$PAPERCLIP_API_URL/api/issues/$issue_id" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H 'Content-Type: application/json' \
-  --data-binary "$payload"
+api_candidates="$(
+  jq -nr \
+    --arg primary "$PAPERCLIP_API_URL" \
+    --arg rawCandidates "${PAPERCLIP_API_CANDIDATES_JSON:-[]}" \
+    '
+      ($rawCandidates | try fromjson catch []) as $candidates
+      | [$primary] + (if ($candidates | type) == "array" then $candidates else [] end)
+      | map(select(type == "string") | sub("/+$"; ""))
+      | reduce .[] as $candidate ([]; if index($candidate) then . else . + [$candidate] end)
+      | .[]
+    '
+)"
+
+last_error=""
+while IFS= read -r api_url; do
+  [[ -n "$api_url" ]] || continue
+  response="$(
+    curl -sS -w '\n%{http_code}' -X PATCH \
+      --connect-timeout "${PAPERCLIP_API_CONNECT_TIMEOUT_SECONDS:-5}" \
+      --max-time "${PAPERCLIP_API_TIMEOUT_SECONDS:-30}" \
+      "$api_url/api/issues/$issue_id" \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$payload" 2>&1
+  )" || true
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" =~ ^[0-9]{3}$ && "$http_code" != "000" ]]; then
+    printf '%s\n' "$body"
+    exit 0
+  fi
+  last_error="$api_url: $body"
+done <<< "$api_candidates"
+
+printf 'Paperclip API unreachable from this agent. Tried candidates from PAPERCLIP_API_URL/PAPERCLIP_API_CANDIDATES_JSON.\n' >&2
+if [[ -n "$last_error" ]]; then
+  printf 'Last error: %s\n' "$last_error" >&2
+fi
+exit 1

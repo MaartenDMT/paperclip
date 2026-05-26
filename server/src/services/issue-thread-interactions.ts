@@ -179,6 +179,31 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
   no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
+const MEETING_TRIGGER_TITLE_PREFIX: Record<MeetingWorkflowTrigger, string> = {
+  blocked_without_edge: "Blocked work",
+  stale_review: "Review waiting",
+  stale_in_progress: "Execution check-in",
+  no_recent_meetings: "Operating review",
+};
+
+function compactMeetingTitle(title: string) {
+  const normalized = title.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 120) return normalized;
+  return `${normalized.slice(0, 117).trimEnd()}...`;
+}
+
+function meetingTitleForRecommendation(recommendation: MeetingWorkflowRecommendation) {
+  const prefix = MEETING_TRIGGER_TITLE_PREFIX[recommendation.trigger];
+  if (recommendation.trigger === "no_recent_meetings") {
+    return `${prefix}: company work health`;
+  }
+  const topic = [
+    recommendation.issueIdentifier,
+    recommendation.issueTitle,
+  ].filter((value): value is string => Boolean(value?.trim())).join(" - ");
+  return compactMeetingTitle(`${prefix}: ${topic || "unlabeled issue"}`);
+}
+
 function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
   return {
     purpose: "Meetings are structured operating reviews used when company work needs recorded goals, targets, KPIs, finance context, business requirements, agent employee performance review, problems, optimizations, workflow/process changes, memory corrections, idea sharing, right-track checks, decisions, tasks, blockers, questions, or plan updates.",
@@ -820,9 +845,8 @@ export function issueThreadInteractionService(db: Db) {
       return null;
     }
 
-    const issueLabel = recommendation.issueIdentifier ?? recommendation.issueId;
     return meetingService(db).createFromRecommendation(companyId, recommendation, {
-      title: `Work meeting: ${issueLabel ?? "company"}`,
+      title: meetingTitleForRecommendation(recommendation),
       agenda: MEETING_TRIGGER_AGENDAS[recommendation.trigger],
       expectedOutputs: recommendation.expectedOutputs,
       contextMarkdown: [

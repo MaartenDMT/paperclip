@@ -316,6 +316,7 @@ export type {
   ManagerOverviewAgent,
   ManagerOverviewAttention,
   ManagerOverviewIssue,
+  ManagerOverviewIssueWorkloadKind,
   ManagerOverviewMeeting,
   ManagerOverviewReport,
 } from "./dashboard.js";

@@ -25,6 +25,8 @@ export type AgentSnapshot = {
   lastHeartbeatAt: Date | null;
 };
 
+const MAX_ROUTED_INFLIGHT_PER_AGENT = 4;
+
 /** Build a parent->children map once per call. */
 function childrenIndex(agents: AgentSnapshot[]): Map<string, AgentSnapshot[]> {
   const idx = new Map<string, AgentSnapshot[]>();
@@ -76,7 +78,7 @@ export function pickAgentForTeam(
   teamLeadId: string,
 ): AgentSnapshot | null {
   const team = agentsInTeam(agents, teamLeadId);
-  const idle = team.filter((a) => a.status === "idle");
+  const idle = team.filter((a) => a.status === "idle" && a.inflightCount < MAX_ROUTED_INFLIGHT_PER_AGENT);
   if (idle.length === 0) return null;
   const subordinates = idle.filter((a) => a.id !== teamLeadId);
   const candidates = subordinates.length > 0 ? subordinates : idle;

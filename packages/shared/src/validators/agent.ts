@@ -60,6 +60,7 @@ const agentModelProfileConfigSchema = z.object({
 export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
+    fallback: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
 }).catchall(z.unknown());
 

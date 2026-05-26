@@ -37,7 +37,7 @@ const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
 const GRAPHIFY_MODEL =
   process.env.PAPERCLIP_GRAPHIFY_MODEL ||
-  (GRAPHIFY_BACKEND === "ollama" ? "llama3.2:1b" : "qwen3.5:9b");
+  (GRAPHIFY_BACKEND === "ollama" ? "gemma3:4b" : "qwen3.5:9b");
 const GRAPHIFY_CORPUS_MODE = process.env.PAPERCLIP_GRAPHIFY_CORPUS_MODE || "compact";
 const GRAPHIFY_CORPUS_DIR =
   process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
@@ -46,7 +46,7 @@ const GRAPHIFY_MAX_DOC_BYTES = Number(
   process.env.PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES || 12_000,
 );
 const GRAPHIFY_MAX_ISSUE_FILES = Number(
-  process.env.PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES || 250,
+  process.env.PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES || 20,
 );
 const GRAPHIFY_TOKEN_BUDGET = Number(
   process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
@@ -146,6 +146,14 @@ const GRAPHIFY_EXCLUDED_DIRS = new Set([
 ]);
 const DEFAULT_WALK_EXCLUDED_DIRS = new Set([".git", "node_modules", ".trash"]);
 const GRAPHIFY_EXCLUDED_FILES = new Set(["log.md"]);
+const GRAPHIFY_ALLOWED_TOP_LEVEL_DIRS = new Set([
+  "agents",
+  "comments",
+  "decisions",
+  "issues",
+  "projects",
+]);
+const GRAPHIFY_ALLOWED_TOP_LEVEL_FILES = new Set(["memory.md", "schema.md"]);
 
 function shouldExcludeGraphifyDir(name: string): boolean {
   if (GRAPHIFY_EXCLUDED_DIRS.has(name)) return true;
@@ -568,16 +576,34 @@ function writeFileIfChanged(file: string, body: string): boolean {
 function removeStaleCorpusFiles(corpusRoot: string, desiredRelPaths: Set<string>): number {
   let removed = 0;
   const root = path.resolve(corpusRoot);
-  for (const file of walkMarkdownFiles(corpusRoot)) {
-    const rel = slash(path.relative(corpusRoot, file));
-    if (desiredRelPaths.has(rel)) continue;
-    const resolved = path.resolve(file);
-    if (!resolved.startsWith(root + path.sep)) continue;
+  const stack = [corpusRoot];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (!dir) continue;
+    let entries: fs.Dirent[];
     try {
-      fs.rmSync(file, { force: true });
-      removed += 1;
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      // Best-effort cleanup; stale compact notes are less harmful than hook failure.
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (DEFAULT_WALK_EXCLUDED_DIRS.has(entry.name)) continue;
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) continue;
+      const rel = slash(path.relative(corpusRoot, full));
+      if (desiredRelPaths.has(rel)) continue;
+      const resolved = path.resolve(full);
+      if (!resolved.startsWith(root + path.sep)) continue;
+      try {
+        fs.rmSync(full, { force: true });
+        removed += 1;
+      } catch {
+        // Best-effort cleanup; stale compact notes are less harmful than hook failure.
+      }
     }
   }
   return removed;
@@ -591,6 +617,11 @@ export function prepareGraphifyCompactCorpus(
 ): { files: number; truncated: number; written: number; removed: number } {
   const byteLimit = safePositiveInt(maxDocBytes, 80_000);
   const issueLimit = Math.max(0, Math.floor(Number.isFinite(maxIssueFiles) ? maxIssueFiles : 250));
+  const maxAgentFiles = Number(process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES || 12);
+  const agentLimit = Math.max(
+    0,
+    Math.floor(Number.isFinite(maxAgentFiles) ? maxAgentFiles : 12),
+  );
   const desired = new Set<string>();
   let files = 0;
   let truncated = 0;
@@ -612,11 +643,34 @@ export function prepareGraphifyCompactCorpus(
     issueLimit > 0
       ? new Set(issueCandidates.slice(0, issueLimit).map((entry) => entry.source))
       : new Set<string>();
+  const agentCandidates = sources
+    .filter((source) => slash(path.relative(vaultRoot, source)).startsWith("agents/"))
+    .map((source) => {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(source).mtimeMs;
+      } catch {
+        mtimeMs = 0;
+      }
+      return { source, mtimeMs };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs || left.source.localeCompare(right.source));
+  const allowedAgents =
+    agentLimit > 0
+      ? new Set(agentCandidates.slice(0, agentLimit).map((entry) => entry.source))
+      : new Set<string>();
 
   for (const source of sources) {
     const rel = slash(path.relative(vaultRoot, source));
     if (rel.startsWith("../") || path.isAbsolute(rel)) continue;
+    const [topLevel] = rel.split("/", 1);
+    if (!rel.includes("/")) {
+      if (!GRAPHIFY_ALLOWED_TOP_LEVEL_FILES.has(rel.toLowerCase())) continue;
+    } else if (!GRAPHIFY_ALLOWED_TOP_LEVEL_DIRS.has(topLevel ?? "")) {
+      continue;
+    }
     if (rel.startsWith("issues/") && issueLimit > 0 && !allowedIssues.has(source)) continue;
+    if (rel.startsWith("agents/") && agentLimit > 0 && !allowedAgents.has(source)) continue;
     desired.add(rel);
     files += 1;
 

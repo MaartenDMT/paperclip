@@ -363,6 +363,96 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("allows meeting workflow wakeups for non-assignee chairs on blocked issues", async () => {
+    const { companyId, agentId: issueAssigneeId } = await seedCompanyAndAgent({
+      agentName: "Interaction Design Optimizer",
+    });
+    const chairAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: chairAgentId,
+      companyId,
+      name: "UXDesigner",
+      role: "designer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const meetingId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked design review",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: issueAssigneeId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId: chairAgentId,
+      issueId,
+      wakeReason: "agent_meeting_requested",
+      invocationSource: "automation",
+      contextExtras: {
+        meetingId,
+        interactionId: meetingId,
+        interactionKind: "agent_meeting",
+        source: "meeting_workflow.periodic",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      error: null,
+    });
+    expect(wakeup?.status).not.toBe("skipped");
+    expect(issue?.executionRunId).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
   it("promotes a deferred wake for the new assignee after cancelling a stale reassigned run", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
     const replacementAgentId = randomUUID();

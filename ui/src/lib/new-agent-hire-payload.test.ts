@@ -69,6 +69,16 @@ describe("buildNewAgentHirePayload", () => {
               modelReasoningEffort: "high",
             },
           },
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              command: "codex",
+              provider: "openai",
+              model: "gpt-5.3-codex",
+              modelReasoningEffort: "high",
+            },
+          },
         },
       },
     });

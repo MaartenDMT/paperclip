@@ -488,6 +488,17 @@ export interface CreateConfigValues {
   cheapModelCommand?: string;
   cheapModelProvider?: string;
   cheapModelReasoningEffort?: string;
+  /**
+   * Optional fallback model profile config for provider/model failover.
+   * Persisted under `runtimeConfig.modelProfiles.fallback.adapterConfig`,
+   * never on the primary `adapterConfig`.
+   */
+  fallbackModel?: string;
+  fallbackModelEnabled?: boolean;
+  fallbackModelAdapterType?: string;
+  fallbackModelCommand?: string;
+  fallbackModelProvider?: string;
+  fallbackModelReasoningEffort?: string;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;

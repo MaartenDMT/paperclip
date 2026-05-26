@@ -942,6 +942,17 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+  const readRuntimeApiCandidates = (): string[] => {
+    const raw = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    } catch {
+      return [];
+    }
+  };
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -961,6 +972,21 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  const apiCandidates = [apiUrl, ...readRuntimeApiCandidates()];
+  const seenCandidates = new Set<string>();
+  const normalizedCandidates = apiCandidates.flatMap((candidate) => {
+    try {
+      const origin = new URL(candidate.trim()).origin;
+      if (seenCandidates.has(origin)) return [];
+      seenCandidates.add(origin);
+      return [origin];
+    } catch {
+      return [];
+    }
+  });
+  if (normalizedCandidates.length > 0) {
+    vars.PAPERCLIP_API_CANDIDATES_JSON = JSON.stringify(normalizedCandidates);
+  }
   return vars;
 }
 
@@ -1220,6 +1246,7 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (key === "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];

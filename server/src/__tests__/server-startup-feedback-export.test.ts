@@ -113,6 +113,14 @@ vi.mock("@paperclipai/db", () => ({
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
+  startEmbeddedPostgresWithRecovery: vi.fn(),
+  waitForEmbeddedPostgresReady: vi.fn(async () => true),
+  readEmbeddedPostgresPostmasterPid: vi.fn(() => null),
+  readEmbeddedPostgresPostmasterPort: vi.fn(() => null),
+  createEmbeddedPostgresLogBuffer: vi.fn(() => ({
+    append: vi.fn(),
+    getRecentLogs: vi.fn(() => []),
+  })),
   authUsers: {},
   companies: {},
   companyMemberships: {},
@@ -457,5 +465,29 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       }),
       "Control-plane scheduler disabled because another Paperclip server owns the scheduler lease",
     );
+  });
+
+  it("fails fast when another startup already owns the instance startup lease", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-owner-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "server-startup.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        requestedPort: 3210,
+        listenPort: 3210,
+      }),
+      "utf8",
+    );
+
+    await expect(startServer()).rejects.toThrow(
+      /Another Paperclip server startup is already in progress/,
+    );
+    expect(createAppMock).not.toHaveBeenCalled();
+    expect(fakeServer.listen).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,12 @@ export function buildNewAgentRuntimeConfig(input?: {
   cheapModelCommand?: string;
   cheapModelProvider?: string;
   cheapModelReasoningEffort?: string;
+  fallbackModel?: string;
+  fallbackModelEnabled?: boolean;
+  fallbackModelAdapterType?: string;
+  fallbackModelCommand?: string;
+  fallbackModelProvider?: string;
+  fallbackModelReasoningEffort?: string;
 }): Record<string, unknown> {
   const config: Record<string, unknown> = {
     heartbeat: {
@@ -21,24 +27,65 @@ export function buildNewAgentRuntimeConfig(input?: {
     },
   };
 
-  const cheapModel = input?.cheapModel?.trim() ?? "";
-  const cheapEnabled = input?.cheapModelEnabled ?? false;
-  if (cheapModel && cheapEnabled) {
-    const adapterConfig: Record<string, unknown> = { model: cheapModel };
-    const adapterType = input?.cheapModelAdapterType?.trim() ?? "";
+  const modelProfiles: Record<string, unknown> = {};
+
+  function buildProfileAdapterConfig(profileInput: {
+    model?: string;
+    adapterType?: string;
+    command?: string;
+    provider?: string;
+    reasoningEffort?: string;
+  }) {
+    const model = profileInput.model?.trim() ?? "";
+    if (!model) return null;
+    const adapterConfig: Record<string, unknown> = { model };
+    const adapterType = profileInput.adapterType?.trim() ?? "";
     if (adapterType) adapterConfig.adapterType = adapterType;
-    const command = input?.cheapModelCommand?.trim() ?? "";
+    const command = profileInput.command?.trim() ?? "";
     if (command) adapterConfig.command = command;
-    const provider = input?.cheapModelProvider?.trim() ?? "";
+    const provider = profileInput.provider?.trim() ?? "";
     if (provider) adapterConfig.provider = provider;
-    const reasoningEffort = input?.cheapModelReasoningEffort?.trim() ?? "";
+    const reasoningEffort = profileInput.reasoningEffort?.trim() ?? "";
     if (reasoningEffort) adapterConfig.modelReasoningEffort = reasoningEffort;
-    config.modelProfiles = {
-      cheap: {
-        enabled: true,
-        adapterConfig,
-      },
+    return adapterConfig;
+  }
+
+  const cheapEnabled = input?.cheapModelEnabled ?? false;
+  const cheapAdapterConfig = cheapEnabled
+    ? buildProfileAdapterConfig({
+        model: input?.cheapModel,
+        adapterType: input?.cheapModelAdapterType,
+        command: input?.cheapModelCommand,
+        provider: input?.cheapModelProvider,
+        reasoningEffort: input?.cheapModelReasoningEffort,
+      })
+    : null;
+  if (cheapAdapterConfig) {
+    modelProfiles.cheap = {
+      enabled: true,
+      adapterConfig: cheapAdapterConfig,
     };
+  }
+
+  const fallbackEnabled = input?.fallbackModelEnabled ?? false;
+  const fallbackAdapterConfig = fallbackEnabled
+    ? buildProfileAdapterConfig({
+        model: input?.fallbackModel,
+        adapterType: input?.fallbackModelAdapterType,
+        command: input?.fallbackModelCommand,
+        provider: input?.fallbackModelProvider,
+        reasoningEffort: input?.fallbackModelReasoningEffort,
+      })
+    : null;
+  if (fallbackAdapterConfig) {
+    modelProfiles.fallback = {
+      enabled: true,
+      adapterConfig: fallbackAdapterConfig,
+    };
+  }
+
+  if (Object.keys(modelProfiles).length > 0) {
+    config.modelProfiles = modelProfiles;
   }
 
   return config;

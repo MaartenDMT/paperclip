@@ -103,6 +103,15 @@ describe("pickAgentForTeam (policy A: strict + wait)", () => {
     expect(pickAgentForTeam(agents, "cto")?.id).toBe("cto");
   });
 
+  it("does not keep routing work to a manager that already has four in-flight runs", () => {
+    const agents = fixture({
+      cto: { status: "idle", inflightCount: 4 },
+      engA: { status: "running" },
+      engB: { status: "error" },
+    });
+    expect(pickAgentForTeam(agents, "cto")).toBeNull();
+  });
+
   it("tie-breaks on most-recent heartbeat", () => {
     const older = new Date("2026-05-11T06:00:00Z");
     const newer = new Date("2026-05-11T07:59:00Z");

@@ -116,9 +116,11 @@ The server-side hook reads these env vars:
 - `PAPERCLIP_MEMORY_VAULT` — vault root (default: `A:/Programming/paperclip/memory/obsidian`)
 - `PAPERCLIP_GRAPHIFY_BIN` — graphify CLI shim (default: `graphify`)
 - `PAPERCLIP_GRAPHIFY_BACKEND` — LLM backend for extraction (default: `ollama`)
-- `PAPERCLIP_GRAPHIFY_MODEL` — model name (default: `qwen3.5:9b`)
+- `PAPERCLIP_GRAPHIFY_MODEL` — model name (default: `gemma3:4b` for `ollama`, `qwen3.5:9b` otherwise)
 - `PAPERCLIP_GRAPHIFY_CORPUS_MODE` — `compact` indexes a bounded generated corpus, `vault` indexes raw vault files (default: `compact`)
-- `PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES` — max bytes per markdown file in compact corpus before keeping head+tail (default: `80000`)
+- `PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES` — max bytes per markdown file in compact corpus before trimming/summarizing (default: `12000`)
+- `PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES` — max recent issue-note files kept in the compact corpus by mtime (default: `20`)
+- `PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES` — max recent agent role pages kept in the compact corpus by mtime (default: `12`)
 - `PAPERCLIP_GRAPHIFY_TOKEN_BUDGET` — Graphify semantic extraction token budget (default: `12000` for ollama, `60000` otherwise)
 - `PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS` — per-request LLM timeout passed to Graphify (default: `900`)
 - `PAPERCLIP_GRAPHIFY_INTERVAL_MS` — ms between refreshes (default: 900000 = 15 min)
@@ -130,3 +132,7 @@ Troubleshooting:
 - On Windows, multiple `graphify.exe` shims can exist on PATH. If `graphify query`
   fails from the shell but another shim works, set `PAPERCLIP_GRAPHIFY_BIN` to
   the working executable so the refresh hook and agent commands use the same CLI.
+- Compact mode intentionally keeps a high-signal subset of the vault: recent
+  issue pages, recent agent pages, and durable note classes such as `decisions/`,
+  `comments/`, and `projects/`. It excludes noisy classes like `daily/`,
+  `deliverables/`, `digests/`, `queries/`, and the giant root `log.md`.

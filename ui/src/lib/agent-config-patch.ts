@@ -4,8 +4,8 @@ export interface AgentModelProfileOverlay {
   enabled?: boolean;
   adapterConfig?: Record<string, unknown>;
   /**
-   * Mark the cheap profile for clearing. When true, the patch removes
-   * `runtimeConfig.modelProfiles.cheap` instead of merging into it.
+   * Mark the profile for clearing. When true, the patch removes
+   * `runtimeConfig.modelProfiles.<key>` instead of merging into it.
    */
   cleared?: boolean;
 }
@@ -16,7 +16,7 @@ export interface AgentConfigOverlay {
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
   runtime: Record<string, unknown>;
-  modelProfiles?: { cheap?: AgentModelProfileOverlay };
+  modelProfiles?: { cheap?: AgentModelProfileOverlay; fallback?: AgentModelProfileOverlay };
 }
 
 const ADAPTER_AGNOSTIC_KEYS = [
@@ -67,8 +67,8 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
-  const cheapOverlay = overlay.modelProfiles?.cheap;
-  const hasModelProfileChange = cheapOverlay !== undefined;
+  const modelProfileOverlays = overlay.modelProfiles ?? {};
+  const hasModelProfileChange = Object.values(modelProfileOverlays).some((value) => value !== undefined);
 
   if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -82,19 +82,21 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
     if (hasModelProfileChange) {
       const existingProfiles = ((existingRc.modelProfiles ?? {}) as Record<string, unknown>);
-      const existingCheap = ((existingProfiles.cheap ?? {}) as Record<string, unknown>);
       const nextProfiles = { ...existingProfiles };
-
-      if (cheapOverlay?.cleared) {
-        delete nextProfiles.cheap;
-      } else if (cheapOverlay) {
+      for (const [profileKey, profileOverlay] of Object.entries(modelProfileOverlays)) {
+        if (!profileOverlay) continue;
+        const existingProfile = ((existingProfiles[profileKey] ?? {}) as Record<string, unknown>);
+        if (profileOverlay.cleared) {
+          delete nextProfiles[profileKey];
+          continue;
+        }
         const mergedAdapterConfig = {
-          ...((existingCheap.adapterConfig ?? {}) as Record<string, unknown>),
-          ...(cheapOverlay.adapterConfig ?? {}),
+          ...((existingProfile.adapterConfig ?? {}) as Record<string, unknown>),
+          ...(profileOverlay.adapterConfig ?? {}),
         };
-        const enabled = cheapOverlay.enabled ?? (existingCheap.enabled !== false);
-        nextProfiles.cheap = {
-          ...existingCheap,
+        const enabled = profileOverlay.enabled ?? (existingProfile.enabled !== false);
+        nextProfiles[profileKey] = {
+          ...existingProfile,
           enabled,
           adapterConfig: mergedAdapterConfig,
         };

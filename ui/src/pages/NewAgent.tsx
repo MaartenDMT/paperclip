@@ -55,6 +55,12 @@ function createValuesForAdapterType(
     nextValues.cheapModelCommand = codexDefaults.fallbackCommand;
     nextValues.cheapModelProvider = codexDefaults.fallbackProvider;
     nextValues.cheapModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
+    nextValues.fallbackModel = codexDefaults.fallbackModel;
+    nextValues.fallbackModelEnabled = true;
+    nextValues.fallbackModelAdapterType = codexDefaults.fallbackAdapterType;
+    nextValues.fallbackModelCommand = codexDefaults.fallbackCommand;
+    nextValues.fallbackModelProvider = codexDefaults.fallbackProvider;
+    nextValues.fallbackModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
     nextValues.dangerouslyBypassSandbox =
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
@@ -151,7 +157,13 @@ export function NewAgent() {
         prev.cheapModelAdapterType === codexDefaults.fallbackAdapterType &&
         prev.cheapModelCommand === codexDefaults.fallbackCommand &&
         prev.cheapModelProvider === codexDefaults.fallbackProvider &&
-        prev.cheapModelReasoningEffort === codexDefaults.fallbackReasoningEffort
+        prev.cheapModelReasoningEffort === codexDefaults.fallbackReasoningEffort &&
+        prev.fallbackModel === codexDefaults.fallbackModel &&
+        prev.fallbackModelEnabled === true &&
+        prev.fallbackModelAdapterType === codexDefaults.fallbackAdapterType &&
+        prev.fallbackModelCommand === codexDefaults.fallbackCommand &&
+        prev.fallbackModelProvider === codexDefaults.fallbackProvider &&
+        prev.fallbackModelReasoningEffort === codexDefaults.fallbackReasoningEffort
       ) {
         return prev;
       }
@@ -164,6 +176,12 @@ export function NewAgent() {
         cheapModelCommand: codexDefaults.fallbackCommand,
         cheapModelProvider: codexDefaults.fallbackProvider,
         cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+        fallbackModel: codexDefaults.fallbackModel,
+        fallbackModelEnabled: true,
+        fallbackModelAdapterType: codexDefaults.fallbackAdapterType,
+        fallbackModelCommand: codexDefaults.fallbackCommand,
+        fallbackModelProvider: codexDefaults.fallbackProvider,
+        fallbackModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
       };
     });
   }, [configValues.adapterType, effectiveRole]);

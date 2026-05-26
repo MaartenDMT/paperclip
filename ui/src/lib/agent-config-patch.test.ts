@@ -108,6 +108,53 @@ describe("buildAgentUpdatePatch", () => {
     expect(patch.adapterConfig).toBeUndefined();
   });
 
+  it("writes the fallback profile under runtimeConfig.modelProfiles without disturbing cheap", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: { model: "gpt-5.4-mini", adapterType: "codex_local" },
+          },
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 300,
+        },
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: { model: "claude-haiku-4-5" },
+          },
+          fallback: {
+            enabled: true,
+            adapterConfig: { model: "gpt-5.4-mini", adapterType: "codex_local" },
+          },
+        },
+      },
+    });
+  });
+
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
@@ -189,6 +236,40 @@ describe("buildAgentUpdatePatch", () => {
 
     expect(patch.runtimeConfig).toEqual({
       heartbeat: { enabled: true, intervalSec: 300 },
+    });
+  });
+
+  it("clears only the fallback profile when requested", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+        fallback: {
+          enabled: true,
+          adapterConfig: { model: "gpt-5.4-mini", adapterType: "codex_local" },
+        },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: { fallback: { cleared: true } },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+      },
     });
   });
 

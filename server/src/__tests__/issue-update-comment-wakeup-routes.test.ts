@@ -35,8 +35,10 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(async () => true),
     hasPermission: vi.fn(async () => true),
   }),
+  agentInstructionsService: () => ({}),
   agentService: () => ({
     getById: vi.fn(async () => null),
+    list: vi.fn(async () => []),
     resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
       ambiguous: false,
       agent: { id: raw },
@@ -93,8 +95,10 @@ function registerModuleMocks() {
       canUser: vi.fn(async () => true),
       hasPermission: vi.fn(async () => true),
     }),
+    agentInstructionsService: () => ({}),
     agentService: () => ({
       getById: vi.fn(async () => null),
+      list: vi.fn(async () => []),
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
         ambiguous: false,
         agent: { id: raw },
@@ -160,7 +164,14 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: async () => [],
+      }),
+    }),
+  };
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -291,6 +302,37 @@ describe("issue update comment wakeups", () => {
       }),
     );
   }, 20_000);
+
+  it("does not wake the assignee when an issue update comment closes the issue", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = {
+      ...existing,
+      status: "done",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "local fork path complete",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "local fork path complete",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("accepts identifier-based PATCH issue routes", async () => {
     const existing = makeIssue({
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",

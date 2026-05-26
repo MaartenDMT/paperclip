@@ -62,6 +62,8 @@ import type {
 const startupDebugEnabled = process.env.PAPERCLIP_DEBUG_STARTUP === "true";
 const CONTROL_PLANE_SCHEDULER_LEASE_FILENAME = "control-plane-scheduler.lock";
 const CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS = 10 * 60 * 1000;
+const STARTUP_LEASE_FILENAME = "server-startup.lock";
+const STARTUP_LEASE_STALE_MS = 5 * 60 * 1000;
 
 function startupDebug(message: string) {
   if (!startupDebugEnabled) return;
@@ -110,6 +112,8 @@ type ControlPlaneSchedulerLease = {
   release: () => Promise<void>;
 };
 
+type InstanceLease = ControlPlaneSchedulerLease;
+
 function isPidAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
   if (pid === process.pid) return true;
@@ -134,7 +138,21 @@ async function acquireControlPlaneSchedulerLease(input: {
   requestedPort: number;
   listenPort: number;
 }): Promise<ControlPlaneSchedulerLease> {
-  const lockPath = resolve(resolvePaperclipInstanceRoot(), CONTROL_PLANE_SCHEDULER_LEASE_FILENAME);
+  return acquireInstanceLease({
+    filename: CONTROL_PLANE_SCHEDULER_LEASE_FILENAME,
+    staleMs: CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS,
+    requestedPort: input.requestedPort,
+    listenPort: input.listenPort,
+  });
+}
+
+async function acquireInstanceLease(input: {
+  filename: string;
+  staleMs: number;
+  requestedPort: number;
+  listenPort: number;
+}): Promise<InstanceLease> {
+  const lockPath = resolve(resolvePaperclipInstanceRoot(), input.filename);
   const now = new Date();
   const lease: Required<ControlPlaneSchedulerLeaseFile> = {
     pid: process.pid,
@@ -156,9 +174,9 @@ async function acquireControlPlaneSchedulerLease(input: {
     const existingUpdatedAt = existing?.updatedAt ? Date.parse(existing.updatedAt) : Number.NaN;
     const existingAgeMs = Number.isFinite(existingUpdatedAt)
       ? Date.now() - existingUpdatedAt
-      : CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS + 1;
+      : input.staleMs + 1;
     const existingOwnerAlive = isPidAlive(existing?.pid);
-    if (existingOwnerAlive && existingAgeMs < CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS) {
+    if (existingOwnerAlive && existingAgeMs < input.staleMs) {
       return {
         acquired: false,
         lockPath,
@@ -258,17 +276,30 @@ export async function startServer(): Promise<StartedServer> {
   startupDebug("startServer: begin");
   let config = loadConfig();
   startupDebug("startServer: config loaded");
+  const startupLease = await acquireInstanceLease({
+    filename: STARTUP_LEASE_FILENAME,
+    staleMs: STARTUP_LEASE_STALE_MS,
+    requestedPort: config.port,
+    listenPort: config.port,
+  });
+  if (!startupLease.acquired) {
+    throw new Error(
+      `Another Paperclip server startup is already in progress for ${config.host}:${config.port}. ` +
+        `Wait for it to finish or remove a stale lease at ${startupLease.lockPath}.`,
+    );
+  }
   initTelemetry({ enabled: config.telemetryEnabled });
   startupDebug("startServer: telemetry initialized");
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
-  }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
-  }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
-  }
+  try {
+    if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
+      process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+    }
+    if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
+      process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+    }
+    if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
+      process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+    }
   
   type MigrationSummary =
     | "skipped"
@@ -1269,13 +1300,19 @@ export async function startServer(): Promise<StartedServer> {
     });
   }
 
-  return {
-    server,
-    host: config.host,
-    listenPort,
-    apiUrl: configuredApiUrl,
-    databaseUrl: activeDatabaseConnectionString,
-  };
+    await startupLease.release();
+
+    return {
+      server,
+      host: config.host,
+      listenPort,
+      apiUrl: configuredApiUrl,
+      databaseUrl: activeDatabaseConnectionString,
+    };
+  } catch (error) {
+    await startupLease.release();
+    throw error;
+  }
 }
 
 function isMainModule(metaUrl: string): boolean {

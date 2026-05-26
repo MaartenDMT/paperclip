@@ -908,6 +908,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(child.pid).toBeTypeOf("number");
 
     const { agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_local",
       processPid: child.pid ?? null,
       processStartedAt: new Date("2026-03-19T00:00:00.000Z"),
       lastOutputAt: new Date("2026-03-19T00:00:00.000Z"),
@@ -928,6 +929,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.error).toContain("critically silent");
     expect(retryRun?.status).toBe("queued");
+  });
+
+  it("terminates and retries a critically silent tracked local child", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { agentId, runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      processStartedAt: new Date("2026-03-19T00:00:00.000Z"),
+      lastOutputAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    runningProcesses.set(runId, {
+      child,
+      graceSec: 1,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    try {
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result.reaped).toBe(1);
+      expect(result.runIds).toEqual([runId]);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const failedRun = runs.find((row) => row.id === runId);
+      const retryRun = runs.find((row) => row.id !== runId);
+      expect(failedRun?.status).toBe("failed");
+      expect(failedRun?.errorCode).toBe("process_lost");
+      expect(failedRun?.error).toContain("remained tracked by the server");
+      expect(retryRun?.status).toBe("queued");
+    } finally {
+      runningProcesses.delete(runId);
+    }
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
@@ -1333,7 +1371,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
     expect(retryRun?.contextSnapshot).toMatchObject({
       codexTransientFallbackMode: "same_session",
-      modelProfile: "cheap",
+      modelProfile: "fallback",
     });
 
     const issue = await db

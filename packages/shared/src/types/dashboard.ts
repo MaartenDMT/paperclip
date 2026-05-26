@@ -42,7 +42,10 @@ export type ManagerOverviewAttention =
   | "blocked_work"
   | "blocked_without_first_class_blocker"
   | "review_waiting"
-  | "stale_meeting";
+  | "stale_meeting"
+  | "manager_implementation_load";
+
+export type ManagerOverviewIssueWorkloadKind = "execution" | "coordination";
 
 export interface ManagerOverviewIssue {
   id: string;
@@ -50,6 +53,7 @@ export interface ManagerOverviewIssue {
   title: string;
   status: string;
   priority: string;
+  workloadKind: ManagerOverviewIssueWorkloadKind;
   updatedAt: Date | string;
 }
 
@@ -83,6 +87,10 @@ export interface ManagerOverviewReport {
     inProgressIssues: number;
     inReviewIssues: number;
     blockedIssues: number;
+    executableIssues: number;
+    coordinationIssues: number;
+    managerHeldExecutableIssues: number;
+    delegatedExecutableIssues: number;
     activeRuns: number;
     recentMeetings: number;
     stalePendingMeetings: number;
@@ -103,6 +111,10 @@ export interface ManagerOverview {
     inProgressIssues: number;
     inReviewIssues: number;
     blockedIssues: number;
+    executableIssues: number;
+    coordinationIssues: number;
+    managerHeldExecutableIssues: number;
+    delegatedExecutableIssues: number;
     activeRuns: number;
     recentMeetings: number;
     stalePendingMeetings: number;

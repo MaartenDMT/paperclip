@@ -64,6 +64,15 @@ describe("shouldRecoverEmbeddedPostgresStartError", () => {
     ).toBe(true);
   });
 
+  it("recognizes stale postmaster.pid lock failures that merit cleanup", () => {
+    expect(
+      shouldRecoverEmbeddedPostgresStartError("startup failed", [
+        "FATAL:  lock file \"postmaster.pid\" already exists",
+        "HINT:  Is another postmaster (PID 60180) running in data directory \"D:/WindowsData/paperclip/instances/default/db\"?",
+      ]),
+    ).toBe(true);
+  });
+
   it("does not retry unrelated startup failures", () => {
     expect(
       shouldRecoverEmbeddedPostgresStartError("startup failed", [
@@ -174,6 +183,49 @@ describe("startEmbeddedPostgresWithRecovery", () => {
       expect(startCalls).toBe(2);
       expect(terminatedPid).toBe(4242);
       expect(recoveredMessages[0]).toContain("4242");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers when only a stale postmaster.pid remains and no conflicting postgres pid is live", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "60180\n");
+
+    try {
+      let startCalls = 0;
+      const terminatedPids: number[] = [];
+      const recoveredMessages: string[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls === 1) {
+            throw new Error("startup failed");
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [
+          "The system cannot find the path specified.",
+          "FATAL:  lock file \"postmaster.pid\" already exists",
+          "HINT:  Is another postmaster (PID 60180) running in data directory \"D:/WindowsData/paperclip/instances/default/db\"?",
+        ],
+        findCandidateProcessPids: async () => [],
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          return false;
+        },
+        onRecovered: (message) => recoveredMessages.push(message),
+      });
+
+      expect(startCalls).toBe(2);
+      expect(terminatedPids).toEqual([60180]);
+      expect(recoveredMessages).toHaveLength(1);
+      expect(readEmbeddedPostgresPostmasterPid(postmasterPidFile, { requireRunning: false })).toBeNull();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

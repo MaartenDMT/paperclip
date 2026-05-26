@@ -42,7 +42,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   cto: {
     title: "Engineering: delivery and blocker review",
-    description: "Review active engineering issues, unblock stuck work, ensure PR/build/test evidence exists, and create follow-up tasks for the highest-value technical work.",
+    description: "Review active engineering issues, unblock stuck work, ensure PR/build/test evidence exists, and create follow-up tasks assigned to the right engineering specialist instead of retaining implementation work with the department head.",
     priority: "high",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -50,7 +50,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   pm: {
     title: "Product: scope and acceptance review",
-    description: "Review product goals, clarify acceptance criteria, split ambiguous work, and move ready work into the next execution step.",
+    description: "Review product goals, clarify acceptance criteria, split ambiguous work, and move ready work into owned execution tasks assigned to the right specialist instead of retaining implementation work with the department head.",
     priority: "high",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -58,7 +58,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   cmo: {
     title: "Growth: pipeline and distribution review",
-    description: "Review acquisition experiments, content/distribution tasks, metrics, and follow-ups. Convert insights into owned tasks with clear output expectations.",
+    description: "Review acquisition experiments, content/distribution tasks, metrics, and follow-ups. Convert insights into owned tasks assigned to the right growth specialist with clear output expectations.",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -74,7 +74,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   devops: {
     title: "Operations: reliability and runtime review",
-    description: "Review runtime health, failed runs, deployment blockers, workspace services, and recovery issues. Create concrete remediation tasks for repeated failures.",
+    description: "Review runtime health, failed runs, deployment blockers, workspace services, and recovery issues. Create concrete remediation tasks assigned to the right operator or specialist for repeated failures.",
     priority: "high",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -82,7 +82,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   qa: {
     title: "Quality: verification and regression review",
-    description: "Review recently completed work for missing verification, flaky checks, unresolved review loops, and regression risk. Create focused follow-up issues.",
+    description: "Review recently completed work for missing verification, flaky checks, unresolved review loops, and regression risk. Create focused follow-up issues assigned to the right verifier or implementation owner.",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -90,7 +90,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   security: {
     title: "Security: risk and access review",
-    description: "Review permissions, exposed integrations, secret handling, public endpoints, and recent changes. Create risk-reduction tasks with evidence requirements.",
+    description: "Review permissions, exposed integrations, secret handling, public endpoints, and recent changes. Create risk-reduction tasks assigned to the right owner with evidence requirements.",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -98,7 +98,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   designer: {
     title: "Design: UX feedback and polish review",
-    description: "Review active product surfaces, user-facing copy, accessibility gaps, and polish issues. Convert findings into small owned tasks.",
+    description: "Review active product surfaces, user-facing copy, accessibility gaps, and polish issues. Convert findings into small owned tasks assigned to the right design or implementation specialist.",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
@@ -106,7 +106,7 @@ const DEPARTMENT_ROUTINE_TEMPLATES: Record<string, Omit<DepartmentRoutinePlan, "
   },
   researcher: {
     title: "Research: market and evidence review",
-    description: "Review research questions, competitor changes, customer evidence, and open assumptions. Produce concise findings and create decision-driving follow-ups.",
+    description: "Review research questions, competitor changes, customer evidence, and open assumptions. Produce concise findings and create decision-driving follow-ups assigned to the right owner.",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",

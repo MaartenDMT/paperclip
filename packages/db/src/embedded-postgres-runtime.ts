@@ -82,7 +82,9 @@ export function shouldRecoverEmbeddedPostgresStartError(
   return (
     haystack.includes("pre-existing shared memory block is still in use") ||
     haystack.includes("check if there are any old server processes still running") ||
-    haystack.includes("another server might be running")
+    haystack.includes("another server might be running") ||
+    haystack.includes("lock file \"postmaster.pid\" already exists") ||
+    haystack.includes("is another postmaster")
   );
 }
 
@@ -282,7 +284,13 @@ async function cleanupEmbeddedPostgresCandidates(input: {
   terminateProcessTree: (pid: number) => Promise<boolean>;
   findCandidateProcessPids: (dataDir: string) => Promise<number[]>;
   findRelatedProcessTreePids?: (rootPids: Iterable<number>) => Promise<number[]>;
-}): Promise<{ candidatePids: number[]; terminatedAny: boolean; remainingPids: number[] }> {
+}): Promise<{
+  candidatePids: number[];
+  stalePid: number | null;
+  terminatedAny: boolean;
+  remainingPids: number[];
+  removedPostmasterPidFile: boolean;
+}> {
   const dataDir = path.dirname(input.postmasterPidFile);
   const findRelatedProcessTreePids =
     input.findRelatedProcessTreePids ?? expandWindowsPostgresProcessTreePids;
@@ -302,6 +310,7 @@ async function cleanupEmbeddedPostgresCandidates(input: {
     const terminated = await input.terminateProcessTree(pid);
     terminatedAny ||= terminated;
   }
+  const removedPostmasterPidFile = existsSync(input.postmasterPidFile);
   if (existsSync(input.postmasterPidFile)) {
     rmSync(input.postmasterPidFile, { force: true });
   }
@@ -320,8 +329,10 @@ async function cleanupEmbeddedPostgresCandidates(input: {
 
   return {
     candidatePids: Array.from(candidatePids),
+    stalePid: input.stalePid,
     terminatedAny,
     remainingPids,
+    removedPostmasterPidFile,
   };
 }
 
@@ -360,11 +371,11 @@ export async function startEmbeddedPostgresWithRecovery(input: {
       }
 
       const cleanup = await cleanupEmbeddedPostgresCandidates({
-        postmasterPidFile: input.postmasterPidFile,
         stalePid:
           recoveryAttempt === 0
             ? initialStalePid ?? readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false })
             : readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false }),
+        postmasterPidFile: input.postmasterPidFile,
         findCandidateProcessPids,
         findRelatedProcessTreePids: input.findRelatedProcessTreePids,
         terminateProcessTree,
@@ -372,7 +383,9 @@ export async function startEmbeddedPostgresWithRecovery(input: {
       if (cleanup.candidatePids.length === 0) {
         throw error;
       }
-      if (!cleanup.terminatedAny) {
+      const clearedStalePidFileWithoutLiveConflicts =
+        cleanup.stalePid !== null && cleanup.remainingPids.length === 0;
+      if (!cleanup.terminatedAny && !clearedStalePidFileWithoutLiveConflicts) {
         throw error;
       }
       if (cleanup.remainingPids.length > 0) {

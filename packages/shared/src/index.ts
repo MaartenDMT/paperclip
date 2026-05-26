@@ -489,6 +489,7 @@ export type {
   ManagerOverviewAgent,
   ManagerOverviewAttention,
   ManagerOverviewIssue,
+  ManagerOverviewIssueWorkloadKind,
   ManagerOverviewMeeting,
   ManagerOverviewReport,
   ActivityEvent,

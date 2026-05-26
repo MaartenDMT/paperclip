@@ -83,6 +83,7 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import { buildTimerWakeupAssignmentContext } from "./heartbeat-timer-context.js";
+import { isMeetingWorkflowWakeContext } from "./heartbeat-wake-context.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -199,6 +200,8 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const MANAGEMENT_AGENT_LIVE_RUN_CAP = 4;
+const MANAGEMENT_AGENT_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "pm"]);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -207,6 +210,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
+const PAPERCLIP_PRE_CHECKOUT_STATUS_KEY = "paperclipPreCheckoutStatus";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -341,6 +345,11 @@ interface MaxTurnContinuationPolicy {
   delayMs: number;
 }
 
+const PROVIDER_QUOTA_FAILURE_RE =
+  /\b(quota|usage limit|rate limit|too many requests|429\b|insufficient credits?|credit balance|billing limit)\b/i;
+const PROVIDER_TRANSIENT_FAILURE_RE =
+  /\b(overload(?:ed)?|service unavailable|temporar(?:y|ily) unavailable|try again later|gateway timeout|bad gateway|upstream|econnreset|etimedout|connection reset|network error)\b/i;
+
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
   if (attempt <= 1) return "same_session";
   if (attempt === 2) return "safer_invocation";
@@ -348,14 +357,42 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   return "fresh_session_safer_invocation";
 }
 
+function collectHeartbeatRunFailureStrings(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
+) {
+  const resultJson = parseObject(run.resultJson);
+  const values = [
+    run.error,
+    run.errorCode,
+    resultJson.error,
+    resultJson.errorCode,
+    resultJson.summary,
+    resultJson.stderr,
+    resultJson.stdout,
+    resultJson.message,
+  ];
+
+  return values
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+}
+
 function readHeartbeatRunErrorFamily(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
   const resultJson = parseObject(run.resultJson);
   const persistedFamily = readNonEmptyString(resultJson.errorFamily);
   if (persistedFamily) return persistedFamily;
 
   if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+    return "transient_upstream";
+  }
+
+  const failureText = collectHeartbeatRunFailureStrings(run).join("\n");
+  if (PROVIDER_QUOTA_FAILURE_RE.test(failureText)) {
+    return "provider_quota";
+  }
+  if (PROVIDER_TRANSIENT_FAILURE_RE.test(failureText)) {
     return "transient_upstream";
   }
   return null;
@@ -382,14 +419,30 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
 }
 
 function readTransientRecoveryContractFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
-  return readHeartbeatRunErrorFamily(run) === "transient_upstream"
-    ? {
-        errorFamily: "transient_upstream" as const,
-        retryNotBefore: readTransientRetryNotBeforeFromRun(run),
-      }
-    : null;
+  const errorFamily = readHeartbeatRunErrorFamily(run);
+  if (errorFamily !== "transient_upstream" && errorFamily !== "provider_quota") {
+    return null;
+  }
+  return {
+    errorFamily,
+    retryNotBefore: readTransientRetryNotBeforeFromRun(run),
+    modelProfile: "fallback" as const,
+  };
+}
+
+function chooseScheduledRetryModelProfile(
+  agent: Pick<typeof agents.$inferSelect, "runtimeConfig">,
+  preferred: ModelProfileKey,
+): ModelProfileKey {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const modelProfiles = parseObject(runtimeConfig.modelProfiles);
+  const preferredProfile = parseObject(modelProfiles[preferred]);
+  if (preferredProfile && preferredProfile.enabled !== false) {
+    return preferred;
+  }
+  return "cheap";
 }
 
 function mergeAdapterRecoveryMetadata(input: {
@@ -2421,9 +2474,16 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean; criticallySilentDetachedChild?: boolean }) {
+}, options?: {
+  descendantOnly?: boolean;
+  criticallySilentDetachedChild?: boolean;
+  criticallySilentTrackedChild?: boolean;
+}) {
   if (options?.criticallySilentDetachedChild && run.processPid) {
     return `Process lost -- child pid ${run.processPid} was still alive after the server lost its in-memory handle, but the run was critically silent and the process was terminated`;
+  }
+  if (options?.criticallySilentTrackedChild && run.processPid) {
+    return `Process lost -- child pid ${run.processPid} remained tracked by the server, but the run was critically silent and the process was terminated`;
   }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
@@ -4329,6 +4389,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
         executionState: issues.executionState,
         projectId: issues.projectId,
       })
@@ -4341,6 +4403,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sourceRunId: run.id,
       })
       : null;
+    if (
+      issue &&
+      issue.status === "in_progress" &&
+      issue.assigneeAgentId === run.agentId &&
+      issue.executionRunId === run.id &&
+      readNonEmptyString(context[PAPERCLIP_PRE_CHECKOUT_STATUS_KEY]) === "blocked"
+    ) {
+      await db
+        .update(issues)
+        .set({
+          status: "blocked",
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(issues.id, issue.id),
+          eq(issues.companyId, issue.companyId),
+          eq(issues.executionRunId, run.id),
+        ));
+      return;
+    }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
 
@@ -5627,6 +5713,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    const retryModelProfile =
+      transientRecovery?.modelProfile != null
+        ? chooseScheduledRetryModelProfile(agent, transientRecovery.modelProfile)
+        : "cheap";
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -5682,17 +5772,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
-      ...contextSnapshot,
-      retryOfRunId: run.id,
-      wakeReason,
-      retryReason,
-      ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
-      scheduledRetryAttempt: schedule.attempt,
-      scheduledRetryAt: schedule.dueAt.toISOString(),
-      ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-      ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-    });
+    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint(
+      {
+        ...contextSnapshot,
+        retryOfRunId: run.id,
+        wakeReason,
+        retryReason,
+        ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
+        scheduledRetryAttempt: schedule.attempt,
+        scheduledRetryAt: schedule.dueAt.toISOString(),
+        ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      },
+      retryModelProfile,
+    );
     const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
       : null;
@@ -5853,16 +5946,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: wakeReason,
-          payload: withRecoveryModelProfileHint({
-            ...(issueId ? { issueId } : {}),
-            retryOfRunId: run.id,
-            retryReason,
-            ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
-            scheduledRetryAttempt: schedule.attempt,
-            scheduledRetryAt: schedule.dueAt.toISOString(),
-            ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-            ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-          }),
+          payload: withRecoveryModelProfileHint(
+            {
+              ...(issueId ? { issueId } : {}),
+              retryOfRunId: run.id,
+              retryReason,
+              ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
+              scheduledRetryAttempt: schedule.attempt,
+              scheduledRetryAt: schedule.dueAt.toISOString(),
+              ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+              ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+            },
+            retryModelProfile,
+          ),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -6305,6 +6401,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countExecutionPathRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])));
+    return Number(count ?? 0);
+  }
+
+  function isManagementQueueCappedAgent(agent: typeof agents.$inferSelect) {
+    const role = String(agent.role ?? "").toLowerCase();
+    const title = String(agent.title ?? "").toLowerCase();
+    const name = String(agent.name ?? "").toLowerCase();
+    return MANAGEMENT_AGENT_ROLES.has(role) || title.includes("coordinator") || name.includes("coordinator");
+  }
+
+  async function shouldSkipForManagementQueueCap(agent: typeof agents.$inferSelect) {
+    if (!isManagementQueueCappedAgent(agent)) return false;
+    return await countExecutionPathRunsForAgent(agent.id) >= MANAGEMENT_AGENT_LIVE_RUN_CAP;
+  }
+
   async function countRunningRuns() {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -6562,13 +6678,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      const isMeetingWorkflowWake = isMeetingWorkflowWakeContext(context);
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !isMeetingWorkflowWake) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, {
+        allowNonAssigneeIssueWake: isMeetingWorkflowWake,
+      });
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -6755,6 +6874,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
+    options: { allowNonAssigneeIssueWake?: boolean } = {},
   ): Promise<QueuedRunStaleness> {
     const issue = await db
       .select({
@@ -6812,7 +6932,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !options.allowNonAssigneeIssueWake) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
@@ -6829,10 +6949,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (issue.status === "done" || issue.status === "cancelled") {
       const allowsClosedIssueCommentWake =
         wakeCommentId &&
-        (
-          wakeReason === "issue_reopened_via_comment" ||
-          resumeIntent
-        );
+        issue.status === "done";
       if (!allowsClosedIssueCommentWake) {
         return {
           stale: true,
@@ -7246,8 +7363,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
-
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
@@ -7257,14 +7372,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const silenceStartedAt = run.lastOutputAt ?? run.processStartedAt ?? null;
+      const criticallySilent =
+        silenceStartedAt !== null &&
+        now.getTime() - new Date(silenceStartedAt).getTime() >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+      const allowCriticallySilentTrackedCleanup =
+        tracksLocalChild &&
+        criticallySilent &&
+        Boolean(processPidAlive || processGroupAlive);
+      if ((runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) && !allowCriticallySilentTrackedCleanup) {
+        continue;
+      }
+
       let criticallySilentDetachedCleanup = false;
+      let criticallySilentTrackedCleanup = false;
       if (processPidAlive) {
-        const silenceStartedAt = run.lastOutputAt ?? run.processStartedAt ?? null;
-        const criticallySilent =
-          silenceStartedAt !== null &&
-          now.getTime() - new Date(silenceStartedAt).getTime() >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
         if (criticallySilent) {
-          criticallySilentDetachedCleanup = true;
+          criticallySilentDetachedCleanup = !runningProcesses.has(run.id) && !activeRunExecutions.has(run.id);
+          criticallySilentTrackedCleanup = !criticallySilentDetachedCleanup;
           await terminateHeartbeatRunProcess({
             pid: run.processPid,
             processGroupId: run.processGroupId,
@@ -7287,7 +7412,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
-        if (!criticallySilentDetachedCleanup) continue;
+        if (!(criticallySilentDetachedCleanup || criticallySilentTrackedCleanup)) continue;
       }
 
       let descendantOnlyCleanup = false;
@@ -7314,8 +7439,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !retryCapReached;
       const baseMessage = buildProcessLossMessage(
         run,
-        criticallySilentDetachedCleanup
-          ? { criticallySilentDetachedChild: true }
+        criticallySilentDetachedCleanup || criticallySilentTrackedCleanup
+          ? {
+              criticallySilentDetachedChild: criticallySilentDetachedCleanup,
+              criticallySilentTrackedChild: criticallySilentTrackedCleanup,
+            }
           : descendantOnlyCleanup
             ? { descendantOnly: true }
             : undefined,
@@ -7367,14 +7495,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : `${baseMessage}${retrySuppressionMessage}`,
+          message: shouldRetry
+            ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+            : `${baseMessage}${retrySuppressionMessage}`,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(criticallySilentDetachedCleanup ? { criticallySilentDetachedCleanup: true } : {}),
+          ...(criticallySilentTrackedCleanup ? { criticallySilentTrackedCleanup: true } : {}),
           ...(retryCapReached ? {
             processLossRetryCap: PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP,
             processLossRetryWindowMs: PROCESS_LOSS_RETRY_WINDOW_MS,
@@ -7722,12 +7851,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
     ) {
       try {
+        context[PAPERCLIP_PRE_CHECKOUT_STATUS_KEY] = issueContext.status;
         await issuesSvc.checkout(issueId, agent.id, autoCheckoutExpectedStatusesForWake(context), run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: context,
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id));
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
     const wakeCommentId = deriveCommentId(context, null);
@@ -9232,6 +9369,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        if (deferredCommentIds.length > 0 && issue.status === "cancelled") {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because the issue is cancelled",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         // Deferred comment wakes may only revive completed issues when the
         // original comment carried explicit reopen/resume intent.
         const deferredResumeIntent =
@@ -9244,7 +9393,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // closed work on behalf of generic comments.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
+          issue.status === "done" &&
           deferredRequestedByHuman &&
           (
             deferredWakeReason === "issue_reopened_via_comment" ||
@@ -10153,6 +10302,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "deferred" as const };
         }
 
+        if (await shouldSkipForManagementQueueCap(agent)) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "management_queue_cap_reached",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -10280,6 +10446,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
       return mergedRun;
+    }
+
+    if (await shouldSkipForManagementQueueCap(agent)) {
+      await writeSkippedRequest("management_queue_cap_reached");
+      return null;
     }
 
     const wakeupRequest = await db
