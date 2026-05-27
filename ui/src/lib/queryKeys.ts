@@ -15,8 +15,6 @@ export const queryKeys = {
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
-    managerOverview: (companyId: string, managerAgentId: string) =>
-      ["agents", companyId, "manager-overview", managerAgentId] as const,
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     skills: (id: string) => ["agents", "skills", id] as const,
@@ -31,6 +29,8 @@ export const queryKeys = {
       ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+    managerOverview: (companyId: string, managerAgentId: string) =>
+      ["agents", companyId, "manager-overview", managerAgentId] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -56,8 +56,6 @@ export const queryKeys = {
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
-    workMeetings: (companyId: string) => ["issues", companyId, "work-meetings"] as const,
-    workMeetingHealth: (companyId: string) => ["issues", companyId, "work-meetings", "health"] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     costSummary: (issueId: string, options: { excludeRoot?: boolean } = {}) =>
       options.excludeRoot
@@ -73,15 +71,17 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
+    workMeetings: (companyId: string) => ["issues", companyId, "work-meetings"] as const,
+    workMeetingHealth: (companyId: string) => ["issues", companyId, "work-meetings", "health"] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
       ["routines", companyId, filters?.projectId ?? "__all-projects__"] as const,
-    health: (companyId: string) => ["routines", companyId, "health"] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
+    health: (companyId: string) => ["routines", companyId, "health"] as const,
   },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
@@ -98,6 +98,14 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+  },
+  campaigns: {
+    list: (companyId: string) => ["campaigns", companyId] as const,
+    detail: (id: string) => ["campaigns", "detail", id] as const,
+    phases: (campaignId: string) => ["campaigns", "phases", campaignId] as const,
+    phase: (phaseId: string) => ["campaigns", "phase", phaseId] as const,
+    plan: (phaseId: string) => ["campaigns", "phase", phaseId, "plan"] as const,
+    planReview: (phaseId: string) => ["campaigns", "phase", phaseId, "plan-review"] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
@@ -159,8 +167,7 @@ export const queryKeys = {
   skillUsage: (companyId: string) => ["skill-usage", companyId] as const,
   skillUsageByAgent: (companyId: string) => ["skill-usage", companyId, "agents"] as const,
   skillCoverage: (companyId: string) => ["skill-coverage", companyId] as const,
-  agentSkillActivations: (companyId: string, agentId: string) =>
-    ["skill-activations", companyId, agentId] as const,
+  agentSkillActivations: (companyId: string, agentId: string) => ["agent-skill-activations", companyId, agentId] as const,
   recoveryDismissals: (companyId: string) => ["recovery-dismissals", companyId] as const,
   wakeSuppressions: (companyId: string) => ["wake-suppressions", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>

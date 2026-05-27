@@ -1,9 +1,17 @@
 import type { IssuePriority, IssueStatus } from "../constants.js";
 
-export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "agents", "projects"] as const;
+export const COMPANY_SEARCH_SCOPES = [
+  "all",
+  "issues",
+  "comments",
+  "documents",
+  "agents",
+  "projects",
+  "campaigns",
+] as const;
 export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
 
-export type CompanySearchResultType = "issue" | "agent" | "project";
+export type CompanySearchResultType = "issue" | "agent" | "project" | "campaign";
 
 export interface CompanySearchHighlight {
   start: number;

@@ -64,8 +64,17 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  const Link = ({
+    disableIssueQuicklook: _disableIssueQuicklook,
+    issuePrefetch: _issuePrefetch,
+    ...props
+  }: React.ComponentProps<typeof actual.Link> & {
+    disableIssueQuicklook?: boolean;
+    issuePrefetch?: unknown;
+  }) => <actual.Link {...props} />;
   return {
     ...actual,
+    Link,
     useNavigate: () => navigateMock,
   };
 });
@@ -170,7 +179,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, agent: 0, project: 0 },
+      countsByType: { issue: 1, agent: 0, project: 0, campaign: 0 },
       hasMore: false,
       results: [
         {
@@ -240,7 +249,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, agent: 0, project: 0 },
+      countsByType: { issue: 0, agent: 0, project: 0, campaign: 0 },
       hasMore: false,
       results: [],
     });
@@ -284,7 +293,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, agent: 0, project: 0 },
+      countsByType: { issue: 1, agent: 0, project: 0, campaign: 0 },
       hasMore: false,
       results: [
         {
@@ -331,6 +340,54 @@ describe("Search page", () => {
     });
   });
 
+  it("renders campaign search results", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "magical jobs",
+      normalizedQuery: "magical jobs",
+      scope: "all",
+      limit: 20,
+      offset: 0,
+      countsByType: { issue: 0, agent: 0, project: 0, campaign: 1 },
+      hasMore: false,
+      results: [
+        {
+          id: "campaign-1",
+          type: "campaign",
+          score: 320,
+          title: "Readerbase fantasy world",
+          href: "/PAP/campaigns/campaign-1",
+          matchedFields: ["document"],
+          sourceLabel: "Magical jobs phase plan",
+          snippet: "Catalog magical jobs for the next worldbuilding sprint.",
+          snippets: [
+            {
+              field: "document",
+              label: "Magical jobs phase plan",
+              text: "Catalog magical jobs for the next worldbuilding sprint.",
+              highlights: [{ start: 8, end: 20 }],
+            },
+          ],
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+      ],
+    });
+
+    const { root } = renderSearch("/search?q=magical+jobs", container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Campaigns");
+      expect(container.textContent).toContain("Readerbase fantasy world");
+      expect(container.querySelector('[data-result-type="campaign"]')?.getAttribute("href")).toBe(
+        "/PAP/campaigns/campaign-1",
+      );
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the no-results state with a Search-all action when scope is non-default", async () => {
     searchApiMock.search.mockResolvedValueOnce({
       query: "ghost",
@@ -338,7 +395,7 @@ describe("Search page", () => {
       scope: "comments",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, agent: 0, project: 0 },
+      countsByType: { issue: 0, agent: 0, project: 0, campaign: 0 },
       hasMore: false,
       results: [],
     });

@@ -143,6 +143,16 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Campaign review workspace tables
+
+Campaigns are represented by normal Drizzle/PostgreSQL tables and follow the same migration path as the rest of the control plane:
+
+- `campaigns` stores company-scoped Work section campaign metadata, including optional goal and lead-agent links.
+- `campaign_projects` links campaigns to one or more existing projects. Campaigns are not Projects; the link table lets a campaign span Production, Remotion, Social Media, or any other project domains.
+- `campaign_phases` stores ordered review phases, including plan/result document links, the approval used for phase-plan review, the approved document revision, and the execution issue created after approval.
+
+Phase plans use existing `documents` and `document_revisions`; review uses existing `approvals` with `campaign_phase_plan`; execution uses existing `issues`. This keeps backup, restore, migrations, and company-boundary checks on the standard database path.
+
 ## Plugin database namespaces
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.

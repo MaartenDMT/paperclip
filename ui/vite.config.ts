@@ -1,12 +1,8 @@
-import { createRequire } from "node:module";
-import path from "node:path";
+import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
-
-const require = createRequire(import.meta.url);
-const lexicalEntry = path.join(path.dirname(require.resolve("lexical")), "Lexical.mjs");
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
@@ -23,7 +19,7 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      lexical: lexicalEntry,
+      lexical: path.resolve(__dirname, "../node_modules/lexical/Lexical.mjs"),
     },
   },
   server: {

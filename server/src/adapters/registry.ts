@@ -97,6 +97,16 @@ import {
   modelProfiles as minimaxModelProfiles,
 } from "@paperclipai/adapter-minimax-local";
 import {
+  detectModel as zaiDetectModel,
+  execute as zaiExecute,
+  testEnvironment as zaiTestEnvironment,
+} from "@paperclipai/adapter-zai-local/server";
+import {
+  agentConfigurationDoc as zaiAgentConfigurationDoc,
+  models as zaiModels,
+  modelProfiles as zaiModelProfiles,
+} from "@paperclipai/adapter-zai-local";
+import {
   detectModel as copilotLocalDetectModel,
   execute as copilotLocalExecute,
   testEnvironment as copilotLocalTestEnvironment,
@@ -426,6 +436,23 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: minimaxGetQuotaWindows,
 };
 
+const zaiLocalAdapter: ServerAdapterModule = {
+  type: "zai_local",
+  execute: zaiExecute,
+  testEnvironment: zaiTestEnvironment,
+  sessionCodec: openCodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("zai_local") ?? undefined,
+  models: zaiModels,
+  modelProfiles: zaiModelProfiles,
+  detectModel: zaiDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
+  agentConfigurationDoc: zaiAgentConfigurationDoc,
+};
+
 const copilotLocalAdapter: ServerAdapterModule = {
   type: "copilot_local",
   execute: copilotLocalExecute,
@@ -579,6 +606,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     kimiLocalAdapter,
     minimaxLocalAdapter,
+    zaiLocalAdapter,
     copilotLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,

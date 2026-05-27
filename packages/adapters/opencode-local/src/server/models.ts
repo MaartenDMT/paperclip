@@ -18,6 +18,7 @@ const DISK_CACHE_SCHEMA_VERSION = 1;
 const DEFAULT_GATEWAY_PREFIXES = [
   "openrouter/",
   "manifest/",
+  "zai-coding-plan/",
 ] as const;
 
 type DiskCacheEntry = { expiresAt: number; models: AdapterModel[] };

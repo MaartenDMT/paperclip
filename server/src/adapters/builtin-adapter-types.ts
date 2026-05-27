@@ -10,6 +10,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "gemini_local",
   "kimi_local",
   "minimax_local",
+  "zai_local",
   "copilot_local",
   "openclaw_gateway",
   "opencode_local",

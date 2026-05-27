@@ -3274,6 +3274,20 @@ export function agentRoutes(
     finishTiming({ rowCount: runs.length });
     res.json(runs);
   });
+  router.get("/companies/:companyId/agents/:agentId/runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const runs = await heartbeat.list(companyId, agentId, limit);
+    res.json(runs);
+  });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -3388,14 +3402,18 @@ export function agentRoutes(
     );
   }
 
-  async function respondWithHeartbeatRunLog(req: Request, res: Response, runId: string) {
+  async function respondWithHeartbeatRunLog(req: Request, res: Response, runId: string, expectedCompanyId?: string) {
     const finishTiming = startRouteTiming("GET /heartbeat-runs/:runId/log", { runId });
     const run = await heartbeat.getRunLogAccess(runId);
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    if (expectedCompanyId && run.companyId !== expectedCompanyId) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, expectedCompanyId ?? run.companyId);
 
     const metadataOnly = req.query.metadataOnly === "true" || req.query.metadataOnly === "1";
     if (metadataOnly) {
@@ -3539,6 +3557,11 @@ export function agentRoutes(
 
   router.get("/runs/:runId/logs", async (req, res) => {
     await respondWithHeartbeatRunLog(req, res, req.params.runId as string);
+  });
+  router.get("/companies/:companyId/runs/:runId/logs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await respondWithHeartbeatRunLog(req, res, req.params.runId as string, companyId);
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {

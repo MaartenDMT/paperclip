@@ -29,6 +29,7 @@ import {
   SquarePen,
   Plus,
   Search,
+  Megaphone,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
@@ -206,6 +207,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
             Issues
+          </CommandItem>
+          <CommandItem onSelect={() => go("/campaigns")}>
+            <Megaphone className="mr-2 h-4 w-4" />
+            Campaigns
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />

@@ -88,6 +88,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local MiniMax agent",
     icon: Terminal,
   },
+  zai_local: {
+    label: "Z.AI CLI",
+    description: "Local Z.AI coding agent",
+    icon: Terminal,
+  },
   copilot_local: {
     label: "GitHub Copilot",
     description: "Local Copilot-compatible agent",

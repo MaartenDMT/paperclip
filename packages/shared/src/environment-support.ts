@@ -39,6 +39,7 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "minimax_local",
   "opencode_local",
   "pi_local",
+  "zai_local",
 ]);
 
 export function adapterSupportsRemoteManagedEnvironments(adapterType: string): boolean {

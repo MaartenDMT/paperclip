@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, issues, projects } from "@paperclipai/db";
+import { agents, campaigns, companies, issues, projects } from "@paperclipai/db";
 import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
@@ -55,6 +55,19 @@ type SimpleSearchRow = {
   description: string | null;
   role?: string | null;
   updatedAt: Date;
+};
+
+type CampaignSearchRow = {
+  id: string;
+  title: string;
+  description: string | null;
+  phaseTitle: string | null;
+  phaseObjective: string | null;
+  documentTitle: string | null;
+  documentSnippet: string | null;
+  updatedAt: Date;
+  score: number | string;
+  matchedFields: string[] | null;
 };
 
 function normalizeQuery(query: string) {
@@ -188,7 +201,7 @@ function matchTerms(normalizedQuery: string, tokens: string[]) {
 }
 
 function makeCounts(results: CompanySearchResult[]) {
-  const counts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0 };
+  const counts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0, campaign: 0 };
   for (const result of results) counts[result.type] += 1;
   return counts;
 }
@@ -203,6 +216,10 @@ function scopeIncludesAgents(scope: CompanySearchScope) {
 
 function scopeIncludesProjects(scope: CompanySearchScope) {
   return scope === "all" || scope === "projects";
+}
+
+function scopeIncludesCampaigns(scope: CompanySearchScope) {
+  return scope === "all" || scope === "campaigns" || scope === "documents";
 }
 
 function issueSearchCondition(scope: CompanySearchScope, input: {
@@ -276,6 +293,31 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
   };
 }
 
+function campaignResult(row: CampaignSearchRow, prefix: string, normalizedQuery: string, tokens: string[]): CompanySearchResult {
+  const terms = matchTerms(normalizedQuery, tokens);
+  const matchedFields = new Set(row.matchedFields ?? []);
+  const snippets = [
+    matchedFields.has("title") ? createSnippet("title", "Campaign", row.title, terms) : null,
+    matchedFields.has("description") ? createSnippet("description", "Objective", row.description, terms) : null,
+    matchedFields.has("phase") ? createSnippet("phase", "Phase", row.phaseTitle ?? row.phaseObjective, terms) : null,
+    matchedFields.has("document") ? createSnippet("document", row.documentTitle || "Campaign plan", row.documentSnippet, terms) : null,
+  ].filter((snippet): snippet is CompanySearchSnippet => Boolean(snippet)).slice(0, 2);
+
+  return {
+    id: row.id,
+    type: "campaign",
+    score: Number(row.score),
+    title: row.title,
+    href: `/${prefix}/campaigns/${encodeURIComponent(row.id)}`,
+    matchedFields: row.matchedFields ?? [],
+    sourceLabel: snippets[0]?.label ?? "Campaign",
+    snippet: snippets[0]?.text ?? null,
+    snippets,
+    updatedAt: iso(row.updatedAt),
+    previewImageUrl: extractFirstImageUrl(row.description) ?? extractFirstImageUrl(row.documentSnippet),
+  };
+}
+
 function scoreSimpleRow(row: SimpleSearchRow, normalizedQuery: string, tokens: string[]) {
   const haystack = [row.title, row.description, row.role].filter(Boolean).join(" ").toLowerCase();
   let score = haystack.includes(normalizedQuery) ? 90 : 0;
@@ -306,7 +348,7 @@ export function companySearchService(db: Db) {
       const scope = query.scope;
       const limit = query.limit;
       const offset = query.offset;
-      const emptyCounts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0 };
+      const emptyCounts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0, campaign: 0 };
       if (normalizedQuery.length === 0) {
         return {
           query: query.q,
@@ -639,8 +681,215 @@ export function companySearchService(db: Db) {
           .limit(fetchLimit)
         : [];
 
+      const campaignTitlePhraseMatch = sql<boolean>`lower(${campaigns.title}) LIKE ${containsPattern} ESCAPE '\\'`;
+      const campaignTitleStartsWith = sql<boolean>`lower(${campaigns.title}) LIKE ${startsWithPattern} ESCAPE '\\'`;
+      const campaignObjectivePhraseMatch = sql<boolean>`lower(coalesce(${campaigns.objective}, '')) LIKE ${containsPattern} ESCAPE '\\'`;
+      const campaignTitleTokenMatch = tokenMatchExpression(sql`${campaigns.title}`, tokenArray);
+      const campaignObjectiveTokenMatch = tokenMatchExpression(sql`${campaigns.objective}`, tokenArray);
+      const campaignPhaseMatch = sql<boolean>`
+        EXISTS (
+          SELECT 1
+          FROM campaign_phases search_campaign_phases
+          WHERE search_campaign_phases.company_id = ${companyId}
+            AND search_campaign_phases.campaign_id = campaigns.id
+            AND (
+              lower(search_campaign_phases.title) LIKE ${containsPattern} ESCAPE '\\'
+              OR lower(coalesce(search_campaign_phases.objective, '')) LIKE ${containsPattern} ESCAPE '\\'
+              OR ${tokenMatchExpression(sql`search_campaign_phases.title`, tokenArray)}
+              OR ${tokenMatchExpression(sql`search_campaign_phases.objective`, tokenArray)}
+            )
+        )
+      `;
+      const campaignDocumentMatch = sql<boolean>`
+        EXISTS (
+          SELECT 1
+          FROM campaign_phases search_campaign_document_phases
+          INNER JOIN documents search_campaign_documents
+            ON search_campaign_documents.id IN (
+              search_campaign_document_phases.plan_document_id,
+              search_campaign_document_phases.result_document_id
+            )
+          WHERE search_campaign_document_phases.company_id = ${companyId}
+            AND search_campaign_documents.company_id = ${companyId}
+            AND search_campaign_document_phases.campaign_id = campaigns.id
+            AND (
+              lower(coalesce(search_campaign_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
+              OR lower(search_campaign_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
+              OR ${tokenMatchExpression(sql`search_campaign_documents.title`, tokenArray)}
+              OR ${tokenMatchExpression(sql`search_campaign_documents.latest_body`, tokenArray)}
+            )
+        )
+      `;
+      const campaignTextMatch = sql<boolean>`
+        ${campaignTitlePhraseMatch}
+        OR ${campaignObjectivePhraseMatch}
+        OR ${campaignTitleTokenMatch}
+        OR ${campaignObjectiveTokenMatch}
+        OR ${campaignPhaseMatch}
+      `;
+      const campaignCondition = scope === "documents"
+        ? campaignDocumentMatch
+        : sql<boolean>`(${campaignTextMatch} OR ${campaignDocumentMatch})`;
+      const campaignTokenCoverage = sql<number>`
+        (
+          SELECT count(*)::int
+          FROM unnest(${tokenArray}) AS search_token(value)
+          WHERE lower(${campaigns.title}) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+            OR lower(coalesce(${campaigns.objective}, '')) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1
+              FROM campaign_phases coverage_campaign_phases
+              WHERE coverage_campaign_phases.company_id = ${companyId}
+                AND coverage_campaign_phases.campaign_id = campaigns.id
+                AND (
+                  lower(coverage_campaign_phases.title) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+                  OR lower(coalesce(coverage_campaign_phases.objective, '')) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+                )
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM campaign_phases coverage_campaign_document_phases
+              INNER JOIN documents coverage_campaign_documents
+                ON coverage_campaign_documents.id IN (
+                  coverage_campaign_document_phases.plan_document_id,
+                  coverage_campaign_document_phases.result_document_id
+                )
+              WHERE coverage_campaign_document_phases.company_id = ${companyId}
+                AND coverage_campaign_documents.company_id = ${companyId}
+                AND coverage_campaign_document_phases.campaign_id = campaigns.id
+                AND (
+                  lower(coalesce(coverage_campaign_documents.title, '')) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+                  OR lower(coverage_campaign_documents.latest_body) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+                )
+            )
+        )
+      `;
+      const campaignAllTokensMatch = tokenCount > 0
+        ? sql<boolean>`${campaignTokenCoverage} = ${tokenCount}`
+        : noMatchSql();
+      const campaignScore = sql<number>`
+        (
+          CASE WHEN lower(${campaigns.title}) = ${normalizedQuery} THEN 900 ELSE 0 END
+          + CASE WHEN ${campaignTitleStartsWith} THEN 550 ELSE 0 END
+          + CASE WHEN ${campaignTitlePhraseMatch} THEN 350 ELSE 0 END
+          + CASE WHEN ${campaignDocumentMatch} THEN 180 ELSE 0 END
+          + CASE WHEN ${campaignPhaseMatch} THEN 160 ELSE 0 END
+          + CASE WHEN ${campaignObjectivePhraseMatch} THEN 120 ELSE 0 END
+          + CASE WHEN ${campaignAllTokensMatch} THEN 240 ELSE 0 END
+          + (${campaignTokenCoverage} * 60)
+          + CASE ${campaigns.status} WHEN 'archived' THEN -30 WHEN 'cancelled' THEN -20 ELSE 20 END
+        )::double precision
+      `;
+      const campaignMatchedFields = sql<string[]>`
+        array_remove(ARRAY[
+          CASE WHEN ${campaignTitlePhraseMatch} OR ${campaignTitleTokenMatch} THEN 'title' END,
+          CASE WHEN ${campaignObjectivePhraseMatch} OR ${campaignObjectiveTokenMatch} THEN 'description' END,
+          CASE WHEN ${campaignPhaseMatch} THEN 'phase' END,
+          CASE WHEN ${campaignDocumentMatch} THEN 'document' END
+        ], NULL)::text[]
+      `;
+      const campaignRows = scopeIncludesCampaigns(scope)
+        ? await db
+          .select({
+            id: campaigns.id,
+            title: campaigns.title,
+            description: campaigns.objective,
+            phaseTitle: sql<string | null>`
+              (
+                SELECT search_campaign_phases.title
+                FROM campaign_phases search_campaign_phases
+                WHERE search_campaign_phases.company_id = ${companyId}
+                  AND search_campaign_phases.campaign_id = campaigns.id
+                  AND (
+                    lower(search_campaign_phases.title) LIKE ${containsPattern} ESCAPE '\\'
+                    OR lower(coalesce(search_campaign_phases.objective, '')) LIKE ${containsPattern} ESCAPE '\\'
+                    OR ${tokenMatchExpression(sql`search_campaign_phases.title`, tokenArray)}
+                    OR ${tokenMatchExpression(sql`search_campaign_phases.objective`, tokenArray)}
+                  )
+                ORDER BY search_campaign_phases.sequence_number, search_campaign_phases.created_at
+                LIMIT 1
+              )
+            `,
+            phaseObjective: sql<string | null>`
+              (
+                SELECT search_campaign_phases.objective
+                FROM campaign_phases search_campaign_phases
+                WHERE search_campaign_phases.company_id = ${companyId}
+                  AND search_campaign_phases.campaign_id = campaigns.id
+                  AND (
+                    lower(search_campaign_phases.title) LIKE ${containsPattern} ESCAPE '\\'
+                    OR lower(coalesce(search_campaign_phases.objective, '')) LIKE ${containsPattern} ESCAPE '\\'
+                    OR ${tokenMatchExpression(sql`search_campaign_phases.title`, tokenArray)}
+                    OR ${tokenMatchExpression(sql`search_campaign_phases.objective`, tokenArray)}
+                  )
+                ORDER BY search_campaign_phases.sequence_number, search_campaign_phases.created_at
+                LIMIT 1
+              )
+            `,
+            documentTitle: sql<string | null>`
+              (
+                SELECT search_campaign_documents.title
+                FROM campaign_phases search_campaign_document_phases
+                INNER JOIN documents search_campaign_documents
+                  ON search_campaign_documents.id IN (
+                    search_campaign_document_phases.plan_document_id,
+                    search_campaign_document_phases.result_document_id
+                  )
+                WHERE search_campaign_document_phases.company_id = ${companyId}
+                  AND search_campaign_documents.company_id = ${companyId}
+                  AND search_campaign_document_phases.campaign_id = campaigns.id
+                  AND (
+                    lower(coalesce(search_campaign_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
+                    OR lower(search_campaign_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
+                    OR ${tokenMatchExpression(sql`search_campaign_documents.title`, tokenArray)}
+                    OR ${tokenMatchExpression(sql`search_campaign_documents.latest_body`, tokenArray)}
+                  )
+                ORDER BY search_campaign_documents.updated_at DESC, search_campaign_documents.id DESC
+                LIMIT 1
+              )
+            `,
+            documentSnippet: sql<string | null>`
+              (
+                SELECT search_campaign_documents.latest_body
+                FROM campaign_phases search_campaign_document_phases
+                INNER JOIN documents search_campaign_documents
+                  ON search_campaign_documents.id IN (
+                    search_campaign_document_phases.plan_document_id,
+                    search_campaign_document_phases.result_document_id
+                  )
+                WHERE search_campaign_document_phases.company_id = ${companyId}
+                  AND search_campaign_documents.company_id = ${companyId}
+                  AND search_campaign_document_phases.campaign_id = campaigns.id
+                  AND (
+                    lower(coalesce(search_campaign_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
+                    OR lower(search_campaign_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
+                    OR ${tokenMatchExpression(sql`search_campaign_documents.title`, tokenArray)}
+                    OR ${tokenMatchExpression(sql`search_campaign_documents.latest_body`, tokenArray)}
+                  )
+                ORDER BY
+                  CASE
+                    WHEN lower(coalesce(search_campaign_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\' THEN 0
+                    WHEN lower(search_campaign_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\' THEN 1
+                    ELSE 2
+                  END,
+                  search_campaign_documents.updated_at DESC,
+                  search_campaign_documents.id DESC
+                LIMIT 1
+              )
+            `,
+            updatedAt: campaigns.updatedAt,
+            score: campaignScore,
+            matchedFields: campaignMatchedFields,
+          })
+          .from(campaigns)
+          .where(and(eq(campaigns.companyId, companyId), isNull(campaigns.archivedAt), campaignCondition))
+          .orderBy(desc(campaignScore), desc(campaigns.updatedAt), desc(campaigns.id))
+          .limit(fetchLimit)
+        : [];
+
       const results: CompanySearchResult[] = [
         ...(issueRows as IssueSearchRow[]).map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
+        ...(campaignRows as CampaignSearchRow[]).map((row) => campaignResult(row, prefix, normalizedQuery, tokens)),
         ...(agentRows as SimpleSearchRow[]).map((row) => {
           const terms = matchTerms(normalizedQuery, tokens);
           const snippet = createSnippet("capabilities", "Agent", row.description ?? row.role ?? row.title, terms);

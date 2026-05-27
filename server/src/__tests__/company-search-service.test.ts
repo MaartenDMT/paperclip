@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  campaignPhases,
+  campaigns,
   companies,
   createDb,
   documents,
@@ -68,6 +70,8 @@ describeEmbeddedPostgres("companySearchService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(campaignPhases);
+    await db.delete(campaigns);
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
@@ -129,6 +133,19 @@ describeEmbeddedPostgres("companySearchService", () => {
       companyId,
       name: values.name ?? "Search project",
       description: values.description ?? null,
+      ...values,
+    });
+    return id;
+  }
+
+  async function createCampaign(companyId: string, values: Partial<typeof campaigns.$inferInsert> = {}) {
+    const id = values.id ?? randomUUID();
+    await db.insert(campaigns).values({
+      id,
+      companyId,
+      title: values.title ?? "Search campaign",
+      objective: values.objective ?? null,
+      status: values.status ?? "active",
       ...values,
     });
     return id;
@@ -200,6 +217,40 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.results[0]?.matchedFields).toContain("document");
     expect(result.results[0]?.href).toContain("#document-plan");
     expect(result.results[0]?.snippet).toMatch(/parser/i);
+  });
+
+  it("searches campaign phase documents and links to the campaign", async () => {
+    const companyId = await createCompany();
+    const campaignId = await createCampaign(companyId, {
+      title: "Readerbase fantasy world",
+      objective: "Coordinate the launch campaign.",
+    });
+    const documentId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Magical jobs phase plan",
+      latestBody: "Catalog magical jobs and publishing milestones for the next worldbuilding sprint.",
+      format: "markdown",
+    });
+    await db.insert(campaignPhases).values({
+      id: randomUUID(),
+      companyId,
+      campaignId,
+      sequenceNumber: 1,
+      title: "Magical jobs",
+      status: "in_review",
+      planDocumentId: documentId,
+    });
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "worldbuilding", scope: "documents" }));
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.id).toBe(campaignId);
+    expect(result.results[0]?.type).toBe("campaign");
+    expect(result.results[0]?.matchedFields).toContain("document");
+    expect(result.results[0]?.href).toContain(`/campaigns/${campaignId}`);
+    expect(result.countsByType).toEqual({ issue: 0, agent: 0, project: 0, campaign: 1 });
   });
 
   it("excludes hidden issues and other companies' data", async () => {
@@ -387,7 +438,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "needle", limit: "2", offset: "2" }));
 
     expect(result.results.map((row) => row.id)).toEqual([agentIds[2], projectIds[0]]);
-    expect(result.countsByType).toEqual({ issue: 0, agent: 3, project: 3 });
+    expect(result.countsByType).toEqual({ issue: 0, agent: 3, project: 3, campaign: 0 });
     expect(result.hasMore).toBe(true);
   });
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { models } from "../index.js";
+import { modelProfiles, models } from "../index.js";
 import { copilotLocalDefinition, detectModel } from "./index.js";
 
 describe("copilot_local server adapter", () => {
@@ -60,6 +60,15 @@ describe("copilot_local server adapter", () => {
       "gpt-5.4-mini",
       "gpt-5-mini",
       "gpt-4.1",
+    ]);
+  });
+
+  it("declares Copilot GPT-5 mini as the cheap profile default", () => {
+    expect(modelProfiles).toEqual([
+      expect.objectContaining({
+        key: "cheap",
+        adapterConfig: { model: "gpt-5-mini" },
+      }),
     ]);
   });
 });

@@ -1,4 +1,5 @@
 export { companyService } from "./companies.js";
+export { campaignService } from "./campaigns.js";
 export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
@@ -21,6 +22,7 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { meetingService } from "./meetings.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
@@ -30,12 +32,6 @@ export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
-export { meetingService } from "./meetings.js";
-export {
-  memoryMaintenanceRoutineService,
-  MEMORY_MAINTENANCE_ROUTINE_MARKER,
-  MEMORY_MAINTENANCE_ROUTINE_TITLE,
-} from "./memory-maintenance-routine.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
@@ -61,3 +57,5 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+
+export { memoryMaintenanceRoutineService } from "./memory-maintenance-routine.js";

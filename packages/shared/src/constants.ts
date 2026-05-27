@@ -35,11 +35,8 @@ export const AGENT_ADAPTER_TYPES = [
   "codex_local",
   "cursor_cloud",
   "gemini_local",
-  "kimi_local",
-  "minimax_local",
   "opencode_local",
   "pi_local",
-  "copilot_local",
   "cursor",
   "openclaw_gateway",
 ] as const;
@@ -308,6 +305,20 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const CAMPAIGN_STATUSES = ["draft", "active", "paused", "completed", "cancelled", "archived"] as const;
+export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
+
+export const CAMPAIGN_PHASE_STATUSES = [
+  "planning",
+  "in_review",
+  "revision_requested",
+  "approved",
+  "executing",
+  "completed",
+  "cancelled",
+] as const;
+export type CampaignPhaseStatus = (typeof CAMPAIGN_PHASE_STATUSES)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -380,6 +391,7 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  "campaign_phase_plan",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 

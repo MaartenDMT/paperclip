@@ -12,6 +12,8 @@ import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
 import { Workspaces } from "./pages/Workspaces";
+import { Campaigns } from "./pages/Campaigns";
+import { CampaignDetail } from "./pages/CampaignDetail";
 import { Issues } from "./pages/Issues";
 import { WorkMeetings } from "./pages/WorkMeetings";
 import { Search } from "./pages/Search";
@@ -100,6 +102,8 @@ function boardRoutes() {
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
       <Route path="workspaces" element={<Workspaces />} />
+      <Route path="campaigns" element={<Campaigns />} />
+      <Route path="campaigns/:campaignId" element={<CampaignDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="work-meetings" element={<WorkMeetings />} />
       <Route path="search" element={<Search />} />
@@ -317,6 +321,8 @@ export function App() {
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+          <Route path="campaigns" element={<UnprefixedBoardRedirect />} />
+          <Route path="campaigns/:campaignId" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />

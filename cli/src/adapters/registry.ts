@@ -7,6 +7,7 @@ import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printKimiStreamEvent } from "@paperclipai/adapter-kimi-local/cli";
 import { printMiniMaxStreamEvent } from "@paperclipai/adapter-minimax-local/cli";
+import { printZaiStreamEvent } from "@paperclipai/adapter-zai-local/cli";
 import { printCopilotLocalStreamEvent } from "@paperclipai/adapter-copilot-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
@@ -64,6 +65,11 @@ const minimaxLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printMiniMaxStreamEvent,
 };
 
+const zaiLocalCLIAdapter: CLIAdapterModule = {
+  type: "zai_local",
+  formatStdoutEvent: printZaiStreamEvent,
+};
+
 const copilotLocalCLIAdapter: CLIAdapterModule = {
   type: "copilot_local",
   formatStdoutEvent: printCopilotLocalStreamEvent,
@@ -86,6 +92,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     geminiLocalCLIAdapter,
     kimiLocalCLIAdapter,
     minimaxLocalCLIAdapter,
+    zaiLocalCLIAdapter,
     copilotLocalCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,

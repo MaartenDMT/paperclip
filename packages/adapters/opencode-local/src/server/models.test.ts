@@ -63,6 +63,7 @@ describe("openCode models", () => {
     for (const model of [
       "openrouter/anthropic/claude-sonnet-4",
       "manifest/openai/gpt-4o-mini",
+      "zai-coding-plan/glm-4.7",
     ]) {
       await expect(
         ensureOpenCodeModelConfiguredAndAvailable({ model }),
@@ -73,7 +74,7 @@ describe("openCode models", () => {
   it("recognizes default and operator-configured gateway prefixes", async () => {
     expect(isExternalGatewayModelId("manifest/openai/gpt-4o-mini")).toBe(true);
     expect(isExternalGatewayModelId("openrouter/anthropic/claude-sonnet-4")).toBe(true);
-    expect(isExternalGatewayModelId("zai-coding-plan/glm-4.7")).toBe(false);
+    expect(isExternalGatewayModelId("zai-coding-plan/glm-4.7")).toBe(true);
     expect(isExternalGatewayModelId("zai/glm-4.7")).toBe(false);
     expect(isExternalGatewayModelId("openai/gpt-5")).toBe(false);
 

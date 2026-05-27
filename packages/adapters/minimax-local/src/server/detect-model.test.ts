@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { models } from "../index.js";
+import { modelProfiles, models } from "../index.js";
 import { detectModel, mapMiniMaxQuotaShowOutput, normalizeMiniMaxOpenCodeConfig } from "./index.js";
 
 describe("minimax_local server adapter", () => {
@@ -25,6 +25,18 @@ describe("minimax_local server adapter", () => {
       "minimax/MiniMax-M2.7",
       "minimax/MiniMax-M2.5",
       "minimax/MiniMax-M2.1",
+    ]);
+  });
+
+  it("declares MiniMax M2.1 as the cheap profile default", () => {
+    expect(modelProfiles).toEqual([
+      expect.objectContaining({
+        key: "cheap",
+        adapterConfig: { model: "minimax/MiniMax-M2.1" },
+      }),
+      expect.objectContaining({
+        key: "fallback",
+      }),
     ]);
   });
 

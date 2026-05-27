@@ -14,6 +14,7 @@ import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
+import { campaignRoutes } from "./routes/campaigns.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
@@ -60,7 +61,6 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
-import { createLegacyApiCompatibilityMiddleware } from "./legacy-api-compat.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -143,7 +143,6 @@ export async function createApp(
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
-  logger.info({ uiMode: opts.uiMode }, "Initializing Paperclip app");
   const app = express();
 
   app.use(express.json({
@@ -201,6 +200,7 @@ export async function createApp(
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
+  api.use(campaignRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
@@ -229,7 +229,6 @@ export async function createApp(
   registerCoreLifecycleHooks();
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
-  const resolvedLocalPluginDir = opts.localPluginDir ?? getDefaultLocalPluginDir();
   const scheduler = createPluginJobScheduler({
     db,
     jobStore,
@@ -251,7 +250,7 @@ export async function createApp(
   const loader = pluginLoader(
     db,
     {
-      localPluginDir: resolvedLocalPluginDir,
+      localPluginDir: opts.localPluginDir ?? getDefaultLocalPluginDir(),
       migrationDb: opts.pluginMigrationDb,
     },
     {
@@ -304,20 +303,12 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
-  const legacyApiCompat = Router();
-  legacyApiCompat.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
-  legacyApiCompat.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
-  legacyApiCompat.use(activityRoutes(db));
-  app.use(createLegacyApiCompatibilityMiddleware(legacyApiCompat));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
   app.use(pluginUiStaticRoutes(db, {
-    localPluginDir: resolvedLocalPluginDir,
+    localPluginDir: opts.localPluginDir ?? getDefaultLocalPluginDir(),
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -380,10 +371,6 @@ export async function createApp(
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
-    logger.info(
-      { uiRoot, hmrPort },
-      "Starting Vite dev middleware (may take a while on NTFS workspaces)",
-    );
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
@@ -403,7 +390,6 @@ export async function createApp(
       uiRoot,
       brandHtml: applyUiBranding,
     });
-    logger.info("Vite dev middleware ready");
     const renderViteHtml = viteHtmlRenderer;
 
     if (fs.existsSync(publicUiRoot)) {
@@ -425,7 +411,6 @@ export async function createApp(
   }
 
   app.use(errorHandler);
-  logger.info("Paperclip app routes ready");
 
   jobCoordinator.start();
   scheduler.start();

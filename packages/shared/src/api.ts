@@ -5,6 +5,7 @@ export const API = {
   companies: `${API_PREFIX}/companies`,
   agents: `${API_PREFIX}/agents`,
   projects: `${API_PREFIX}/projects`,
+  campaigns: `${API_PREFIX}/campaigns`,
   issues: `${API_PREFIX}/issues`,
   issueTreeControl: `${API_PREFIX}/issues/:issueId/tree-control`,
   issueTreeHolds: `${API_PREFIX}/issues/:issueId/tree-holds`,

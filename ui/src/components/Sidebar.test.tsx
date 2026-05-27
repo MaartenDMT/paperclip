@@ -161,4 +161,32 @@ describe("Sidebar", () => {
       root.unmount();
     });
   });
+
+  it("shows Campaigns in the Work navigation", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Campaigns");
+    expect(link?.getAttribute("href")).toBe("/campaigns");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps Meetings, Quotas, and Operations in navigation", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const links = new Map(
+      [...container.querySelectorAll("a")].map((anchor) => [anchor.textContent?.trim(), anchor.getAttribute("href")]),
+    );
+    expect(links.get("Meetings")).toBe("/work-meetings");
+    expect(links.get("Quotas")).toBe("/provider-quotas");
+    expect(links.get("Operations")).toBe("/operations");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

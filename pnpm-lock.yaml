@@ -76,6 +76,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@paperclipai/adapter-zai-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/zai-local
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
@@ -316,6 +319,22 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/zai-local:
+    dependencies:
+      '@paperclipai/adapter-opencode-local':
+        specifier: workspace:*
+        version: link:../opencode-local
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
@@ -621,6 +640,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@paperclipai/adapter-zai-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/zai-local
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
@@ -793,6 +815,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@paperclipai/adapter-zai-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/zai-local
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../packages/shared

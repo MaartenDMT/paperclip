@@ -151,7 +151,7 @@ export interface AdapterModel {
   label: string;
 }
 
-export type AdapterModelProfileKey = "cheap";
+export type AdapterModelProfileKey = "cheap" | "fallback";
 
 export interface AdapterModelProfileDefinition {
   key: AdapterModelProfileKey;

@@ -12,7 +12,21 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "kimi-k2-0711-preview", label: "kimi-k2-0711-preview" },
 ];
 
-export const modelProfiles: AdapterModelProfileDefinition[] = [];
+export const modelProfiles: AdapterModelProfileDefinition[] = [
+  {
+    key: "fallback",
+    label: "Codex fallback",
+    description: "Retry quota or transient provider failures through Codex on GPT-5.4 Mini.",
+    adapterConfig: {
+      adapterType: "codex_local",
+      command: "codex",
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      modelReasoningEffort: "low",
+    },
+    source: "adapter_default",
+  },
+];
 
 export const agentConfigurationDoc = `# kimi_local agent configuration
 
@@ -32,4 +46,5 @@ Notes:
 - Default execution uses Kimi's print mode with stream JSON output.
 - Model detection checks KIMI_MODEL, KIMI_MODEL_NAME, MOONSHOT_MODEL, and common Kimi config files.
 - Install command for sandbox environments follows Kimi's official installer: uv tool install kimi-cli when uv is present, otherwise https://code.kimi.com/install.sh.
+- The adapter ships a Codex fallback profile for quota and transient provider failures.
 `;

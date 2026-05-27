@@ -148,6 +148,29 @@ export {
 } from "./project.js";
 
 export {
+  createCampaignSchema,
+  updateCampaignSchema,
+  replaceCampaignProjectsSchema,
+  createCampaignPhaseSchema,
+  updateCampaignPhaseSchema,
+  linkCampaignPhaseExecutionIssueSchema,
+  upsertCampaignPhasePlanSchema,
+  submitCampaignPhasePlanForReviewSchema,
+  approveCampaignPhasePlanSchema,
+  completeCampaignPhaseSchema,
+  type CreateCampaign,
+  type UpdateCampaign,
+  type ReplaceCampaignProjects,
+  type CreateCampaignPhase,
+  type UpdateCampaignPhase,
+  type LinkCampaignPhaseExecutionIssue,
+  type UpsertCampaignPhasePlan,
+  type SubmitCampaignPhasePlanForReview,
+  type ApproveCampaignPhasePlan,
+  type CompleteCampaignPhase,
+} from "./campaign.js";
+
+export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,

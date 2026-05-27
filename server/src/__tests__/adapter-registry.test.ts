@@ -202,6 +202,19 @@ describe("server adapter registry", () => {
     expect(adapter!.getRuntimeCommandSpec?.({ command: "mmx" }).command).toBe("opencode");
   });
 
+  it("built-in zai_local adapter executes through OpenCode runtime support", () => {
+    const adapter = findActiveServerAdapter("zai_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.sessionCodec).toBeDefined();
+    expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
+    expect(adapter!.getRuntimeCommandSpec?.({}).command).toBe("opencode");
+    expect(adapter!.models?.map((model) => model.id)).toEqual([
+      "zai-coding-plan/glm-4.7",
+      "zai-coding-plan/glm-4.5",
+      "zai-coding-plan/glm-4.5-air",
+    ]);
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({
@@ -228,6 +241,44 @@ describe("server adapter registry", () => {
       expect.objectContaining({
         key: "cheap",
         adapterConfig: expect.objectContaining({ model: "github-copilot/gpt-5-mini" }),
+        source: "adapter_default",
+      }),
+    ]);
+    await expect(listAdapterModelProfiles("kimi_local")).resolves.toEqual([
+      expect.objectContaining({
+        key: "fallback",
+        adapterConfig: expect.objectContaining({ adapterType: "codex_local", model: "gpt-5.4-mini" }),
+        source: "adapter_default",
+      }),
+    ]);
+    await expect(listAdapterModelProfiles("minimax_local")).resolves.toEqual([
+      expect.objectContaining({
+        key: "cheap",
+        adapterConfig: expect.objectContaining({ model: "minimax/MiniMax-M2.1" }),
+        source: "adapter_default",
+      }),
+      expect.objectContaining({
+        key: "fallback",
+        adapterConfig: expect.objectContaining({ adapterType: "codex_local", model: "gpt-5.4-mini" }),
+        source: "adapter_default",
+      }),
+    ]);
+    await expect(listAdapterModelProfiles("zai_local")).resolves.toEqual([
+      expect.objectContaining({
+        key: "cheap",
+        adapterConfig: expect.objectContaining({ model: "zai-coding-plan/glm-4.5-air" }),
+        source: "adapter_default",
+      }),
+      expect.objectContaining({
+        key: "fallback",
+        adapterConfig: expect.objectContaining({ adapterType: "codex_local", model: "gpt-5.4-mini" }),
+        source: "adapter_default",
+      }),
+    ]);
+    await expect(listAdapterModelProfiles("copilot_local")).resolves.toEqual([
+      expect.objectContaining({
+        key: "cheap",
+        adapterConfig: expect.objectContaining({ model: "gpt-5-mini" }),
         source: "adapter_default",
       }),
     ]);

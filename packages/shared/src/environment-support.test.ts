@@ -13,4 +13,13 @@ describe("adapter environment support", () => {
       "sandbox",
     ]);
   });
+
+  it("treats zai_local as a first-class remote-managed local adapter", () => {
+    expect(AGENT_ADAPTER_TYPES).toContain("zai_local");
+    expect(supportedEnvironmentDriversForAdapter("zai_local")).toEqual([
+      "local",
+      "ssh",
+      "sandbox",
+    ]);
+  });
 });

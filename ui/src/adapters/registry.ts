@@ -7,6 +7,7 @@ import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { kimiLocalUIAdapter } from "./kimi-local";
 import { minimaxLocalUIAdapter } from "./minimax-local";
+import { zaiLocalUIAdapter } from "./zai-local";
 import { copilotLocalUIAdapter } from "./copilot-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
@@ -61,6 +62,7 @@ function registerBuiltInUIAdapters() {
     geminiLocalUIAdapter,
     kimiLocalUIAdapter,
     minimaxLocalUIAdapter,
+    zaiLocalUIAdapter,
     copilotLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,

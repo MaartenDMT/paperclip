@@ -14,6 +14,7 @@ export default defineConfig({
       "packages/adapters/gemini-local",
       "packages/adapters/kimi-local",
       "packages/adapters/minimax-local",
+      "packages/adapters/zai-local",
       "packages/adapters/copilot-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",

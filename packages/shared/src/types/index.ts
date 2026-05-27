@@ -200,6 +200,12 @@ export type {
   AgentMeetingExpectedOutput,
   AgentMeetingPayload,
   AgentMeetingResult,
+  WorkMeetingSummary,
+  MeetingWorkflowTrigger,
+  MeetingWorkflowPolicyTrigger,
+  MeetingWorkflowLifecycleStep,
+  MeetingWorkflowRecommendation,
+  MeetingWorkflowHealth,
   IssueThreadInteractionBase,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
@@ -208,12 +214,6 @@ export type {
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
-  WorkMeetingSummary,
-  MeetingWorkflowHealth,
-  MeetingWorkflowLifecycleStep,
-  MeetingWorkflowPolicyTrigger,
-  MeetingWorkflowRecommendation,
-  MeetingWorkflowTrigger,
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,
@@ -301,25 +301,15 @@ export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
   HeartbeatRun,
-  HeartbeatRunEvent,
   HeartbeatRunSkillActivation,
+  HeartbeatRunEvent,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
-export type {
-  DashboardRunActivityDay,
-  DashboardSummary,
-  ManagerOverview,
-  ManagerOverviewAgent,
-  ManagerOverviewAttention,
-  ManagerOverviewIssue,
-  ManagerOverviewIssueWorkloadKind,
-  ManagerOverviewMeeting,
-  ManagerOverviewReport,
-} from "./dashboard.js";
+export type { DashboardRunActivityDay, DashboardSummary, ManagerOverviewAttention, ManagerOverviewIssueWorkloadKind, ManagerOverviewIssue, ManagerOverviewMeeting, ManagerOverviewAgent, ManagerOverviewReport, ManagerOverview } from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,
@@ -430,3 +420,4 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export * from "./campaign.js";

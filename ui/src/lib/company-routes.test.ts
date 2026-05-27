@@ -42,4 +42,15 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/work-meetings", "PAP")).toBe("/PAP/work-meetings");
     expect(toCompanyRelativePath("/PAP/work-meetings")).toBe("/work-meetings");
   });
+
+  it("treats restored operations routes as board routes that need a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/campaigns")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/operations")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/provider-quotas")).toBe(true);
+    expect(applyCompanyPrefix("/campaigns", "PAP")).toBe("/PAP/campaigns");
+    expect(applyCompanyPrefix("/operations", "PAP")).toBe("/PAP/operations");
+    expect(applyCompanyPrefix("/provider-quotas", "PAP")).toBe("/PAP/provider-quotas");
+    expect(toCompanyRelativePath("/PAP/operations")).toBe("/operations");
+    expect(toCompanyRelativePath("/PAP/provider-quotas")).toBe("/provider-quotas");
+  });
 });

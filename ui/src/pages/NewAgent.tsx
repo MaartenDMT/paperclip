@@ -38,7 +38,41 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
+import {
+  DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL,
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+} from "@paperclipai/adapter-minimax-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import {
+  DEFAULT_ZAI_LOCAL_CHEAP_MODEL,
+  DEFAULT_ZAI_LOCAL_MODEL,
+} from "@paperclipai/adapter-zai-local";
+import {
+  DEFAULT_COPILOT_LOCAL_CHEAP_MODEL,
+  DEFAULT_COPILOT_SDK_MODEL,
+} from "@paperclipai/adapter-copilot-local";
+
+const CODEX_PROVIDER_FALLBACK_VALUES = {
+  fallbackModel: "gpt-5.4-mini",
+  fallbackModelEnabled: true,
+  fallbackModelAdapterType: "codex_local",
+  fallbackModelCommand: "codex",
+  fallbackModelProvider: "openai",
+  fallbackModelReasoningEffort: "low",
+} as const;
+
+function assignSameAdapterCheapModel(
+  values: CreateConfigValues,
+  model: string,
+) {
+  values.cheapModel = model;
+  values.cheapModelEnabled = true;
+  values.cheapModelAdapterType = "";
+  values.cheapModelCommand = "";
+  values.cheapModelProvider = "";
+  values.cheapModelReasoningEffort = "";
+}
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -65,6 +99,20 @@ function createValuesForAdapterType(
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+  } else if (adapterType === "kimi_local") {
+    nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
+    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+  } else if (adapterType === "minimax_local") {
+    nextValues.model = DEFAULT_MINIMAX_LOCAL_MODEL;
+    assignSameAdapterCheapModel(nextValues, DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL);
+    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+  } else if (adapterType === "zai_local") {
+    nextValues.model = DEFAULT_ZAI_LOCAL_MODEL;
+    assignSameAdapterCheapModel(nextValues, DEFAULT_ZAI_LOCAL_CHEAP_MODEL);
+    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+  } else if (adapterType === "copilot_local") {
+    nextValues.model = DEFAULT_COPILOT_SDK_MODEL;
+    assignSameAdapterCheapModel(nextValues, DEFAULT_COPILOT_LOCAL_CHEAP_MODEL);
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {

@@ -82,6 +82,10 @@ const issueDocumentSelect = {
   updatedAt: documents.updatedAt,
 };
 
+type DocumentWriteClient = Pick<Db, "select" | "insert" | "update"> & {
+  transaction?: Db["transaction"];
+};
+
 export function documentService(db: Db) {
   const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
     includeSystem ? rows : rows.filter((row) => !isSystemIssueDocumentKey(row.key));
@@ -166,6 +170,121 @@ export function documentService(db: Db) {
         .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
         .orderBy(desc(documentRevisions.revisionNumber));
+    },
+
+    upsertStandaloneDocument: async (
+      client: DocumentWriteClient,
+      input: {
+        companyId: string;
+        documentId?: string | null;
+        title: string | null;
+        body: string;
+        createdByAgentId: string | null;
+        createdByUserId: string | null;
+        updatedByAgentId: string | null;
+        updatedByUserId: string | null;
+        changeSummary: string | null;
+      },
+    ) => {
+      const write = async (tx: DocumentWriteClient) => {
+        const now = new Date();
+
+        if (input.documentId) {
+          const existing = await tx
+            .select()
+            .from(documents)
+            .where(eq(documents.id, input.documentId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (!existing || existing.companyId !== input.companyId) {
+            throw notFound("Document not found");
+          }
+
+          const nextRevisionNumber = existing.latestRevisionNumber + 1;
+          const revision = await tx
+            .insert(documentRevisions)
+            .values({
+              companyId: input.companyId,
+              documentId: existing.id,
+              revisionNumber: nextRevisionNumber,
+              title: input.title ?? null,
+              format: "markdown",
+              body: input.body,
+              changeSummary: input.changeSummary ?? null,
+              createdByAgentId: input.updatedByAgentId ?? input.createdByAgentId ?? null,
+              createdByUserId: input.updatedByUserId ?? input.createdByUserId ?? null,
+              createdAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]!);
+
+          return tx
+            .update(documents)
+            .set({
+              title: input.title ?? null,
+              format: "markdown",
+              latestBody: input.body,
+              latestRevisionId: revision.id,
+              latestRevisionNumber: nextRevisionNumber,
+              updatedByAgentId: input.updatedByAgentId ?? null,
+              updatedByUserId: input.updatedByUserId ?? null,
+              updatedAt: now,
+            })
+            .where(eq(documents.id, existing.id))
+            .returning()
+            .then((rows) => rows[0]!);
+        }
+
+        const document = await tx
+          .insert(documents)
+          .values({
+            companyId: input.companyId,
+            title: input.title ?? null,
+            format: "markdown",
+            latestBody: input.body,
+            latestRevisionId: null,
+            latestRevisionNumber: 1,
+            createdByAgentId: input.createdByAgentId ?? null,
+            createdByUserId: input.createdByUserId ?? null,
+            updatedByAgentId: input.updatedByAgentId ?? null,
+            updatedByUserId: input.updatedByUserId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]!);
+
+        const revision = await tx
+          .insert(documentRevisions)
+          .values({
+            companyId: input.companyId,
+            documentId: document.id,
+            revisionNumber: 1,
+            title: input.title ?? null,
+            format: "markdown",
+            body: input.body,
+            changeSummary: input.changeSummary ?? null,
+            createdByAgentId: input.createdByAgentId ?? null,
+            createdByUserId: input.createdByUserId ?? null,
+            createdAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]!);
+
+        return tx
+          .update(documents)
+          .set({ latestRevisionId: revision.id, updatedAt: now })
+          .where(eq(documents.id, document.id))
+          .returning()
+          .then((rows) => rows[0]!);
+      };
+
+      if (client.transaction) {
+        return client.transaction((tx) => write(tx as DocumentWriteClient));
+      }
+
+      return write(client);
     },
 
     upsertIssueDocument: async (input: {

@@ -8,13 +8,23 @@ import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 
-function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
+function entityLink(
+  entityType: string,
+  entityId: string,
+  name?: string | null,
+  details?: Record<string, unknown> | null,
+): string | null {
   switch (entityType) {
     case "issue": return `/issues/${name ?? entityId}`;
     case "agent": return `/agents/${entityId}`;
     case "project": return `/projects/${deriveProjectUrlKey(name, entityId)}`;
     case "goal": return `/goals/${entityId}`;
     case "approval": return `/approvals/${entityId}`;
+    case "campaign": return `/campaigns/${entityId}`;
+    case "campaign_phase": {
+      const campaignId = typeof details?.campaignId === "string" ? details.campaignId : null;
+      return campaignId ? `/campaigns/${campaignId}` : "/campaigns";
+    }
     default: return null;
   }
 }
@@ -44,7 +54,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
-    : entityLink(event.entityType, event.entityId, name);
+    : entityLink(event.entityType, event.entityId, name, event.details as Record<string, unknown> | null);
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;

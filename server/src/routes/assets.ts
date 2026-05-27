@@ -42,7 +42,7 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
     }
   });
 
-  let parsedDom: JSDOM | null = null;
+  let parsedDom: InstanceType<typeof JSDOM> | null = null;
   try {
     const sanitized = domPurify.sanitize(raw, {
       USE_PROFILES: { svg: true, svgFilters: true, html: false },
@@ -56,10 +56,10 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
     const root = document.documentElement;
     if (!root || root.tagName.toLowerCase() !== "svg") return null;
 
-    for (const el of Array.from(root.querySelectorAll("script, foreignObject"))) {
+    for (const el of Array.from(root.querySelectorAll("script, foreignObject")) as Array<{ remove(): void }>) {
       el.remove();
     }
-    for (const el of Array.from(root.querySelectorAll("*"))) {
+    for (const el of Array.from(root.querySelectorAll("*")) as Array<{ attributes: Iterable<{ name: string; value: string }>; removeAttribute(name: string): void }>) {
       for (const attr of Array.from(el.attributes)) {
         const attrName = attr.name.toLowerCase();
         const attrValue = attr.value.trim();

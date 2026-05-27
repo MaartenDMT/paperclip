@@ -2626,12 +2626,20 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  const handleUpdateIssue = async (req: Request, res: Response) => {
     const id = await resolveIssueRouteId(req.params.id as string);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+    const routeCompanyId = req.params.companyId as string | undefined;
+    if (routeCompanyId) {
+      assertCompanyAccess(req, routeCompanyId);
+      if (existing.companyId !== routeCompanyId) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -3537,7 +3545,10 @@ export function issueRoutes(
     })();
 
     res.json({ ...issueResponse, comment });
-  });
+  };
+
+  router.patch("/issues/:id", validate(updateIssueRouteSchema), handleUpdateIssue);
+  router.patch("/companies/:companyId/issues/:id", validate(updateIssueRouteSchema), handleUpdateIssue);
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;

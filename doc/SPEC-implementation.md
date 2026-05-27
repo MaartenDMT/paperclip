@@ -35,7 +35,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Full visibility to board and all agents in same company |
-| Communication | Tasks + comments plus typed issue-thread interactions; no separate chat system |
+| Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise create visible recovery issues or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
@@ -69,11 +69,6 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
-- Manager overview for department heads to see direct-report subtree health, blockers, review waits, and active runs
-- Structured issue-thread interactions for issue-local coordination, approvals, questions, and task suggestions
-- First-class company meeting threads for agent coordination, separate from issue threads, that can link to issues while capturing business review, goal/target/KPI/finance alignment, concrete business requirements, participating agent performance review, decisions, action items, blockers, right-track checks, workflow corrections, memory corrections, open questions, and ideas
-- Work meeting health monitoring that shows whether agents are actually recording operating meetings, which issues or company-level gaps should trigger meetings, who should chair them, and whether meeting outcomes have been converted into tasks/blockers/workflow corrections/memory corrections
-- Runtime-maintained memory cleanup routines that assign a steward-like agent to audit and optimize shared Karpathy/Obsidian memory and per-agent PARA memory files, applying meeting-derived memory corrections or creating follow-up issues when correction is unsafe or ambiguous
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -112,7 +107,6 @@ A lightweight scheduler/worker in the server process handles:
 - heartbeat trigger checks
 - stuck run detection
 - budget threshold checks
-- scheduled routines, including the built-in steward memory maintenance routine
 
 Separate queue infrastructure is not required for V1.
 
@@ -212,6 +206,24 @@ Invariant: at least one root `company` level goal per company.
 Invariant:
 
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
+
+## 7.5.1 `campaigns`, `campaign_projects`, `campaign_phases`
+
+Campaigns are company-scoped Work section objects for reviewable, multi-phase work streams. They are not Projects. Projects remain operating domains such as Production, Remotion, and Social Media; campaigns can link one or more projects when a larger effort spans those domains.
+
+- `campaigns`: campaign identity, company, optional goal, optional lead agent, title, objective, status, creator/updater attribution, and archive timestamp
+- `campaign_projects`: many-to-many links between campaigns and projects within the same company
+- `campaign_phases`: ordered phase records with title/objective/status, plan and result document links, approval link, approved plan revision link, execution issue link, optional assignee, attribution, and start/complete timestamps
+
+Campaign status enum: `draft | active | paused | completed | cancelled | archived`.
+Campaign phase status enum: `planning | in_review | revision_requested | approved | executing | completed | cancelled`.
+
+Invariants:
+
+- campaign, linked projects, phases, documents, approvals, execution issues, and assignees must all belong to the same company
+- phase sequence numbers are unique within a campaign
+- phase plans and results are markdown documents, not a separate chat or execution system
+- approving a phase plan creates or reuses the phase execution issue; the generated issue remains the execution unit
 
 ## 7.6 `issues` (core task entity)
 
@@ -401,6 +413,7 @@ Operational policy:
 The current implementation includes additional V1-control-plane tables beyond the original February snapshot:
 
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
+- Campaigns: company-scoped Work section objects for reviewable, multi-phase work streams. Campaigns can span multiple projects, store phase plans/results as documents, use board approvals for phase plans, and create execution issues automatically when a phase plan is approved.
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, and `routines`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
@@ -511,7 +524,6 @@ All endpoints are under `/api` and return JSON.
 ## 10.3 Agents
 
 - `GET /companies/:companyId/agents`
-- `GET /companies/:companyId/manager-overview?managerAgentId=:agentId`
 - `POST /companies/:companyId/agents`
 - `GET /agents/:agentId`
 - `PATCH /agents/:agentId`
@@ -524,12 +536,6 @@ All endpoints are under `/api` and return JSON.
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`
-- `GET /companies/:companyId/work-meetings`
-- `GET /companies/:companyId/work-meetings/health`
-- `POST /companies/:companyId/work-meetings/:meetingId/outcomes/link`
-- `POST /meetings/:meetingId/respond`
-
-Work meetings are company operating reviews, not issue comments or chat threads. A meeting may be company-level or linked to one or more issues, but its outcome must record the business context: goal and target fit, KPI movement, finance/budget impact, customer or business value, requirements, right-track status, decisions, action items, blockers, workflow corrections, memory corrections, ideas, and agent employee performance where participants are being reviewed. Issue-level meetings should run at the lowest responsible level: department heads or senior/domain specialists chair local coordination, while the CEO is reserved for company-wide cadence, priority-critical decisions, or true multi-head coordination. When a meeting expects business requirements, goals, targets, KPIs, or finance output, the response must include `businessReview`. When it expects agent performance output, the response must include `agentPerformanceReviews` for every participant. Any linked issue IDs in meeting outcomes must belong to the same company, and unlinked action items, blockers, workflow corrections, memory corrections, ideas, and performance follow-ups remain visible as operationalization gaps. Creating a follow-up issue from a meeting outcome must stamp the new issue ID back onto that specific outcome via the outcome-link endpoint, otherwise the meeting remains unoperationalized.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
@@ -574,14 +580,29 @@ Server behavior:
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
 
-## 10.6 Approvals
+## 10.6 Campaigns
+
+- `GET /companies/:companyId/campaigns`
+- `POST /companies/:companyId/campaigns`
+- `GET /campaigns/:campaignId`
+- `PATCH /campaigns/:campaignId`
+- `PUT /campaigns/:campaignId/projects`
+- `GET /campaigns/:campaignId/phases`
+- `POST /campaigns/:campaignId/phases`
+- `PATCH /campaign-phases/:phaseId`
+- `PUT /campaign-phases/:phaseId/plan`
+- `POST /campaign-phases/:phaseId/submit-plan`
+
+Campaign routes must enforce company access and write activity entries for mutating actions. Submitting a phase plan creates an `approval(type=campaign_phase_plan)` tied to the phase and current plan revision.
+
+## 10.7 Approvals
 
 - `GET /companies/:companyId/approvals?status=pending`
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
 
-## 10.7 Cost and Budgets
+## 10.8 Cost and Budgets
 
 - `POST /companies/:companyId/cost-events`
 - `GET /companies/:companyId/costs/summary`
@@ -590,7 +611,7 @@ Server behavior:
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
 
-## 10.8 Activity and Dashboard
+## 10.9 Activity and Dashboard
 
 - `GET /companies/:companyId/activity`
 - `GET /companies/:companyId/dashboard`
@@ -602,7 +623,7 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
-## 10.9 Error Semantics
+## 10.10 Error Semantics
 
 - `400` validation error
 - `401` unauthenticated
@@ -612,12 +633,13 @@ Dashboard payload must include:
 - `422` semantic rule violation
 - `500` server error
 
-## 10.10 Current Implementation API Addenda
+## 10.11 Current Implementation API Addenda
 
 The current app also exposes V1-supporting surfaces for:
 
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- campaigns, campaign/project links, phase plan document submission, and campaign-aware search
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
@@ -716,7 +738,20 @@ Board can bypass request flow and create agents directly via UI; direct create i
 
 Before first strategy approval, CEO may only draft tasks, not transition them to active execution states.
 
-## 12.3 Board Override
+## 12.3 Campaign Phase Plan Approval
+
+Campaign phase review uses the existing approvals system with `approval.type = campaign_phase_plan`.
+
+1. Board or agent creates a campaign and links zero or more projects.
+2. Board or agent creates a phase and writes/updates the phase plan document.
+3. The phase plan is submitted for review, creating a pending approval for the current plan revision.
+4. Board approves, rejects, or requests revision through the approval flow.
+5. Approval records the approved plan revision and creates or reuses the execution issue for that phase.
+6. Execution happens later through the generated issue; no second "start work" approval is required.
+
+Revision requests return the phase to `revision_requested` so the plan can be edited and resubmitted.
+
+## 12.4 Board Override
 
 Board can at any time:
 

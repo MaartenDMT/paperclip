@@ -5,14 +5,16 @@ import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
+import { campaignService } from "./campaigns.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
+  const campaigns = campaignService(db);
   const instanceSettings = instanceSettingsService(db);
-  const canResolveStatuses = new Set(["pending", "revision_requested"]);
+  const canResolveStatuses = new Set(["pending"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
@@ -46,7 +48,7 @@ export function approvalService(db: Db) {
         return { approval: existing, applied: false };
       }
       throw unprocessable(
-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+        `Only pending approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
       );
     }
 
@@ -74,7 +76,7 @@ export function approvalService(db: Db) {
     }
 
     throw unprocessable(
-      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+      `Only pending approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
     );
   }
 
@@ -164,6 +166,9 @@ export function approvalService(db: Db) {
           }).catch(() => {});
         }
       }
+      if (updated.type === "campaign_phase_plan") {
+        await campaigns.handleApprovalApproved(updated.id, { userId: decidedByUserId });
+      }
 
       return { approval: updated, applied };
     },
@@ -183,6 +188,9 @@ export function approvalService(db: Db) {
           await agentsSvc.terminate(payloadAgentId);
         }
       }
+      if (updated.type === "campaign_phase_plan") {
+        await campaigns.handleApprovalRevisionRequested(updated.id, { userId: decidedByUserId });
+      }
 
       return { approval: updated, applied };
     },
@@ -190,11 +198,15 @@ export function approvalService(db: Db) {
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "pending") {
+        if (existing.status === "revision_requested" && existing.type === "campaign_phase_plan") {
+          await campaigns.handleApprovalRevisionRequested(existing.id, { userId: decidedByUserId });
+          return existing;
+        }
         throw unprocessable("Only pending approvals can request revision");
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -206,6 +218,12 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+
+      if (updated?.type === "campaign_phase_plan") {
+        await campaigns.handleApprovalRevisionRequested(updated.id, { userId: decidedByUserId });
+      }
+
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
