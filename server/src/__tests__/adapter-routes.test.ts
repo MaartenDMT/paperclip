@@ -208,6 +208,11 @@ describe("adapter routes", () => {
     expect(minimaxLocal).toBeDefined();
     expect(minimaxLocal.capabilities.supportsSkills).toBe(true);
 
+    // zai_local is also OpenCode-backed and should expose managed skills.
+    const zaiLocal = res.body.find((a: any) => a.type === "zai_local");
+    expect(zaiLocal).toBeDefined();
+    expect(zaiLocal.capabilities.supportsSkills).toBe(true);
+
     // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();

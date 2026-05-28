@@ -202,18 +202,30 @@ describe("server adapter registry", () => {
     expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
     expect(adapter!.getRuntimeCommandSpec?.({}).command).toBe("opencode");
     expect(adapter!.getRuntimeCommandSpec?.({ command: "mmx" }).command).toBe("opencode");
+    expect(adapter!.models?.map((model) => model.id)).toEqual([
+      "minimax/MiniMax-M2",
+      "minimax/MiniMax-M2.1",
+      "minimax/MiniMax-M2.5",
+      "minimax/MiniMax-M2.5-highspeed",
+      "minimax/MiniMax-M2.7",
+      "minimax/MiniMax-M2.7-highspeed",
+    ]);
   });
 
   it("built-in zai_local adapter executes through OpenCode runtime support", () => {
     const adapter = findActiveServerAdapter("zai_local");
     expect(adapter).not.toBeNull();
+    expect(adapter!.listSkills).toBeDefined();
+    expect(adapter!.syncSkills).toBeDefined();
     expect(adapter!.sessionCodec).toBeDefined();
     expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
     expect(adapter!.getRuntimeCommandSpec?.({}).command).toBe("opencode");
     expect(adapter!.models?.map((model) => model.id)).toEqual([
-      "zai-coding-plan/glm-4.7",
-      "zai-coding-plan/glm-4.5",
       "zai-coding-plan/glm-4.5-air",
+      "zai-coding-plan/glm-4.7",
+      "zai-coding-plan/glm-5-turbo",
+      "zai-coding-plan/glm-5.1",
+      "zai-coding-plan/glm-5v-turbo",
     ]);
   });
 

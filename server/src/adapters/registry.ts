@@ -442,6 +442,8 @@ const zaiLocalAdapter: ServerAdapterModule = {
   type: "zai_local",
   execute: zaiExecute,
   testEnvironment: zaiTestEnvironment,
+  listSkills: listOpenCodeSkills,
+  syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
   sessionManagement: getAdapterSessionManagement("zai_local") ?? undefined,
   models: zaiModels,

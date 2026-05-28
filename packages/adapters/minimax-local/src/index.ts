@@ -7,9 +7,12 @@ export const DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL = "minimax/MiniMax-M2.1";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g opencode-ai";
 
 export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_MINIMAX_LOCAL_MODEL, label: "minimax/MiniMax-M2.7" },
+  { id: "minimax/MiniMax-M2", label: "minimax/MiniMax-M2" },
+  { id: DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL, label: "minimax/MiniMax-M2.1" },
   { id: "minimax/MiniMax-M2.5", label: "minimax/MiniMax-M2.5" },
-  { id: "minimax/MiniMax-M2.1", label: "minimax/MiniMax-M2.1" },
+  { id: "minimax/MiniMax-M2.5-highspeed", label: "minimax/MiniMax-M2.5-highspeed" },
+  { id: DEFAULT_MINIMAX_LOCAL_MODEL, label: "minimax/MiniMax-M2.7" },
+  { id: "minimax/MiniMax-M2.7-highspeed", label: "minimax/MiniMax-M2.7-highspeed" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -46,7 +49,7 @@ Runs MiniMax models through OpenCode locally or in a Paperclip execution environ
 Core fields:
 - cwd: working directory for the CLI process
 - instructionsFilePath: markdown instructions prepended to the run prompt
-- model: OpenCode model id; defaults to "minimax/MiniMax-M2.7"
+- model: OpenCode model id; defaults to "minimax/MiniMax-M2.7"; supported picker defaults mirror the current OpenCode MiniMax list
 - command: defaults to "opencode"
 - extraArgs: extra CLI args appended after Paperclip's default args
 - env: CLI authentication/environment variables

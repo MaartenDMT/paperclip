@@ -22,9 +22,12 @@ describe("minimax_local server adapter", () => {
 
   it("advertises OpenCode-routable MiniMax models", () => {
     expect(models.map((model) => model.id)).toEqual([
-      "minimax/MiniMax-M2.7",
-      "minimax/MiniMax-M2.5",
+      "minimax/MiniMax-M2",
       "minimax/MiniMax-M2.1",
+      "minimax/MiniMax-M2.5",
+      "minimax/MiniMax-M2.5-highspeed",
+      "minimax/MiniMax-M2.7",
+      "minimax/MiniMax-M2.7-highspeed",
     ]);
   });
 
