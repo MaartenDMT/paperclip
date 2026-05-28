@@ -10,6 +10,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isRecoveryOwnedIssueOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -244,5 +245,14 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("classifies watchdog and recovery issue origins as recovery-owned source work", () => {
+    expect(isRecoveryOwnedIssueOriginKind("stale_active_run_evaluation")).toBe(true);
+    expect(isRecoveryOwnedIssueOriginKind("stranded_issue_recovery")).toBe(true);
+    expect(isRecoveryOwnedIssueOriginKind("harness_liveness_escalation")).toBe(true);
+    expect(isRecoveryOwnedIssueOriginKind("issue_productivity_review")).toBe(true);
+    expect(isRecoveryOwnedIssueOriginKind("manual")).toBe(false);
+    expect(isRecoveryOwnedIssueOriginKind(null)).toBe(false);
   });
 });

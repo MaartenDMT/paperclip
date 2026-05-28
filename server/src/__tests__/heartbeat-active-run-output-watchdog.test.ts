@@ -242,6 +242,44 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("closes stale-run evaluations when the source run is already terminal", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        finishedAt: new Date(now.getTime() + 60_000),
+        errorCode: "process_lost",
+        error: "Process lost after watchdog issue was queued",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.scanSilentActiveRuns({
+      now: new Date(now.getTime() + 2 * 60_000),
+      companyId,
+    });
+
+    expect(result.closedTerminal).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, evaluation!.id));
+    expect(comments.some((comment) => comment.body.includes("source heartbeat run is already terminal"))).toBe(true);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
@@ -608,6 +646,63 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const sourceBlockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId));
     expect(sourceBlockers).toHaveLength(0);
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body.includes("obsolete recovery wrapper"))).toBe(true);
+  });
+
+  it("closes stale-run evaluations when obsolete recovery wrappers are their only blocker", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      originKind: "stranded_issue_recovery",
+      originId: evaluation!.id,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${evaluation!.id}:obsolete-wrapper`,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: evaluation!.id,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", errorCode: "process_lost", finishedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(recoveryIssueId);
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const [resolvedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(resolvedEvaluation?.status).toBe("done");
+    const evaluationBlockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, evaluation!.id));
+    expect(evaluationBlockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, evaluation!.id));
     expect(comments.some((comment) => comment.body.includes("obsolete recovery wrapper"))).toBe(true);
   });
 

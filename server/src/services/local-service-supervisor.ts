@@ -244,6 +244,75 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   }
 }
 
+function uniquePositiveIntegers(values: Iterable<unknown>) {
+  const seen = new Set<number>();
+  for (const value of values) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) continue;
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+function getLocalServiceChildPid(record: { metadata?: Record<string, unknown> | null }) {
+  const childPid = record.metadata?.childPid;
+  return typeof childPid === "number" && Number.isInteger(childPid) && childPid > 0 ? childPid : null;
+}
+
+async function collectWindowsProcessTreePids(rootPids: number[]) {
+  if (rootPids.length === 0) return [];
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+      ],
+      { maxBuffer: 16 * 1024 * 1024 },
+    );
+    const raw = JSON.parse(stdout.trim() || "[]") as unknown;
+    const rows = Array.isArray(raw) ? raw : [raw];
+    const childrenByParent = new Map<number, number[]>();
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const rec = row as Record<string, unknown>;
+      const pid = typeof rec.ProcessId === "number" ? rec.ProcessId : null;
+      const parentPid = typeof rec.ParentProcessId === "number" ? rec.ParentProcessId : null;
+      if (!pid || !parentPid) continue;
+      const children = childrenByParent.get(parentPid) ?? [];
+      children.push(pid);
+      childrenByParent.set(parentPid, children);
+    }
+
+    const seen = new Set<number>();
+    const stack = [...rootPids];
+    while (stack.length > 0) {
+      const pid = stack.pop()!;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      for (const child of childrenByParent.get(pid) ?? []) {
+        stack.push(child);
+      }
+    }
+    return [...seen];
+  } catch {
+    return rootPids;
+  }
+}
+
+async function taskkillWindowsTree(pid: number, force: boolean) {
+  try {
+    await execFileAsync("taskkill.exe", force ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"]);
+  } catch {
+    // Ignore cleanup races: a parent may exit before descendants are forced.
+  }
+}
+
+function areAnyPidsAlive(pids: number[]) {
+  return pids.some((pid) => isPidAlive(pid));
+}
+
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
   if (process.platform === "win32") return true;
   try {
@@ -302,7 +371,9 @@ export async function touchLocalServiceRegistryRecord(
 }
 
 export async function terminateLocalService(
-  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
+  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> & {
+    metadata?: Record<string, unknown> | null;
+  },
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
@@ -312,25 +383,26 @@ export async function terminateLocalService(
   // delivery to children). Use taskkill /T to walk the process tree so embedded
   // postgres and other spawned children are reaped alongside the parent.
   if (process.platform === "win32") {
-    if (!isPidAlive(record.pid)) return;
-    try {
-      // Graceful: WM_CLOSE to console parent + tree
-      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T"]);
-    } catch {
-      // Fall through to force kill below
+    const rootPids = uniquePositiveIntegers([record.pid, record.processGroupId, getLocalServiceChildPid(record)]);
+    const initialTreePids = await collectWindowsProcessTreePids(rootPids);
+    if (!areAnyPidsAlive(initialTreePids)) return;
+
+    for (const pid of rootPids) {
+      await taskkillWindowsTree(pid, false);
     }
 
     const deadline = Date.now() + forceAfterMs;
     while (Date.now() < deadline) {
-      if (!isPidAlive(record.pid)) return;
+      if (!areAnyPidsAlive(initialTreePids)) return;
       await delay(100);
     }
 
-    if (!isPidAlive(record.pid)) return;
-    try {
-      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T", "/F"]);
-    } catch {
-      // Ignore cleanup races.
+    const stillAlivePids = initialTreePids.filter((pid) => isPidAlive(pid));
+    const latestTreePids = await collectWindowsProcessTreePids(uniquePositiveIntegers([...rootPids, ...stillAlivePids]));
+    for (const pid of uniquePositiveIntegers([...latestTreePids, ...stillAlivePids])) {
+      if (isPidAlive(pid)) {
+        await taskkillWindowsTree(pid, true);
+      }
     }
     return;
   }

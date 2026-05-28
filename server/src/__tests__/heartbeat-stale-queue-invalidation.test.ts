@@ -1081,6 +1081,286 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
+  it("coalesces onto an existing queued comment wake without reattaching the issue execution lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const blockingIssueId = randomUUID();
+    const blockingRunId = randomUUID();
+    const firstCommentId = randomUUID();
+    const secondCommentId = randomUUID();
+
+    await db.insert(issues).values({
+      id: blockingIssueId,
+      companyId,
+      title: "Another issue already owns the active execution slot",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: blockingRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: {
+        issueId: blockingIssueId,
+        taskId: blockingIssueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued comment wake should stay lockless until claim",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        taskId: issueId,
+        commentId: firstCommentId,
+        wakeCommentId: firstCommentId,
+        source: "issue.comment",
+      },
+    });
+
+    const coalescedRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: secondCommentId, mutation: "comment" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: secondCommentId,
+        wakeCommentId: secondCommentId,
+        source: "issue.comment",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, blockingRunId));
+
+    const [issue, run] = await Promise.all([
+      db
+        .select({
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(coalescedRun?.id).toBe(runId);
+    expect(run?.status).toBe("queued");
+    expect(issue).toMatchObject({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "issue_commented",
+      commentId: secondCommentId,
+      wakeCommentId: secondCommentId,
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+  });
+
+  it("cancels old queued wakes that have no issue scope before consuming a slot", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "qa_lane_assignment_audit",
+      payload: {},
+      status: "queued",
+      requestedAt: old,
+      updatedAt: old,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        wakeReason: "qa_lane_assignment_audit",
+      },
+      createdAt: old,
+      updatedAt: old,
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "stale_unscoped_queued_run",
+    });
+    expect(run?.error).toContain("without an issue scope");
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("reconciles queued runs whose issue scope no longer exists", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "MeetingChair" });
+    const deletedIssueId = randomUUID();
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: deletedIssueId,
+      wakeReason: "agent_meeting_requested",
+      invocationSource: "automation",
+      contextExtras: {
+        taskId: deletedIssueId,
+        meetingId: randomUUID(),
+        interactionId: randomUUID(),
+        interactionKind: "agent_meeting",
+        source: "meeting_workflow.periodic",
+      },
+    });
+
+    const result = await heartbeat.reconcilePersistedHeartbeatRuntimeState();
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(result.staleQueuedRuns).toBe(1);
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_not_found",
+    });
+    expect(run?.error).toContain("target issue no longer exists");
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("reconciles queued runs whose issue scope is hidden", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "MeetingChair" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Archived meeting task",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      hiddenAt: new Date(),
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "agent_meeting_requested",
+      invocationSource: "automation",
+      contextExtras: {
+        taskId: issueId,
+        meetingId: randomUUID(),
+        interactionId: randomUUID(),
+        interactionKind: "agent_meeting",
+        source: "meeting_workflow.periodic",
+      },
+    });
+
+    const result = await heartbeat.reconcilePersistedHeartbeatRuntimeState();
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(result.staleQueuedRuns).toBe(1);
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_hidden",
+    });
+    expect(run?.error).toContain("target issue is hidden");
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("cancels queued continuation recovery when the continuation summary parks executor work for review", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

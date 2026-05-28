@@ -16,6 +16,7 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -43,6 +44,7 @@ import {
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  isRecoveryOwnedIssueOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -147,6 +149,19 @@ export type RunOutputSilenceSummary = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function hasNoRemainingRecoveryWorkDisposition(body: string) {
+  const normalized = body.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+
+  const recordsNoRemainingWork =
+    /\bremaining work\s*:\s*(none|nothing|no\b)/.test(normalized) ||
+    /\bnext (follow-up|followup|action)\s*:\s*(none|no action required)\b/.test(normalized) ||
+    /\bno (new )?action (is )?required\b/.test(normalized);
+  if (!recordsNoRemainingWork) return false;
+
+  return /\b(done|resolved|closed|false[- ]positive|no live blocker|no new action)\b/.test(normalized);
 }
 
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
@@ -746,6 +761,91 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function closeTerminalStaleRunEvaluations(opts?: { companyId?: string; now?: Date }) {
+    const now = opts?.now ?? new Date();
+    const rows = await db
+      .select({
+        evaluation: {
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          companyId: issues.companyId,
+          title: issues.title,
+        },
+        run: {
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          finishedAt: heartbeatRuns.finishedAt,
+          errorCode: heartbeatRuns.errorCode,
+        },
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, issues.companyId),
+          sql`${heartbeatRuns.id}::text = ${issues.originId}`,
+        ),
+      )
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(100);
+
+    let closed = 0;
+    for (const row of rows) {
+      const updated = await issuesSvc.update(row.evaluation.id, {
+        status: "done",
+        blockedByIssueIds: [],
+      });
+      if (!updated) continue;
+
+      await issuesSvc.addComment(row.evaluation.id, [
+        "Disposition: done.",
+        "",
+        "This recovery-owned silent-run review is no longer actionable because the source heartbeat run is already terminal.",
+        "",
+        `- Source run: \`${row.run.id}\``,
+        `- Source run status: \`${row.run.status}\``,
+        `- Source run finished at: ${row.run.finishedAt?.toISOString() ?? "unknown"}`,
+        row.run.errorCode ? `- Source run error code: \`${row.run.errorCode}\`` : null,
+        "",
+        "Paperclip closed this stale watchdog review automatically instead of returning it to live work as a missing-disposition recovery loop.",
+      ].filter((line): line is string => line !== null).join("\n"), { runId: row.run.id });
+
+      await logActivity(db, {
+        companyId: row.evaluation.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: row.run.id,
+        action: "heartbeat.output_stale_evaluation_closed_terminal_source",
+        entityType: "issue",
+        entityId: row.evaluation.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          sourceRunId: row.run.id,
+          sourceRunStatus: row.run.status,
+          sourceRunFinishedAt: row.run.finishedAt?.toISOString() ?? null,
+          closedAt: now.toISOString(),
+        },
+      });
+
+      closed += 1;
+    }
+
+    return closed;
+  }
+
   // Same dismissal-record rationale as the stranded-issue recovery path. A
   // silent-run evaluation that was explicitly cancelled stays cancelled - the
   // watchdog never re-creates one for the same run until the dismissal row is
@@ -1296,6 +1396,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       snoozed: 0,
       skipped: 0,
+      closedTerminal: await closeTerminalStaleRunEvaluations({ now, companyId: opts?.companyId }),
       evaluationIssueIds: [] as string[],
     };
 
@@ -1702,6 +1803,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .select({
         id: issues.id,
         identifier: issues.identifier,
+        originKind: issues.originKind,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
       })
@@ -1719,6 +1821,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       sourceBlockerIds.length > 0 &&
       sourceBlockerIds.every((blockerId) => blockerId === issue.id)
     );
+    const sourceIsRecoveryOwned = isRecoveryOwnedIssueOriginKind(sourceIssue.originKind);
     if (!sourceIssueTerminal && !sourceOnlyBlockedByThisWrapper) return null;
 
     const prefix = await getCompanyIssuePrefix(issue.companyId);
@@ -1740,15 +1843,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     if (sourceOnlyBlockedByThisWrapper) {
       await issuesSvc.update(sourceIssue.id, {
-        status: "todo",
+        status: sourceIsRecoveryOwned ? "done" : "todo",
         blockedByIssueIds: [],
       });
       await issuesSvc.addComment(sourceIssue.id, [
-        "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete recovery wrapper.",
+        sourceIsRecoveryOwned
+          ? "Paperclip closed this recovery-owned source issue because its only unresolved blocker was an obsolete recovery wrapper."
+          : "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete recovery wrapper.",
         "",
         `- Cleared recovery wrapper: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
         "",
-        "Next action: assigned owner should resume or retry the source issue normally.",
+        sourceIsRecoveryOwned
+          ? "Next action: none unless a fresh recovery signal creates new evidence."
+          : "Next action: assigned owner should resume or retry the source issue normally.",
       ].join("\n"), {}, { authorType: "system" });
       await logActivity(db, {
         companyId: issue.companyId,
@@ -1761,9 +1868,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         entityId: sourceIssue.id,
         details: {
           identifier: sourceIssue.identifier,
-          status: "todo",
+          status: sourceIsRecoveryOwned ? "done" : "todo",
           previousStatus: sourceIssue.status,
-          source: "recovery.resolve_obsolete_stranded_source_resume",
+          source: sourceIsRecoveryOwned
+            ? "recovery.resolve_obsolete_stranded_recovery_source_close"
+            : "recovery.resolve_obsolete_stranded_source_resume",
           recoveryIssueId: issue.id,
         },
       });
@@ -2142,6 +2251,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  async function findRecoveryOwnedCompletionDispositionComment(input: {
+    companyId: string;
+    issueId: string;
+    runId: string | null;
+  }) {
+    const conditions = [
+      eq(issueComments.companyId, input.companyId),
+      eq(issueComments.issueId, input.issueId),
+      eq(issueComments.authorType, "agent"),
+    ];
+    if (input.runId) conditions.push(eq(issueComments.createdByRunId, input.runId));
+
+    const rows = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(and(...conditions))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(input.runId ? 5 : 3);
+
+    return rows.find((comment) => hasNoRemainingRecoveryWorkDisposition(comment.body)) ?? null;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -2153,6 +2287,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const nestedRecoverySuppressed = isStrandedIssueRecoveryIssue(input.issue);
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const hasExplicitBlockerPath = blockerIds.length > 0;
+    const recoveryOwnedCompletionComment =
+      input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+        isRecoveryOwnedIssueOriginKind(input.issue.originKind)
+        ? await findRecoveryOwnedCompletionDispositionComment({
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          runId: input.latestRun?.id ?? null,
+        })
+        : null;
+    if (recoveryOwnedCompletionComment) {
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "done",
+        blockedByIssueIds: [],
+      });
+      if (!updated) return null;
+
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      await issuesSvc.addComment(input.issue.id, [
+        "Paperclip closed this recovery-owned issue because the corrective handoff recorded an explicit no-remaining-work disposition but did not update the issue state.",
+        "",
+        `- Corrective handoff run: ${input.latestRun ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, prefix) : "unknown"}`,
+        `- Evidence comment: \`${recoveryOwnedCompletionComment.id}\``,
+        `- Previous status: \`${input.previousStatus}\``,
+        "",
+        "Next action: none unless a fresh recovery signal creates new evidence.",
+      ].join("\n"), {}, { authorType: "system" });
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.issue.assigneeAgentId ?? null,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.successful_run_handoff_reconciled",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "done",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_recovery_owned_successful_run_handoff",
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          evidenceCommentId: recoveryOwnedCompletionComment.id,
+          blockerIssueIds: blockerIds,
+        },
+      });
+
+      return updated;
+    }
+
     let recoveryIssue: typeof issues.$inferSelect | null = null;
     if (!nestedRecoverySuppressed && !hasExplicitBlockerPath) {
       recoveryIssue = await ensureStrandedIssueRecoveryIssue({

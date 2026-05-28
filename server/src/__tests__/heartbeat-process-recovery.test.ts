@@ -1897,6 +1897,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recovery?.description).toContain("Suggested");
   });
 
+  it("closes recovery-owned issues when a corrective handoff records no remaining work", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(issues)
+      .set({
+        title: "Review silent active run for Catalog QA Analyst",
+        originKind: "stale_active_run_evaluation",
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      createdByRunId: runId,
+      body:
+        "Goal/checklist inspected: Review silent active run.\n\n" +
+        "- Remaining work: none; issue is already `done`, and the latest `missing_issue_disposition` failure is a false-positive reopen.\n" +
+        "- Next follow-up: none.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("done");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, issueId),
+      ));
+    expect(recoveryIssues).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body.includes("no-remaining-work disposition"))).toBe(true);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.successful_run_handoff_reconciled")).toBe(true);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

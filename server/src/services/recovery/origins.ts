@@ -22,6 +22,11 @@ export function isStrandedIssueRecoveryOriginKind(originKind: string | null | un
   return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 }
 
+export function isRecoveryOwnedIssueOriginKind(originKind: string | null | undefined) {
+  if (!originKind) return false;
+  return Object.values(RECOVERY_ORIGIN_KINDS).includes(originKind as RecoveryOriginKind);
+}
+
 export function buildIssueGraphLivenessIncidentKey(input: {
   companyId: string;
   issueId: string;
