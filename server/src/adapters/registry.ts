@@ -415,6 +415,8 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   type: "minimax_local",
   execute: minimaxExecute,
   testEnvironment: minimaxTestEnvironment,
+  listSkills: listOpenCodeSkills,
+  syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
   sessionManagement: getAdapterSessionManagement("minimax_local") ?? undefined,
   models: minimaxModels,

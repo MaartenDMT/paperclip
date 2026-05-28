@@ -203,6 +203,11 @@ describe("adapter routes", () => {
     expect(codexLocal).toBeDefined();
     expect(codexLocal.capabilities.supportsSkills).toBe(true);
 
+    // minimax_local runs through OpenCode and should expose the same skill bridge.
+    const minimaxLocal = res.body.find((a: any) => a.type === "minimax_local");
+    expect(minimaxLocal).toBeDefined();
+    expect(minimaxLocal.capabilities.supportsSkills).toBe(true);
+
     // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();

@@ -196,6 +196,8 @@ describe("server adapter registry", () => {
   it("built-in minimax_local adapter executes through OpenCode runtime support", () => {
     const adapter = findActiveServerAdapter("minimax_local");
     expect(adapter).not.toBeNull();
+    expect(adapter!.listSkills).toBeDefined();
+    expect(adapter!.syncSkills).toBeDefined();
     expect(adapter!.sessionCodec).toBeDefined();
     expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
     expect(adapter!.getRuntimeCommandSpec?.({}).command).toBe("opencode");
