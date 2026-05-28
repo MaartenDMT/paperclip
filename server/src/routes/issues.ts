@@ -2666,8 +2666,13 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
-    const shouldCancelActiveRunForCancelledStatus =
-      existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const nextStatus = typeof updateFields.status === "string" ? updateFields.status : null;
+    const shouldCancelActiveRunForTerminalStatus =
+      existing.executionRunId !== null &&
+      nextStatus !== null &&
+      existing.status !== nextStatus &&
+      (nextStatus === "cancelled" || nextStatus === "done") &&
+      actor.runId !== existing.executionRunId;
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -2742,7 +2747,7 @@ export function issueRoutes(
       }
     }
 
-    const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
+    const runToCancelForTerminalStatus = shouldCancelActiveRunForTerminalStatus
       ? await resolveActiveIssueRun(existing)
       : null;
 
@@ -2913,11 +2918,12 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForTerminalStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        const cancelled = await heartbeat.cancelRun(runToCancelForTerminalStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
+          const cancelSource = nextStatus === "done" ? "issue_status_done" : "issue_status_cancelled";
           await logActivity(db, {
             companyId: cancelled.companyId,
             actorType: actor.actorType,
@@ -2927,11 +2933,12 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
+            details: { agentId: cancelled.agentId, source: cancelSource, issueId: existing.id },
           });
         }
       } catch (err) {
-        logger.warn({ err, issueId: existing.id, runId: runToCancelForCancelledStatus.id }, "failed to cancel run for cancelled issue");
+        const cancelSource = nextStatus === "done" ? "issue_status_done" : "issue_status_cancelled";
+        logger.warn({ err, issueId: existing.id, runId: runToCancelForTerminalStatus.id }, "failed to cancel run for terminal issue");
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: actor.actorType,
@@ -2940,8 +2947,8 @@ export function issueRoutes(
           runId: actor.runId,
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: runToCancelForCancelledStatus.id,
-          details: { source: "issue_status_cancelled", issueId: existing.id },
+          entityId: runToCancelForTerminalStatus.id,
+          details: { source: cancelSource, issueId: existing.id },
         });
       }
     }
