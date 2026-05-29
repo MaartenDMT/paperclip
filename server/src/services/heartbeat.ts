@@ -235,6 +235,10 @@ const PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP = Math.max(
   Number.parseInt(process.env.PAPERCLIP_PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP ?? "", 10) || 2,
 );
 const LOCAL_AGENT_PRE_SPAWN_STALE_MS = 2 * 60 * 1000;
+const QUEUED_RUN_RECONCILIATION_LIMIT = Math.max(
+  1,
+  Number.parseInt(process.env.PAPERCLIP_QUEUED_RUN_RECONCILIATION_LIMIT ?? "", 10) || 500,
+);
 const HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX = Math.max(
   1,
   Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 5)),
@@ -6028,6 +6032,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function wakeupStatusForTerminalRunStatus(status: string) {
     if (status === "succeeded") return "completed";
     return status;
+  }
+
+  async function reconcileQueuedHeartbeatRuns(_now: Date) {
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"))
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(QUEUED_RUN_RECONCILIATION_LIMIT);
+
+    let staleQueuedRuns = 0;
+    let blockedQueuedRuns = 0;
+    for (const run of queuedRuns) {
+      const context = parseObject(run.contextSnapshot);
+      const issueId = issueIdFromRunContext(context);
+      if (!issueId) continue;
+
+      const isMeetingWorkflowWake = isMeetingWorkflowWakeContext(context);
+      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+      const readiness = dependencyReadiness.get(issueId);
+      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !isMeetingWorkflowWake) {
+        const cancelled = await cancelQueuedRunForBlockedDependencies(
+          run,
+          issueId,
+          readiness?.unresolvedBlockerIssueIds ?? [],
+        );
+        if (cancelled) blockedQueuedRuns += 1;
+        continue;
+      }
+
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, {
+        allowNonAssigneeIssueWake: isMeetingWorkflowWake,
+      });
+      if (staleness.stale) {
+        const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        if (cancelled) staleQueuedRuns += 1;
+      }
+    }
+
+    return {
+      scannedQueuedRuns: queuedRuns.length,
+      staleQueuedRuns,
+      blockedQueuedRuns,
+    };
   }
 
   async function reconcilePersistedHeartbeatRuntimeState() {
