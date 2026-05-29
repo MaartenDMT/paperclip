@@ -7178,7 +7178,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (issue.status === "done" || issue.status === "cancelled") {
       const allowsClosedIssueCommentWake =
         wakeCommentId &&
-        issue.status === "done";
+        issue.status === "done" &&
+        resumeIntent;
       if (!allowsClosedIssueCommentWake) {
         return {
           stale: true,
@@ -11433,6 +11434,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      const queuedRunReconciliation = await reconcileQueuedHeartbeatRuns(now);
+      await resumeQueuedRuns();
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -11477,6 +11480,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        queuedRunReconciliation,
       };
     },
 
