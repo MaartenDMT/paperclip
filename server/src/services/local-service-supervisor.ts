@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
+const WINDOWS_PROCESS_TREE_TIMEOUT_MS = 2_500;
+const WINDOWS_PROCESS_LOOKUP_TIMEOUT_MS = 1_500;
+const WINDOWS_TASKKILL_TIMEOUT_MS = 5_000;
 
 export interface LocalServiceRegistryRecord {
   version: 1;
@@ -244,6 +247,26 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   }
 }
 
+export async function pruneStaleLocalServiceRegistryRecords(filter?: {
+  profileKind?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const records = await listLocalServiceRegistryRecords(filter);
+  const active: LocalServiceRegistryRecord[] = [];
+  const stale: LocalServiceRegistryRecord[] = [];
+
+  for (const record of records) {
+    if (!isPidAlive(record.pid) || !(await isLikelyMatchingCommand(record))) {
+      stale.push(record);
+      await removeLocalServiceRegistryRecord(record.serviceKey);
+      continue;
+    }
+    active.push(record);
+  }
+
+  return { active, stale };
+}
+
 function uniquePositiveIntegers(values: Iterable<unknown>) {
   const seen = new Set<number>();
   for (const value of values) {
@@ -269,7 +292,7 @@ async function collectWindowsProcessTreePids(rootPids: number[]) {
         "-Command",
         "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
       ],
-      { maxBuffer: 16 * 1024 * 1024 },
+      { maxBuffer: 16 * 1024 * 1024, timeout: WINDOWS_PROCESS_TREE_TIMEOUT_MS },
     );
     const raw = JSON.parse(stdout.trim() || "[]") as unknown;
     const rows = Array.isArray(raw) ? raw : [raw];
@@ -303,7 +326,9 @@ async function collectWindowsProcessTreePids(rootPids: number[]) {
 
 async function taskkillWindowsTree(pid: number, force: boolean) {
   try {
-    await execFileAsync("taskkill.exe", force ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"]);
+    await execFileAsync("taskkill.exe", force ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"], {
+      timeout: WINDOWS_TASKKILL_TIMEOUT_MS,
+    });
   } catch {
     // Ignore cleanup races: a parent may exit before descendants are forced.
   }
@@ -314,18 +339,50 @@ function areAnyPidsAlive(pids: number[]) {
 }
 
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
-  if (process.platform === "win32") return true;
+  if (process.platform === "win32") {
+    try {
+      const commandLine = await readWindowsProcessCommandLine(record.pid);
+      if (!commandLine) return false;
+      return doesCommandLineMatchLocalServiceRecord(commandLine, record);
+    } catch {
+      return true;
+    }
+  }
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(record.pid)]);
     const commandLine = stdout.trim();
     if (!commandLine) return false;
-    const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
-    const normalizedCommandLine = normalize(commandLine);
-    const normalizedRecordedCommand = normalize(record.command);
-    return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
+    return doesCommandLineMatchLocalServiceRecord(commandLine, record);
   } catch {
     return true;
   }
+}
+
+async function readWindowsProcessCommandLine(pid: number) {
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress`,
+    ],
+    { maxBuffer: 64 * 1024, timeout: WINDOWS_PROCESS_LOOKUP_TIMEOUT_MS },
+  );
+  const raw = stdout.trim();
+  if (!raw) return "";
+  const parsed = JSON.parse(raw) as unknown;
+  return typeof parsed === "string" ? parsed : "";
+}
+
+export function doesCommandLineMatchLocalServiceRecord(
+  commandLine: string,
+  record: Pick<LocalServiceRegistryRecord, "command" | "serviceName">,
+) {
+  const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+  const normalizedCommandLine = normalize(commandLine);
+  const normalizedRecordedCommand = normalize(record.command);
+  return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
 }
 
 export async function findAdoptableLocalService(input: {

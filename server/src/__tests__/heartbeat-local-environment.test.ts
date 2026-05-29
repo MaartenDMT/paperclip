@@ -43,6 +43,21 @@ async function waitForRunToFinish(
   return await heartbeat.getRun(runId);
 }
 
+async function waitForRunStatus(
+  heartbeat: ReturnType<typeof heartbeatService>,
+  runId: string,
+  expectedStatus: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const run = await heartbeat.getRun(runId);
+    if (run?.status === expectedStatus) return run;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return await heartbeat.getRun(runId);
+}
+
 async function waitForRunLeasesToRelease(
   db: ReturnType<typeof createDb>,
   runId: string,
@@ -144,5 +159,58 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       driver: "local",
       leaseId: leases[0]?.id,
     });
+  });
+
+  it("allows a manual on-demand run to use the priority burst when background slots are full", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const makeAgent = (name: string) => ({
+      id: randomUUID(),
+      companyId,
+      name,
+      role: "engineer",
+      status: "idle" as const,
+      adapterType: "process" as const,
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => process.exit(0), 1500)"],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const backgroundAgents = Array.from({ length: 5 }, (_, index) => makeAgent(`Background-${index + 1}`));
+    const manualAgent = makeAgent("Manual");
+    await db.insert(agents).values([...backgroundAgents, manualAgent]);
+
+    const heartbeat = heartbeatService(db);
+    const backgroundRuns = await Promise.all(
+      backgroundAgents.map((agent) => heartbeat.invoke(agent.id, "automation", {}, "system")),
+    );
+    expect(backgroundRuns.every((run) => run !== null)).toBe(true);
+
+    for (const run of backgroundRuns) {
+      const running = await waitForRunStatus(heartbeat, run!.id, "running", 5_000);
+      expect(running?.status).toBe("running");
+    }
+
+    const manualRun = await heartbeat.invoke(manualAgent.id, "on_demand", {}, "manual");
+    expect(manualRun).not.toBeNull();
+
+    const runningManual = await waitForRunStatus(heartbeat, manualRun!.id, "running", 5_000);
+    expect(runningManual?.status).toBe("running");
+
+    await Promise.all([
+      ...backgroundRuns.map((run) => waitForRunToFinish(heartbeat, run!.id, 5_000)),
+      waitForRunToFinish(heartbeat, manualRun!.id, 5_000),
+    ]);
   });
 });

@@ -35,6 +35,8 @@ const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
+const commandTimeoutTerminationGraceMs = 2_000;
+const migrationStatusTimeoutMs = 30_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
@@ -426,6 +428,7 @@ async function runPnpm(args: string[], options: {
   stdio?: "inherit" | ["ignore", "pipe", "pipe"];
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  timeoutMs?: number;
 } = {}) {
   return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const spawned = spawn(pnpmBin, args, {
@@ -435,6 +438,7 @@ async function runPnpm(args: string[], options: {
 
     const stdoutBuffer = createCapturedOutputBuffer();
     const stderrBuffer = createCapturedOutputBuffer();
+    const timeout = createCommandTimeout(spawned, options.timeoutMs);
 
     if (spawned.stdout) {
       spawned.stdout.on("data", (chunk) => {
@@ -449,6 +453,7 @@ async function runPnpm(args: string[], options: {
 
     spawned.on("error", reject);
     spawned.on("exit", (code, signal) => {
+      timeout?.clear();
       const stdout = stdoutBuffer.finish();
       const stderr = stderrBuffer.finish();
       resolve({
@@ -465,12 +470,14 @@ async function runNode(args: string[], options: {
   stdio?: "inherit" | ["ignore", "pipe", "pipe"];
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  timeoutMs?: number;
 } = {}) {
   return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const spawned = spawn(process.execPath, args, createSpawnOptions(options));
 
     const stdoutBuffer = createCapturedOutputBuffer();
     const stderrBuffer = createCapturedOutputBuffer();
+    const timeout = createCommandTimeout(spawned, options.timeoutMs);
 
     if (spawned.stdout) {
       spawned.stdout.on("data", (chunk) => {
@@ -485,6 +492,7 @@ async function runNode(args: string[], options: {
 
     spawned.on("error", reject);
     spawned.on("exit", (code, signal) => {
+      timeout?.clear();
       const stdout = stdoutBuffer.finish();
       const stderr = stderrBuffer.finish();
       resolve({
@@ -497,10 +505,26 @@ async function runNode(args: string[], options: {
   });
 }
 
+function createCommandTimeout(spawned: ReturnType<typeof spawn>, timeoutMs: number | undefined) {
+  if (!timeoutMs || timeoutMs <= 0) return null;
+  const timeoutTimer = setTimeout(() => {
+    spawned.kill("SIGTERM");
+    setTimeout(() => {
+      spawned.kill("SIGKILL");
+    }, commandTimeoutTerminationGraceMs).unref?.();
+  }, timeoutMs);
+  timeoutTimer.unref?.();
+  return {
+    clear() {
+      clearTimeout(timeoutTimer);
+    },
+  };
+}
+
 async function getMigrationStatusPayload() {
   const status = await runNode(
     [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
-    { env, cwd: repoRoot },
+    { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
   );
   if (status.code !== 0) {
     process.stderr.write(
@@ -612,6 +636,7 @@ async function markChildAsCurrent() {
   dirtyPaths = new Set();
   lastChangedAt = null;
   lastRestartAt = new Date().toISOString();
+  await updateDevServiceRecord();
   await refreshPendingMigrations();
   await updateDevServiceRecord();
 }

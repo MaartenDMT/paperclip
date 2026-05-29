@@ -259,6 +259,10 @@ const HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX = Math.max(
   1,
   Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 5)),
 );
+const HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX = Math.max(
+  0,
+  Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX ?? 1)),
+);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -1212,6 +1216,14 @@ function readContextModelProfile(
   return readModelProfileKey(contextSnapshot?.modelProfile);
 }
 
+export function consumeWakeContextModelProfile(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  source: ModelProfileRequestSource | null,
+) {
+  if (!contextSnapshot || source !== "wake_context") return;
+  delete contextSnapshot.modelProfile;
+}
+
 export function normalizeModelProfileWakeContext(input: {
   contextSnapshot: Record<string, unknown>;
   payload: Record<string, unknown> | null | undefined;
@@ -1688,7 +1700,7 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
-function parseIssueAssigneeAdapterOverrides(
+export function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
@@ -1696,6 +1708,9 @@ function parseIssueAssigneeAdapterOverrides(
     ? parsed.modelProfile as ModelProfileKey
     : null;
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
+  // Prevent stale issue-level adapter/model pins from overriding current agent config.
+  delete parsedAdapterConfig.model;
+  delete parsedAdapterConfig.adapterType;
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
   const useProjectWorkspace =
@@ -2428,7 +2443,7 @@ export function buildPaperclipTaskMarkdown(input: {
       "- Treat this as part of the assignment, not optional. The vault is shared memory across heartbeats and other agents depend on it.",
       "",
       "Searching prior memory (BEFORE you start work):",
-      "- The vault is indexed by graphify into a knowledge graph (A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json) connecting every note across issues and agents.",
+      "- The vault is indexed by graphify into a knowledge graph (A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json) connecting the active issue, agent, decision, comment, and project notes.",
       `- Search related past notes: \`${graphifyCommand()} query "<your question>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
       `- Find shortest path between two concepts: \`${graphifyCommand()} path "<concept-a>" "<concept-b>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
       `- Explain a single node in plain language: \`${graphifyCommand()} explain "<node-id>" --graph A:\\Programming\\paperclip\\memory\\obsidian\\graphify-out\\graph.json\``,
@@ -2463,18 +2478,18 @@ async function terminateHeartbeatRunProcess(input: {
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
-  if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+  const normalizedPid = typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : null;
+  const normalizedProcessGroupId =
+    typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+      ? processGroupId
+      : null;
+  if (normalizedPid === null && normalizedProcessGroupId === null) return;
 
   await terminateLocalService(
     {
-      pid:
-        typeof pid === "number" && Number.isInteger(pid) && pid > 0
-          ? pid
-          : (processGroupId ?? 0),
-      processGroupId:
-        typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
-          ? processGroupId
-          : null,
+      // Detached cleanup must still kill pid-only orphans when no process group persisted.
+      pid: normalizedPid ?? normalizedProcessGroupId ?? 0,
+      processGroupId: normalizedProcessGroupId,
     },
     input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
   );
@@ -6352,6 +6367,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  function isPriorityQueuedRun(run: Pick<typeof heartbeatRuns.$inferSelect, "invocationSource" | "triggerDetail">) {
+    return run.invocationSource === "on_demand" || run.triggerDetail === "manual";
+  }
+
   async function resolveTimerWakeAssignedIssue(agent: typeof agents.$inferSelect) {
     return db
       .select({
@@ -7925,10 +7944,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const policy = parseHeartbeatPolicy(agent);
       await reapStalePreSpawnRunsForAgent(agent);
       await pruneQueuedRunsForAgent(agent);
+      const queuedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      if (queuedRuns.length === 0) return [];
+
+      const hasPriorityQueuedRun = queuedRuns.some((run) => isPriorityQueuedRun(run));
+      const maxGlobalRunningRuns = HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX +
+        (hasPriorityQueuedRun ? HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX : 0);
       const globalRunningCount = await countRunningRuns();
-      if (globalRunningCount >= HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX) {
+      if (globalRunningCount >= maxGlobalRunningRuns) {
         logger.debug(
-          { agentId, globalRunningCount, maxGlobalRunningRuns: HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX },
+          {
+            agentId,
+            globalRunningCount,
+            maxGlobalRunningRuns,
+            priorityBurstApplied: hasPriorityQueuedRun,
+          },
           "skipping queued-run start because global heartbeat concurrency is full",
         );
         return [];
@@ -7938,17 +7972,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         0,
         Math.min(
           policy.maxConcurrentRuns - runningCount,
-          HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX - globalRunningCount,
+          maxGlobalRunningRuns - globalRunningCount,
         ),
       );
       if (availableSlots <= 0) return [];
-
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
       const queuedIssueIds = [...new Set(
@@ -7994,6 +8021,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
         const leftInteraction = allowsIssueInteractionWake(leftContext) || isMeetingWorkflowWakeContext(leftContext);
         const rightInteraction = allowsIssueInteractionWake(rightContext) || isMeetingWorkflowWakeContext(rightContext);
+        const leftPriorityWake = isPriorityQueuedRun(left);
+        const rightPriorityWake = isPriorityQueuedRun(right);
+        if (leftPriorityWake !== rightPriorityWake) return leftPriorityWake ? -1 : 1;
         const leftRank = schedulingRank({
           issueId: leftIssueId,
           issueStatus: leftIssue?.status,
@@ -8337,10 +8367,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       contextSnapshot: context,
       profileResolutionFallbackReason,
     });
+    consumeWakeContextModelProfile(context, modelProfileApplication.requestedBy);
     const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
     if (modelProfileMetadata) {
       context.paperclipModelProfile = modelProfileMetadata;
-      if (modelProfileApplication.requested) context.modelProfile = modelProfileApplication.requested;
     } else {
       delete context.paperclipModelProfile;
     }

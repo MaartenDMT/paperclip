@@ -4,7 +4,7 @@
  *
  * Behaviour (on `run.after.success`):
  *  1. Scaffold `<vault>/agents/<slug>.md` if missing.
- *  2. Extract `REA-####` IDs from `result_json` + `stdout_excerpt`.
+ *  2. Extract `REA-####` IDs from explicit run context and structured result data.
  *  3. For each issue ID: scaffold `<vault>/issues/<id>.md` if missing.
  *  4. Validate each touched issue page's mtime advanced during the run.
  *  5. Append a single entry to `<vault>/log.md` matching the schema, marking
@@ -45,8 +45,11 @@ const GRAPHIFY_CORPUS_DIR =
 const GRAPHIFY_MAX_DOC_BYTES = Number(
   process.env.PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES || 12_000,
 );
+// 0 means "no file-count cap". The compact corpus already bounds per-file
+// bytes and excludes noisy note classes, so capping issue/agent pages by mtime
+// makes memory search silently miss older but still relevant work.
 const GRAPHIFY_MAX_ISSUE_FILES = Number(
-  process.env.PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES || 20,
+  process.env.PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES ?? 0,
 );
 const GRAPHIFY_TOKEN_BUDGET = Number(
   process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
@@ -617,7 +620,7 @@ export function prepareGraphifyCompactCorpus(
 ): { files: number; truncated: number; written: number; removed: number } {
   const byteLimit = safePositiveInt(maxDocBytes, 80_000);
   const issueLimit = Math.max(0, Math.floor(Number.isFinite(maxIssueFiles) ? maxIssueFiles : 250));
-  const maxAgentFiles = Number(process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES || 12);
+  const maxAgentFiles = Number(process.env.PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES ?? 0);
   const agentLimit = Math.max(
     0,
     Math.floor(Number.isFinite(maxAgentFiles) ? maxAgentFiles : 12),

@@ -918,6 +918,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
+    expect(await waitForPidExit(child.pid!, 2_000)).toBe(true);
 
     const runs = await db
       .select()

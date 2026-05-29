@@ -21,8 +21,10 @@ It is indexed by Graphify into:
 A:\Programming\paperclip\memory\obsidian\graphify-out\graph.json
 ```
 
-The graph connects agent-written notes across issues, agent pages, decisions,
-comments, projects, and the run log. It does not index the Paperclip source tree.
+The graph connects the active high-signal agent-memory notes across issue
+pages, agent pages, decisions, comments, and projects. The server-side Graphify
+hook uses a compact corpus that excludes raw daily/log noise and generated
+Graphify output. It does not index the Paperclip source tree.
 
 ## When To Use
 

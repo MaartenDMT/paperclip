@@ -442,6 +442,85 @@ describe("opencode remote execution", () => {
     expect(runCall?.[4].stdin).toContain("REA-850");
   });
 
+  it("treats a terminal OpenCode result as success even when the wrapper exits nonzero", async () => {
+    runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _executionTarget: unknown, command: string, args: string[], options: unknown) => {
+      if (args.includes("models")) {
+        return runChildProcess(_runId, command, args, options as never);
+      }
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "step_start", sessionID: "session_exit_1" }),
+          JSON.stringify({ type: "text", sessionID: "session_exit_1", part: { text: "blocked on upstream issue" } }),
+          JSON.stringify({
+            type: "step_finish",
+            sessionID: "session_exit_1",
+            part: {
+              reason: "stop",
+              cost: 0.001,
+              tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+          }),
+        ].join("\n"),
+        stderr: "",
+        pid: 321,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-exit1-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const result = await execute({
+      runId: "run-ssh-exit-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+    expect(result.summary).toBe("blocked on upstream issue");
+    expect(result.sessionId).toBe("session_exit_1");
+  });
+
   it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-resume-"));
     cleanupDirs.push(rootDir);

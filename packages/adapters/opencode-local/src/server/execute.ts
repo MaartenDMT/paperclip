@@ -664,6 +664,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      const completedWithTerminalResult =
+        hasOpenCodeTerminalResult({ stdout: attempt.proc.stdout, stderr: attempt.proc.stderr }) &&
+        !parsedError &&
+        !stderrLine;
+      const normalizedExitCode = completedWithTerminalResult ? 0 : synthesizedExitCode;
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
@@ -671,10 +676,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const modelId = model || null;
 
       return {
-        exitCode: synthesizedExitCode,
+        exitCode: normalizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage: (normalizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,

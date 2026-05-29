@@ -205,6 +205,25 @@ describe("graphify compact corpus", () => {
     await expect(fs.stat(path.join(corpus, "issues", "REA-1.md"))).rejects.toThrow();
   });
 
+  it("keeps all issue and agent pages by default while still bounding each file", async () => {
+    const vault = await tempVault();
+    const corpus = path.join(vault, ".graphify-corpus");
+    await fs.mkdir(path.join(vault, "agents"), { recursive: true });
+    await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
+    await fs.writeFile(path.join(vault, "issues", "REA-2.md"), "# REA-2\n", "utf8");
+    await fs.writeFile(path.join(vault, "agents", "alpha.md"), "# alpha\n", "utf8");
+    await fs.writeFile(path.join(vault, "agents", "beta.md"), "# beta\n", "utf8");
+
+    expect(prepareGraphifyCompactCorpus(vault, corpus, 10_000)).toMatchObject({
+      files: 4,
+      written: 4,
+    });
+    await expect(fs.readFile(path.join(corpus, "issues", "REA-1.md"), "utf8")).resolves.toContain("REA-1");
+    await expect(fs.readFile(path.join(corpus, "issues", "REA-2.md"), "utf8")).resolves.toContain("REA-2");
+    await expect(fs.readFile(path.join(corpus, "agents", "alpha.md"), "utf8")).resolves.toContain("alpha");
+    await expect(fs.readFile(path.join(corpus, "agents", "beta.md"), "utf8")).resolves.toContain("beta");
+  });
+
   it("keeps only the most recent bounded agent pages in the compact corpus", async () => {
     const vault = await tempVault();
     const corpus = path.join(vault, ".graphify-corpus");

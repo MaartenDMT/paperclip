@@ -82,11 +82,42 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+const DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS = 15_000;
 
 function isPluginDevWatcherEnabled(): boolean {
   const raw = process.env.PAPERCLIP_PLUGIN_DEV_WATCHER?.trim().toLowerCase();
   if (!raw) return true;
   return raw !== "false" && raw !== "0" && raw !== "off";
+}
+
+function readViteDevStartupTimeoutMs(): number {
+  const raw = process.env.PAPERCLIP_VITE_DEV_STARTUP_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS;
+  return Math.max(0, Math.floor(parsed));
+}
+
+async function waitForStartup<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ status: "ready"; value: T } | { status: "timed_out" }> {
+  if (timeoutMs <= 0) {
+    return { status: "ready", value: await promise };
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ status: "ready" as const, value })),
+      new Promise<{ status: "timed_out" }>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "timed_out" }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function resolveViteHmrPort(serverPort: number): number {
@@ -371,43 +402,67 @@ export async function createApp(
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      root: uiRoot,
-      appType: "custom",
-      server: {
-        middlewareMode: true,
-        hmr: {
-          host: opts.bindHost,
-          port: hmrPort,
-          clientPort: hmrPort,
-        },
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
-      },
-    });
-    viteHtmlRenderer = createCachedViteHtmlRenderer({
-      vite,
-      uiRoot,
-      brandHtml: applyUiBranding,
-    });
-    const renderViteHtml = viteHtmlRenderer;
+    const viteStartupTimeoutMs = readViteDevStartupTimeoutMs();
+    try {
+      const vitePromise = (async () => {
+        const { createServer: createViteServer } = await import("vite");
+        return await createViteServer({
+          root: uiRoot,
+          appType: "custom",
+          server: {
+            middlewareMode: true,
+            hmr: {
+              host: opts.bindHost,
+              port: hmrPort,
+              clientPort: hmrPort,
+            },
+            allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+          },
+        });
+      })();
+      const viteResult = await waitForStartup(vitePromise, viteStartupTimeoutMs);
+      if (viteResult.status === "timed_out") {
+        logger.warn(
+          { timeoutMs: viteStartupTimeoutMs },
+          "Vite dev middleware startup timed out; continuing in API-only mode",
+        );
+        void vitePromise.then(
+          (lateVite) => lateVite.close().catch((err) => {
+            logger.warn({ err }, "Failed to close late Vite dev middleware after startup timeout");
+          }),
+          (err) => {
+            logger.warn({ err }, "Vite dev middleware failed after startup timeout");
+          },
+        );
+      } else {
+        const vite = viteResult.value;
+        viteHtmlRenderer = createCachedViteHtmlRenderer({
+          vite,
+          uiRoot,
+          brandHtml: applyUiBranding,
+        });
+        const renderViteHtml = viteHtmlRenderer;
 
-    if (fs.existsSync(publicUiRoot)) {
-      app.use(express.static(publicUiRoot, { index: false }));
+        if (fs.existsSync(publicUiRoot)) {
+          app.use(express.static(publicUiRoot, { index: false }));
+        }
+        app.get(/.*/, async (req, res, next) => {
+          if (!shouldServeViteDevHtml(req)) {
+            next();
+            return;
+          }
+          try {
+            const html = await renderViteHtml.render(req.originalUrl);
+            res.status(200).set({ "Content-Type": "text/html" }).end(html);
+          } catch (err) {
+            next(err);
+          }
+        });
+        app.use(vite.middlewares);
+      }
+    } catch (err) {
+      logger.warn({ err }, "Vite dev middleware failed to start; continuing in API-only mode");
     }
-    app.get(/.*/, async (req, res, next) => {
-      if (!shouldServeViteDevHtml(req)) {
-        next();
-        return;
-      }
-      try {
-        const html = await renderViteHtml.render(req.originalUrl);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
-      } catch (err) {
-        next(err);
-      }
-    });
-    app.use(vite.middlewares);
   }
 
   app.use(errorHandler);

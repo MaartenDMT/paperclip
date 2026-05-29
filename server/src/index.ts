@@ -63,7 +63,7 @@ const startupDebugEnabled = process.env.PAPERCLIP_DEBUG_STARTUP === "true";
 const CONTROL_PLANE_SCHEDULER_LEASE_FILENAME = "control-plane-scheduler.lock";
 const CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS = 10 * 60 * 1000;
 const STARTUP_LEASE_FILENAME = "server-startup.lock";
-const STARTUP_LEASE_STALE_MS = 5 * 60 * 1000;
+const STARTUP_LEASE_STALE_MS = 2 * 60 * 1000;
 
 function startupDebug(message: string) {
   if (!startupDebugEnabled) return;
@@ -113,6 +113,10 @@ type ControlPlaneSchedulerLease = {
 };
 
 type InstanceLease = ControlPlaneSchedulerLease;
+
+function computeLeaseRefreshIntervalMs(staleMs: number): number {
+  return Math.max(5_000, Math.min(30_000, Math.floor(staleMs / 3)));
+}
 
 function isPidAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
@@ -204,9 +208,9 @@ async function acquireInstanceLease(input: {
       updatedAt: new Date().toISOString(),
     };
     void writeFile(lockPath, `${JSON.stringify(refreshed, null, 2)}\n`).catch((err) => {
-      logger.warn({ err, lockPath }, "Failed to refresh Paperclip scheduler ownership lease");
+      logger.warn({ err, lockPath }, "Failed to refresh Paperclip instance lease");
     });
-  }, Math.max(5_000, Math.min(60_000, CONTROL_PLANE_SCHEDULER_LEASE_STALE_MS / 3)));
+  }, computeLeaseRefreshIntervalMs(input.staleMs));
   refresh.unref?.();
 
   return {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AdapterModelProfileDefinition } from "../adapters/index.js";
 import {
+  consumeWakeContextModelProfile,
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
+  parseIssueAssigneeAdapterOverrides,
   resolveModelProfileApplication,
 } from "../services/heartbeat.ts";
 
@@ -207,5 +209,70 @@ describe("heartbeat model profile application", () => {
         model: "gpt-5.4-mini",
       },
     });
+  });
+
+  it("consumes wake-context model profile hints after resolving application", () => {
+    const contextSnapshot: Record<string, unknown> = {
+      modelProfile: "fallback",
+      wakeReason: "agent_meeting_requested",
+    };
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [fallbackProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          fallback: {
+            adapterConfig: {
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot,
+    });
+
+    consumeWakeContextModelProfile(contextSnapshot, modelProfile.requestedBy);
+
+    expect(contextSnapshot.modelProfile).toBeUndefined();
+  });
+
+  it("does not consume model profile when the request source is issue override", () => {
+    const contextSnapshot: Record<string, unknown> = {
+      modelProfile: "fallback",
+    };
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot,
+    });
+
+    consumeWakeContextModelProfile(contextSnapshot, modelProfile.requestedBy);
+
+    expect(contextSnapshot.modelProfile).toBe("fallback");
+  });
+
+  it("drops stale model and adapterType from assignee adapter overrides", () => {
+    const parsed = parseIssueAssigneeAdapterOverrides({
+      modelProfile: "cheap",
+      adapterConfig: {
+        model: "zai-coding-plan/glm-4.7",
+        adapterType: "zai_local",
+        workspaceStrategy: {
+          type: "git_worktree",
+        },
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      modelProfile: "cheap",
+      adapterConfig: {
+        workspaceStrategy: {
+          type: "git_worktree",
+        },
+      },
+    });
+    expect(parsed?.adapterConfig).not.toHaveProperty("model");
+    expect(parsed?.adapterConfig).not.toHaveProperty("adapterType");
   });
 });

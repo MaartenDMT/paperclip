@@ -490,4 +490,26 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(createAppMock).not.toHaveBeenCalled();
     expect(fakeServer.listen).not.toHaveBeenCalled();
   });
+
+  it("reclaims a stale startup lease even when the recorded owner pid is still alive", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-stale-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "server-startup.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        requestedPort: 3210,
+        listenPort: 3210,
+      }),
+      "utf8",
+    );
+
+    await expect(startServer()).resolves.toBeDefined();
+    expect(createAppMock).toHaveBeenCalled();
+    expect(fakeServer.listen).toHaveBeenCalled();
+  });
 });
