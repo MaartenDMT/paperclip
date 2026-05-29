@@ -42,6 +42,8 @@ diagnostics/
 
 # Editor / tool temp files
 *.tmp
+/.tmp-*.log
+**/.tmp-*.log
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
