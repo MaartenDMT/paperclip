@@ -115,7 +115,19 @@ export function activityRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const result = await svc.runsForIssue(issue.companyId, issue.id);
+    const limitRaw = typeof req.query.limit === "string" ? req.query.limit : undefined;
+    const offsetRaw = typeof req.query.offset === "string" ? req.query.offset : undefined;
+    const limit = limitRaw && /^\d+$/.test(limitRaw) ? Number.parseInt(limitRaw, 10) : undefined;
+    const offset = offsetRaw && /^\d+$/.test(offsetRaw) ? Number.parseInt(offsetRaw, 10) : undefined;
+    if (limitRaw !== undefined && (limit === undefined || limit <= 0)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    if (offsetRaw !== undefined && offset === undefined) {
+      res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    const result = await svc.runsForIssue(issue.companyId, issue.id, { limit, offset });
     res.json(result);
   });
 

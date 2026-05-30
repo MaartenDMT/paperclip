@@ -30,6 +30,8 @@ export interface ActivityFilters {
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
+const DEFAULT_ISSUE_RUN_LIMIT = 50;
+const MAX_ISSUE_RUN_LIMIT = 200;
 const SKILL_SYNC_ADAPTERS = new Set([
   "acpx_local",
   "claude_local",
@@ -700,7 +702,13 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: async (companyId: string, issueId: string) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      options: { limit?: number; offset?: number } = {},
+    ) => {
+      const limit = Math.max(1, Math.min(MAX_ISSUE_RUN_LIMIT, Math.floor(options.limit ?? DEFAULT_ISSUE_RUN_LIMIT)));
+      const offset = Math.max(0, Math.floor(options.offset ?? 0));
       scheduleRunLivenessBackfill(companyId, issueId);
       const runs = await db
         .select({
@@ -750,7 +758,9 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(limit)
+        .offset(offset);
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);

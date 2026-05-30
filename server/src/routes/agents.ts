@@ -133,6 +133,63 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+const LEGACY_WAKE_SCOPE_KEYS = [
+  "issueId",
+  "taskId",
+  "taskKey",
+  "projectId",
+  "commentId",
+  "wakeCommentId",
+  "wakeReason",
+] as const;
+
+type LegacyWakeScopeKey = typeof LEGACY_WAKE_SCOPE_KEYS[number];
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeWakePayload(
+  body: Record<string, unknown>,
+  payloadValue: unknown,
+): Record<string, unknown> | null {
+  const payload = payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
+    ? { ...(payloadValue as Record<string, unknown>) }
+    : {};
+  for (const key of LEGACY_WAKE_SCOPE_KEYS) {
+    if (readNonEmptyString(payload[key]) || key in payload) continue;
+    const value = readNonEmptyString(body[key]);
+    if (value) {
+      payload[key] = value;
+    }
+  }
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function buildWakeContextSnapshot(input: {
+  actorType: "board" | "agent";
+  actorId: string | null | undefined;
+  body: Record<string, unknown>;
+  payload: Record<string, unknown> | null;
+  includeForceFreshSessionWhenFalse: boolean;
+}): Record<string, unknown> {
+  const forceFreshSession = input.body.forceFreshSession === true;
+  const contextSnapshot: Record<string, unknown> = {
+    triggeredBy: input.actorType,
+    actorId: input.actorId ?? null,
+  };
+  if (forceFreshSession || input.includeForceFreshSessionWhenFalse) {
+    contextSnapshot.forceFreshSession = forceFreshSession;
+  }
+  for (const key of LEGACY_WAKE_SCOPE_KEYS) {
+    const value = readNonEmptyString(input.payload?.[key]) ?? readNonEmptyString(input.body[key]);
+    if (value) {
+      contextSnapshot[key] = value;
+    }
+  }
+  return contextSnapshot;
+}
+
 function readConfiguredAdapterModelsFromAgents(
   agents: Array<{ adapterType: string; adapterConfig?: unknown; runtimeConfig?: unknown }>,
   adapterType: string,
@@ -3058,7 +3115,10 @@ export function agentRoutes(
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
-    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) => unknown | Promise<unknown>;
+    skippedResponse: (
+      agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+      payload: Record<string, unknown> | null,
+    ) => unknown | Promise<unknown>;
   };
   type WakeupTargetAgent = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
   const authorizeWakeupTarget = async (
@@ -3098,23 +3158,29 @@ export function agentRoutes(
       return;
     }
 
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const payload = normalizeWakePayload(body, body.payload);
+    const contextSnapshot = buildWakeContextSnapshot({
+      actorType: req.actor.type,
+      actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+      body,
+      payload,
+      includeForceFreshSessionWhenFalse: true,
+    });
+
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
-      triggerDetail: req.body.triggerDetail ?? "manual",
-      reason: req.body.reason ?? null,
-      payload: req.body.payload ?? null,
-      idempotencyKey: req.body.idempotencyKey ?? null,
+      triggerDetail: body.triggerDetail ?? "manual",
+      reason: body.reason ?? null,
+      payload,
+      idempotencyKey: body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
-      contextSnapshot: {
-        triggeredBy: req.actor.type,
-        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-        forceFreshSession: req.body.forceFreshSession === true,
-      },
+      contextSnapshot,
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent));
+      res.status(202).json(await opts.skippedResponse(agent, payload));
       return;
     }
 
@@ -3137,7 +3203,7 @@ export function agentRoutes(
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     await handleWakeupRoute(req, res, {
       source: req.body.source,
-      skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
+      skippedResponse: (agent, payload) => buildSkippedWakeupResponse(agent, payload),
     });
   });
 
@@ -3159,20 +3225,15 @@ export function agentRoutes(
       return;
     }
 
-    const body = (req.body ?? {}) as Partial<{
-      reason: unknown;
-      payload: unknown;
-      idempotencyKey: unknown;
-      forceFreshSession: unknown;
-      triggerDetail: unknown;
-    }>;
-    const contextSnapshot: Record<string, unknown> = {
-      triggeredBy: req.actor.type,
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const payload = normalizeWakePayload(body, body.payload);
+    const contextSnapshot = buildWakeContextSnapshot({
+      actorType: req.actor.type,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-    };
-    if (body.forceFreshSession === true) {
-      contextSnapshot.forceFreshSession = true;
-    }
+      body,
+      payload,
+      includeForceFreshSessionWhenFalse: false,
+    });
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
@@ -3183,8 +3244,8 @@ export function agentRoutes(
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
     }
-    if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
-      wakeOpts.payload = body.payload as Record<string, unknown>;
+    if (payload) {
+      wakeOpts.payload = payload;
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;

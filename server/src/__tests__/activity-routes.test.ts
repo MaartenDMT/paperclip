@@ -207,8 +207,28 @@ describe.sequential("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", {
+      limit: undefined,
+      offset: undefined,
+    });
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
+  });
+
+  it("passes run history pagination through to the activity service", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-uuid-1",
+      companyId: "company-1",
+    });
+    mockActivityService.runsForIssue.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-475/runs?limit=5&offset=10"));
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", {
+      limit: 5,
+      offset: 10,
+    });
   });
 
   it("requires company access before creating activity events", async () => {

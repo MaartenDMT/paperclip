@@ -128,6 +128,15 @@ export const wakeAgentSchema = z.object({
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
   payload: z.record(z.unknown()).optional().nullable(),
+  // Backward-compat scoped wake fields accepted at top-level by legacy callers.
+  // Route handlers normalize these into payload/contextSnapshot before enqueue.
+  issueId: z.string().trim().min(1).optional().nullable(),
+  taskId: z.string().trim().min(1).optional().nullable(),
+  taskKey: z.string().trim().min(1).optional().nullable(),
+  projectId: z.string().trim().min(1).optional().nullable(),
+  commentId: z.string().trim().min(1).optional().nullable(),
+  wakeCommentId: z.string().trim().min(1).optional().nullable(),
+  wakeReason: z.string().trim().min(1).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
