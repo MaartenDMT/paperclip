@@ -393,6 +393,25 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeManagerReport = {
+  id: string | null;
+  name: string | null;
+  role: string | null;
+  title: string | null;
+  status: string | null;
+  openIssues: number;
+  activeRuns: number;
+};
+
+type PaperclipWakeManagerDelegation = {
+  managerAgentId: string | null;
+  managerOpenIssues: number;
+  delegatedOpenIssues: number;
+  wipCap: number;
+  currentIssueAssignedToManager: boolean;
+  directReports: PaperclipWakeManagerReport[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -400,6 +419,7 @@ type PaperclipWakePayload = {
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
   activeTreeHold: PaperclipWakeTreeHoldSummary | null;
+  managerDelegation: PaperclipWakeManagerDelegation | null;
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
@@ -521,6 +541,44 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
+function normalizePaperclipWakeManagerReport(value: unknown): PaperclipWakeManagerReport | null {
+  const report = parseObject(value);
+  const id = asString(report.id, "").trim() || null;
+  const name = asString(report.name, "").trim() || null;
+  const role = asString(report.role, "").trim() || null;
+  const title = asString(report.title, "").trim() || null;
+  const status = asString(report.status, "").trim() || null;
+  if (!id && !name) return null;
+  return {
+    id,
+    name,
+    role,
+    title,
+    status,
+    openIssues: Math.max(0, asNumber(report.openIssues, 0)),
+    activeRuns: Math.max(0, asNumber(report.activeRuns, 0)),
+  };
+}
+
+function normalizePaperclipWakeManagerDelegation(value: unknown): PaperclipWakeManagerDelegation | null {
+  const delegation = parseObject(value);
+  const directReports = Array.isArray(delegation.directReports)
+    ? delegation.directReports
+        .map((entry) => normalizePaperclipWakeManagerReport(entry))
+        .filter((entry): entry is PaperclipWakeManagerReport => Boolean(entry))
+    : [];
+  const managerAgentId = asString(delegation.managerAgentId, "").trim() || null;
+  if (!managerAgentId && directReports.length === 0) return null;
+  return {
+    managerAgentId,
+    managerOpenIssues: Math.max(0, asNumber(delegation.managerOpenIssues, 0)),
+    delegatedOpenIssues: Math.max(0, asNumber(delegation.delegatedOpenIssues, 0)),
+    wipCap: Math.max(1, asNumber(delegation.wipCap, 2)),
+    currentIssueAssignedToManager: asBoolean(delegation.currentIssueAssignedToManager, false),
+    directReports,
+  };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -602,8 +660,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
+  const managerDelegation = normalizePaperclipWakeManagerDelegation(payload.managerDelegation);
   const meetingId = asString(payload.meetingId, "").trim() || null;
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !meetingId && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !managerDelegation && !executionStage && !continuationSummary && !livenessContinuation && !meetingId && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -614,6 +673,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
     activeTreeHold,
+    managerDelegation,
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
@@ -714,6 +774,37 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.managerDelegation) {
+    const delegation = normalized.managerDelegation;
+    const shouldRouteFirst =
+      delegation.currentIssueAssignedToManager ||
+      delegation.managerOpenIssues > delegation.wipCap;
+    lines.push(
+      "",
+      "Manager delegation pressure:",
+      `- direct reports: ${delegation.directReports.length}`,
+      `- manager-held open issues: ${delegation.managerOpenIssues}`,
+      `- delegated open issues: ${delegation.delegatedOpenIssues}`,
+      `- current issue assigned to manager: ${delegation.currentIssueAssignedToManager ? "yes" : "no"}`,
+      `- manager WIP cap: ${delegation.wipCap}`,
+      shouldRouteFirst
+        ? "Route specialist work before doing it yourself. If a direct report can own the next concrete step, create or route a child issue and keep this issue for coordination, unblock decisions, or review."
+        : "If a direct report can own the next concrete step, create or route a child issue and keep this issue for coordination, unblock decisions, or review.",
+    );
+    if (delegation.directReports.length > 0) {
+      lines.push(
+        `- direct report capacity: ${delegation.directReports
+          .slice(0, 8)
+          .map((report) => {
+            const label = report.name ?? report.id ?? "unknown";
+            const roleLabel = [report.title, report.role].filter(Boolean).join(", ");
+            const statusLabel = report.status ?? "unknown";
+            return `${label}${roleLabel ? ` (${roleLabel})` : ""}: ${statusLabel}, open ${report.openIssues}, active runs ${report.activeRuns}`;
+          })
+          .join("; ")}`,
+      );
+    }
   }
   if (normalized.interactionKind === "agent_meeting" && normalized.interactionStatus === "pending") {
     lines.push(

@@ -29,6 +29,11 @@ import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import {
+  agentModelProfileDefaultsForRole,
+  minimaxCurrentAdapterFallbackDefaults,
+  shouldDefaultNewAgentToMiniMax,
+} from "../lib/agent-model-profile-defaults";
+import {
   CODEX_LOCAL_ROLE_DEFAULT_PRIMARY_MODELS,
   codexModelDefaultsForRole,
 } from "../lib/codex-agent-model-defaults";
@@ -40,7 +45,6 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import {
-  DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL,
   DEFAULT_MINIMAX_LOCAL_MODEL,
 } from "@paperclipai/adapter-minimax-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
@@ -53,25 +57,36 @@ import {
   DEFAULT_COPILOT_SDK_MODEL,
 } from "@paperclipai/adapter-copilot-local";
 
-const CODEX_PROVIDER_FALLBACK_VALUES = {
-  fallbackModel: "gpt-5.4-mini",
-  fallbackModelEnabled: true,
-  fallbackModelAdapterType: "codex_local",
-  fallbackModelCommand: "codex",
-  fallbackModelProvider: "openai",
-  fallbackModelReasoningEffort: "low",
-} as const;
-
-function assignSameAdapterCheapModel(
+function applyProfileDefaults(
   values: CreateConfigValues,
-  model: string,
+  role?: string,
 ) {
-  values.cheapModel = model;
+  const defaults = agentModelProfileDefaultsForRole(role);
+  values.cheapModel = defaults.cheap.model;
   values.cheapModelEnabled = true;
-  values.cheapModelAdapterType = "";
-  values.cheapModelCommand = "";
-  values.cheapModelProvider = "";
-  values.cheapModelReasoningEffort = "";
+  values.cheapModelAdapterType = defaults.cheap.adapterType;
+  values.cheapModelCommand = defaults.cheap.command;
+  values.cheapModelProvider = defaults.cheap.provider ?? "";
+  values.cheapModelReasoningEffort = defaults.cheap.reasoningEffort ?? "";
+  values.fallbackModel = defaults.fallback.model;
+  values.fallbackModelEnabled = true;
+  values.fallbackModelAdapterType = defaults.fallback.adapterType;
+  values.fallbackModelCommand = defaults.fallback.command;
+  values.fallbackModelProvider = defaults.fallback.provider ?? "";
+  values.fallbackModelReasoningEffort = defaults.fallback.reasoningEffort ?? "";
+}
+
+function applyFallbackProfileDefaults(
+  values: CreateConfigValues,
+  role?: string,
+) {
+  const defaults = agentModelProfileDefaultsForRole(role);
+  values.fallbackModel = defaults.fallback.model;
+  values.fallbackModelEnabled = true;
+  values.fallbackModelAdapterType = defaults.fallback.adapterType;
+  values.fallbackModelCommand = defaults.fallback.command;
+  values.fallbackModelProvider = defaults.fallback.provider ?? "";
+  values.fallbackModelReasoningEffort = defaults.fallback.reasoningEffort ?? "";
 }
 
 function createValuesForAdapterType(
@@ -99,24 +114,37 @@ function createValuesForAdapterType(
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
   } else if (adapterType === "kimi_local") {
     nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
-    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+    applyProfileDefaults(nextValues, role);
   } else if (adapterType === "minimax_local") {
     nextValues.model = DEFAULT_MINIMAX_LOCAL_MODEL;
-    assignSameAdapterCheapModel(nextValues, DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL);
-    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+    Object.assign(nextValues, minimaxCurrentAdapterFallbackDefaults());
   } else if (adapterType === "zai_local") {
     nextValues.model = DEFAULT_ZAI_LOCAL_MODEL;
-    assignSameAdapterCheapModel(nextValues, DEFAULT_ZAI_LOCAL_CHEAP_MODEL);
-    Object.assign(nextValues, CODEX_PROVIDER_FALLBACK_VALUES);
+    nextValues.cheapModel = DEFAULT_ZAI_LOCAL_CHEAP_MODEL;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = "";
+    nextValues.cheapModelCommand = "";
+    nextValues.cheapModelProvider = "";
+    nextValues.cheapModelReasoningEffort = "";
+    applyFallbackProfileDefaults(nextValues, role);
   } else if (adapterType === "copilot_local") {
     nextValues.model = DEFAULT_COPILOT_SDK_MODEL;
-    assignSameAdapterCheapModel(nextValues, DEFAULT_COPILOT_LOCAL_CHEAP_MODEL);
+    nextValues.cheapModel = DEFAULT_COPILOT_LOCAL_CHEAP_MODEL;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = "";
+    nextValues.cheapModelCommand = "";
+    nextValues.cheapModelProvider = "";
+    nextValues.cheapModelReasoningEffort = "";
+    applyFallbackProfileDefaults(nextValues, role);
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
   } else if (adapterType === "opencode_local") {
     nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
   }
   return nextValues;
 }
@@ -190,6 +218,15 @@ export function NewAgent() {
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"], effectiveRole);
     });
   }, [presetAdapterType, effectiveRole]);
+
+  useEffect(() => {
+    if (presetAdapterType) return;
+    if (!shouldDefaultNewAgentToMiniMax({ role: effectiveRole, name, title, isFirstAgent })) return;
+    setConfigValues((prev) => {
+      if (prev.adapterType !== defaultCreateValues.adapterType) return prev;
+      return createValuesForAdapterType("minimax_local", effectiveRole);
+    });
+  }, [effectiveRole, isFirstAgent, name, presetAdapterType, title]);
 
   useEffect(() => {
     if (configValues.adapterType !== "codex_local") return;
@@ -378,7 +415,12 @@ export function NewAgent() {
         <AgentConfigForm
           mode="create"
           values={configValues}
-          onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+          onChange={(patch) => setConfigValues((prev) => {
+            if (patch.adapterType && patch.adapterType !== prev.adapterType) {
+              return createValuesForAdapterType(patch.adapterType, effectiveRole);
+            }
+            return { ...prev, ...patch };
+          })}
           onTestActionChange={handleTestAgentActionChange}
           onTestActionStateChange={handleTestAgentStateChange}
           onTestFeedbackChange={handleTestAgentFeedbackChange}

@@ -2,16 +2,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   execute as executeOpenCode,
+  listOpenCodeModels,
   testEnvironment as testOpenCodeEnvironment,
 } from "@paperclipai/adapter-opencode-local/server";
 import { detectSimpleCliModel } from "@paperclipai/adapter-utils/simple-cli-model-detection";
 import type {
   AdapterExecutionContext,
   AdapterEnvironmentTestContext,
+  AdapterModel,
   ProviderQuotaResult,
   QuotaWindow,
 } from "@paperclipai/adapter-utils";
-import { DEFAULT_MINIMAX_LOCAL_MODEL, type } from "../index.js";
+import { DEFAULT_MINIMAX_LOCAL_MODEL, models, type } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -89,6 +91,27 @@ export function detectModel() {
     ],
     modelKeys: ["model", "modelId", "model_id", "defaultModel", "default_model"],
   });
+}
+
+function isMiniMaxModel(model: AdapterModel) {
+  const id = model.id.toLowerCase();
+  return id.includes("minimax") && !id.includes("highspeed");
+}
+
+export function listMiniMaxModelsFromOpenCode(discovered: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const merged: AdapterModel[] = [];
+  for (const model of [...models, ...discovered.filter(isMiniMaxModel)]) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push({ id, label: model.label.trim() || id });
+  }
+  return merged;
+}
+
+export async function listMiniMaxModels(): Promise<AdapterModel[]> {
+  return listMiniMaxModelsFromOpenCode(await listOpenCodeModels());
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

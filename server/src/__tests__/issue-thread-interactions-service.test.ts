@@ -18,6 +18,7 @@ import {
   meetingIssueLinks,
   meetingParticipants,
   meetings,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -56,6 +57,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
@@ -1529,6 +1531,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const ceoId = randomUUID();
     const cmoId = randomUUID();
     const goalId = randomUUID();
+    const projectId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
@@ -1543,6 +1546,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Keep marketing moving",
       level: "task",
       status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Marketing",
+      status: "in_progress",
+      goalId,
     });
     await db.insert(agents).values([
       {
@@ -1572,6 +1582,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
+      projectId,
       goalId,
       title: "Blocked marketing issue",
       status: "blocked",
@@ -1592,11 +1603,18 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .from(meetingParticipants)
       .where(eq(meetingParticipants.meetingId, reconciled.meetings[0]!.id));
     expect(participants.map((participant) => participant.agentId)).toEqual([cmoId]);
+    const rows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
+    expect(rows[0]).toMatchObject({
+      sourceIssueId: issueId,
+      projectId,
+      goalId,
+    });
   });
 
   it("creates company-level meeting workflow meetings when no recent meeting exists", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const goalId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
@@ -1616,9 +1634,17 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Win the market",
+      level: "company",
+      status: "active",
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
+      goalId,
       title: "Open non-stale work",
       status: "todo",
       priority: "medium",
@@ -1641,6 +1667,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       idempotencyKey: "meeting-workflow:no_recent_meetings:company",
       status: "pending",
       title: "Operating review: company work health",
+      goalId,
     });
     const links = await db.select().from(meetingIssueLinks).where(eq(meetingIssueLinks.meetingId, rows[0]!.id));
     expect(links).toHaveLength(0);
@@ -1986,6 +2013,105 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect.objectContaining({
         action: "meeting.auto_resolved",
         entityType: "meeting",
+      }),
+    ]));
+  });
+
+  it("repairs first-class meeting issue links and missing goal context during reconciliation", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const outcomeIssueId = randomUUID();
+    const meetingId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Keep meetings tied to goals",
+      level: "company",
+      status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Operating System",
+      goalId,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        projectId,
+        goalId,
+        title: "Review operating work",
+        status: "in_progress",
+        priority: "medium",
+        updatedAt: new Date(),
+      },
+      {
+        id: outcomeIssueId,
+        companyId,
+        projectId,
+        goalId,
+        title: "Meeting follow-up",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      sourceIssueId,
+      title: "Operating review",
+      purpose: "Repair missing links from a previously answered meeting.",
+      status: "answered",
+      result: {
+        version: 1,
+        summaryMarkdown: "The team agreed to create a follow-up.",
+        decisions: ["Keep the goal attached."],
+        actionItems: [{ title: "Meeting follow-up", issueId: outcomeIssueId }],
+        blockers: [],
+        openQuestions: [],
+      },
+      resolvedAt: new Date(),
+      expectedOutputs: ["decisions", "tasks"],
+    });
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled).toMatchObject({
+      created: 0,
+      requeuedPending: 0,
+      resolvedTerminal: 0,
+    });
+    const [meeting] = await db.select().from(meetings).where(eq(meetings.id, meetingId));
+    expect(meeting).toMatchObject({
+      projectId,
+      goalId,
+    });
+    const links = await db
+      .select({
+        issueId: meetingIssueLinks.issueId,
+        linkKind: meetingIssueLinks.linkKind,
+      })
+      .from(meetingIssueLinks)
+      .where(eq(meetingIssueLinks.meetingId, meetingId));
+    expect(links).toEqual(expect.arrayContaining([
+      { issueId: sourceIssueId, linkKind: "source" },
+      { issueId: outcomeIssueId, linkKind: "outcome" },
+    ]));
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.entityId, companyId));
+    expect(activityRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "meeting.workflow_repaired",
+        entityType: "company",
       }),
     ]));
   });

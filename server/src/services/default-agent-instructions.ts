@@ -8,6 +8,14 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
 
+const MANAGER_ROLES = new Set(["cto", "cmo", "cfo", "pm"]);
+const MANAGER_TITLE_PATTERN = /\b(chief|cto|cmo|cfo|director|manager|lead|head|vp|vice president)\b/i;
+
+type ResolveDefaultAgentInstructionsBundleRoleOptions = {
+  title?: string | null;
+  hasDirectReports?: boolean;
+};
+
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {
   return new URL(`../onboarding-assets/${role}/${fileName}`, import.meta.url);
 }
@@ -23,8 +31,23 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
   return Object.fromEntries(entries);
 }
 
-export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  if (role === "ceo") return "ceo";
-  if (role === "cto" || role === "cmo" || role === "cfo" || role === "pm") return "manager";
+export function isManagerLikeAgent(input: {
+  role: string;
+  title?: string | null;
+  hasDirectReports?: boolean;
+}) {
+  const role = input.role.trim().toLowerCase();
+  if (MANAGER_ROLES.has(role)) return true;
+  if (input.hasDirectReports === true) return true;
+  return MANAGER_TITLE_PATTERN.test(input.title ?? "");
+}
+
+export function resolveDefaultAgentInstructionsBundleRole(
+  role: string,
+  options: ResolveDefaultAgentInstructionsBundleRoleOptions = {},
+): DefaultAgentBundleRole {
+  const normalizedRole = role.trim().toLowerCase();
+  if (normalizedRole === "ceo") return "ceo";
+  if (isManagerLikeAgent({ role: normalizedRole, title: options.title, hasDirectReports: options.hasDirectReports })) return "manager";
   return "default";
 }

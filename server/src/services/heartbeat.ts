@@ -64,6 +64,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import {
+  isManagerLikeAgent,
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "./default-agent-instructions.js";
@@ -2101,9 +2102,79 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+async function countOpenIssuesForAgent(db: Db, companyId: string, agentId: string) {
+  const row = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.assigneeAgentId, agentId),
+        sql`${issues.status} not in ('done', 'cancelled')`,
+        isNull(issues.hiddenAt),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  return Number(row?.count ?? 0);
+}
+
+async function countActiveRunsForAgent(db: Db, agentId: string) {
+  const row = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])))
+    .then((rows) => rows[0] ?? null);
+  return Number(row?.count ?? 0);
+}
+
+async function buildManagerDelegationContext(input: {
+  db: Db;
+  companyId: string;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "role" | "title">;
+  currentIssueAssigneeAgentId?: string | null;
+}) {
+  const directReports = await input.db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      title: agents.title,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, input.companyId),
+        eq(agents.reportsTo, input.agent.id),
+        notInArray(agents.status, ["terminated"]),
+      ),
+    )
+    .orderBy(asc(agents.name));
+  if (directReports.length === 0) return null;
+
+  const reportRows = await Promise.all(
+    directReports.map(async (report) => ({
+      ...report,
+      openIssues: await countOpenIssuesForAgent(input.db, input.companyId, report.id),
+      activeRuns: await countActiveRunsForAgent(input.db, report.id),
+    })),
+  );
+  const managerOpenIssues = await countOpenIssuesForAgent(input.db, input.companyId, input.agent.id);
+
+  return {
+    managerAgentId: input.agent.id,
+    managerOpenIssues,
+    delegatedOpenIssues: reportRows.reduce((total, report) => total + report.openIssues, 0),
+    wipCap: 2,
+    currentIssueAssignedToManager: input.currentIssueAssigneeAgentId === input.agent.id,
+    directReports: reportRows,
+  };
+}
+
 async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
+  agent?: Pick<typeof agents.$inferSelect, "id" | "companyId" | "role" | "title"> | null;
   contextSnapshot: Record<string, unknown>;
   continuationSummary?:
     | {
@@ -2121,6 +2192,7 @@ async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        assigneeAgentId?: string | null;
       }
     | null;
 }) {
@@ -2140,12 +2212,21 @@ async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            assigneeAgentId: issues.assigneeAgentId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !meetingId) return null;
+  const managerDelegation = input.agent
+    ? await buildManagerDelegationContext({
+        db: input.db,
+        companyId: input.companyId,
+        agent: input.agent,
+        currentIssueAssigneeAgentId: issueSummary?.assigneeAgentId ?? null,
+      })
+    : null;
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !meetingId && !managerDelegation) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -2254,6 +2335,7 @@ async function buildPaperclipWakePayload(input: {
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
     activeTreeHold: parseObject(input.contextSnapshot.activeTreeHold),
+    managerDelegation,
     unresolvedBlockerIssueIds: Array.isArray(input.contextSnapshot.unresolvedBlockerIssueIds)
       ? input.contextSnapshot.unresolvedBlockerIssueIds.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [],
@@ -7867,8 +7949,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function agentHasDirectReports(agent: typeof agents.$inferSelect) {
+    const row = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, agent.companyId),
+          eq(agents.reportsTo, agent.id),
+          notInArray(agents.status, ["terminated"]),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Number(row?.count ?? 0) > 0;
+  }
+
   async function refreshStockInstructionsForRole(agent: typeof agents.$inferSelect) {
-    const targetBundleRole = resolveDefaultAgentInstructionsBundleRole(agent.role);
+    const hasDirectReports = await agentHasDirectReports(agent);
+    const targetBundleRole = resolveDefaultAgentInstructionsBundleRole(agent.role, {
+      title: agent.title,
+      hasDirectReports,
+    });
     if (targetBundleRole !== "manager") return agent;
 
     const [oldDefaultFiles, managerFiles] = await Promise.all([
@@ -7890,7 +7991,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
     logger.info(
-      { companyId: agent.companyId, agentId: agent.id, role: agent.role },
+      { companyId: agent.companyId, agentId: agent.id, role: agent.role, title: agent.title, hasDirectReports },
       "Refreshed stock instructions for manager-role agent",
     );
     return {
@@ -7900,10 +8001,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function refreshStockInstructionsForManagerAgents() {
-    const managerAgents = await db
+    const candidates = await db
       .select()
       .from(agents)
-      .where(inArray(agents.role, ["cto", "cmo", "cfo", "pm"]));
+      .where(notInArray(agents.status, ["terminated"]));
+    const managerAgents: Array<typeof agents.$inferSelect> = [];
+    for (const agent of candidates) {
+      const hasDirectReports = await agentHasDirectReports(agent);
+      if (isManagerLikeAgent({ role: agent.role, title: agent.title, hasDirectReports })) {
+        managerAgents.push(agent);
+      }
+    }
     let updated = 0;
     let updatedManaged = 0;
     let updatedExternal = 0;
@@ -8225,6 +8333,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
+          assigneeAgentId: issueContext.assigneeAgentId,
         }
       : null;
     const continuationSummary = issueRef
@@ -8243,6 +8352,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
+      agent,
       contextSnapshot: context,
       continuationSummary,
       issueSummary: issueRef
@@ -8253,6 +8363,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            assigneeAgentId: issueRef.assigneeAgentId,
           }
         : null,
     });

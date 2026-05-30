@@ -1,5 +1,5 @@
 import type { CreateConfigValues } from "../components/AgentConfigForm";
-import { codexModelDefaultsForRole } from "./codex-agent-model-defaults";
+import { agentModelProfileDefaultsForRole } from "./agent-model-profile-defaults";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 export function buildNewAgentHirePayload(input: {
@@ -20,23 +20,23 @@ export function buildNewAgentHirePayload(input: {
     configValues,
     adapterConfig,
   } = input;
-  const codexDefaults = codexModelDefaultsForRole(effectiveRole);
+  const profileDefaults = agentModelProfileDefaultsForRole(effectiveRole);
   const explicitCheapModel =
     typeof configValues.cheapModel === "string" && configValues.cheapModel.trim().length > 0;
   const explicitFallbackModel =
     typeof configValues.fallbackModel === "string" && configValues.fallbackModel.trim().length > 0;
   const cheapModel = explicitCheapModel
     ? configValues.cheapModel
-    : codexDefaults?.fallbackModel ?? "";
+    : profileDefaults.cheap.model;
   const cheapModelEnabled =
     configValues.cheapModelEnabled
-      ?? Boolean(codexDefaults);
+      ?? true;
   const fallbackModel = explicitFallbackModel
     ? configValues.fallbackModel
-    : codexDefaults?.fallbackModel ?? "";
+    : profileDefaults.fallback.model;
   const fallbackModelEnabled =
     configValues.fallbackModelEnabled
-      ?? Boolean(codexDefaults);
+      ?? true;
 
   return {
     name: name.trim(),
@@ -54,32 +54,32 @@ export function buildNewAgentHirePayload(input: {
       cheapModelEnabled,
       cheapModelAdapterType: explicitCheapModel
         ? configValues.cheapModelAdapterType
-        : configValues.cheapModelAdapterType ?? codexDefaults.fallbackAdapterType,
+        : configValues.cheapModelAdapterType ?? profileDefaults.cheap.adapterType,
       cheapModelCommand: explicitCheapModel
         ? configValues.cheapModelCommand
-        : configValues.cheapModelCommand ?? codexDefaults.fallbackCommand,
+        : configValues.cheapModelCommand ?? profileDefaults.cheap.command,
       cheapModelProvider: explicitCheapModel
         ? configValues.cheapModelProvider
-        : configValues.cheapModelProvider ?? codexDefaults?.fallbackProvider,
+        : configValues.cheapModelProvider ?? profileDefaults.cheap.provider,
       cheapModelReasoningEffort:
         explicitCheapModel
           ? configValues.cheapModelReasoningEffort
-          : configValues.cheapModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,
+          : configValues.cheapModelReasoningEffort ?? profileDefaults.cheap.reasoningEffort,
       fallbackModel,
       fallbackModelEnabled,
       fallbackModelAdapterType: explicitFallbackModel
         ? configValues.fallbackModelAdapterType
-        : configValues.fallbackModelAdapterType ?? codexDefaults.fallbackAdapterType,
+        : configValues.fallbackModelAdapterType ?? profileDefaults.fallback.adapterType,
       fallbackModelCommand: explicitFallbackModel
         ? configValues.fallbackModelCommand
-        : configValues.fallbackModelCommand ?? codexDefaults.fallbackCommand,
+        : configValues.fallbackModelCommand ?? profileDefaults.fallback.command,
       fallbackModelProvider: explicitFallbackModel
         ? configValues.fallbackModelProvider
-        : configValues.fallbackModelProvider ?? codexDefaults?.fallbackProvider,
+        : configValues.fallbackModelProvider ?? profileDefaults.fallback.provider,
       fallbackModelReasoningEffort:
         explicitFallbackModel
           ? configValues.fallbackModelReasoningEffort
-          : configValues.fallbackModelReasoningEffort ?? codexDefaults?.fallbackReasoningEffort,
+          : configValues.fallbackModelReasoningEffort ?? profileDefaults.fallback.reasoningEffort,
     }),
     budgetMonthlyCents: 0,
   };

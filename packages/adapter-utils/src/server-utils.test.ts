@@ -565,6 +565,51 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("renders manager delegation pressure when direct-report context is present", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "REA-3695",
+        title: "Restore QA capacity",
+        status: "in_progress",
+      },
+      managerDelegation: {
+        managerAgentId: "manager-1",
+        managerOpenIssues: 9,
+        delegatedOpenIssues: 3,
+        wipCap: 2,
+        currentIssueAssignedToManager: true,
+        directReports: [
+          {
+            id: "qa-analyst-1",
+            name: "Catalog QA Analyst",
+            role: "qa",
+            title: "QA Analyst",
+            status: "idle",
+            openIssues: 1,
+            activeRuns: 0,
+          },
+        ],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Manager delegation pressure:");
+    expect(prompt).toContain("- direct reports: 1");
+    expect(prompt).toContain("- manager-held open issues: 9");
+    expect(prompt).toContain("- delegated open issues: 3");
+    expect(prompt).toContain("- current issue assigned to manager: yes");
+    expect(prompt).toContain("Route specialist work before doing it yourself");
+    expect(prompt).toContain("Catalog QA Analyst");
+  });
+
   it("renders planning-mode directives for assignment and comment wakes", () => {
     const assignmentPrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",

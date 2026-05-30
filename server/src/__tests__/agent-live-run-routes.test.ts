@@ -715,6 +715,91 @@ describe("agent live run routes", () => {
         triggeredBy: "board",
         actorId: "local-board",
         forceFreshSession: true,
+        issueId: "issue-1",
+        taskId: "issue-1",
+        taskKey: "issue-1",
+      },
+    });
+  });
+
+  it("normalizes top-level wake scope fields into payload/context for /wakeup", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({
+          source: "assignment",
+          reason: "issue_assigned",
+          issueId: "issue-compat-1",
+          taskId: "issue-compat-1",
+          taskKey: "issue-compat-1",
+          projectId: "project-compat-1",
+          commentId: "comment-compat-1",
+          wakeCommentId: "comment-compat-1",
+          wakeReason: "issue_commented",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      idempotencyKey: null,
+      payload: {
+        issueId: "issue-compat-1",
+        taskId: "issue-compat-1",
+        taskKey: "issue-compat-1",
+        projectId: "project-compat-1",
+        commentId: "comment-compat-1",
+        wakeCommentId: "comment-compat-1",
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        forceFreshSession: false,
+        issueId: "issue-compat-1",
+        taskId: "issue-compat-1",
+        taskKey: "issue-compat-1",
+        projectId: "project-compat-1",
+        commentId: "comment-compat-1",
+        wakeCommentId: "comment-compat-1",
+        wakeReason: "issue_commented",
+      },
+    });
+  });
+
+  it("normalizes top-level wake scope fields for legacy /heartbeat/invoke", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({
+          reason: "issue_assigned",
+          issueId: "issue-legacy-1",
+          taskKey: "issue-legacy-1",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      payload: {
+        issueId: "issue-legacy-1",
+        taskKey: "issue-legacy-1",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        issueId: "issue-legacy-1",
+        taskKey: "issue-legacy-1",
       },
     });
   });

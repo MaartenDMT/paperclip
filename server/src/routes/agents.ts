@@ -1235,6 +1235,7 @@ export function agentRoutes(
     companyId: string;
     name: string;
     role: string;
+    title?: string | null;
     adapterType: string;
     adapterConfig: unknown;
   }>(
@@ -1266,7 +1267,9 @@ export function agentRoutes(
     }
 
     const files = input?.files
-      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
+      ?? await loadDefaultAgentInstructionsBundle(
+        resolveDefaultAgentInstructionsBundleRole(agent.role, { title: agent.title ?? null }),
+      );
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
@@ -3121,6 +3124,11 @@ export function agentRoutes(
     ) => unknown | Promise<unknown>;
   };
   type WakeupTargetAgent = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+  const readWakeTriggerDetail = (value: unknown): "system" | "manual" | "ping" | "callback" => {
+    return value === "system" || value === "manual" || value === "ping" || value === "callback"
+      ? value
+      : "manual";
+  };
   const authorizeWakeupTarget = async (
     req: Request,
     res: Response,
@@ -3160,8 +3168,9 @@ export function agentRoutes(
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const payload = normalizeWakePayload(body, body.payload);
+    const wakeActorType = req.actor.type === "agent" ? "agent" : "board";
     const contextSnapshot = buildWakeContextSnapshot({
-      actorType: req.actor.type,
+      actorType: wakeActorType,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
       body,
       payload,
@@ -3170,10 +3179,10 @@ export function agentRoutes(
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
-      triggerDetail: body.triggerDetail ?? "manual",
-      reason: body.reason ?? null,
+      triggerDetail: readWakeTriggerDetail(body.triggerDetail),
+      reason: typeof body.reason === "string" ? body.reason : null,
       payload,
-      idempotencyKey: body.idempotencyKey ?? null,
+      idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot,
@@ -3227,8 +3236,9 @@ export function agentRoutes(
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const payload = normalizeWakePayload(body, body.payload);
+    const wakeActorType = req.actor.type === "agent" ? "agent" : "board";
     const contextSnapshot = buildWakeContextSnapshot({
-      actorType: req.actor.type,
+      actorType: wakeActorType,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
       body,
       payload,
@@ -3236,7 +3246,7 @@ export function agentRoutes(
     });
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
-      triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
+      triggerDetail: readWakeTriggerDetail(body.triggerDetail),
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot,

@@ -16,6 +16,22 @@ describe("resolveDefaultAgentInstructionsBundleRole", () => {
   it.each(["engineer", "designer", "qa", "general"])("uses the default bundle for %s", (role) => {
     expect(resolveDefaultAgentInstructionsBundleRole(role)).toBe("default");
   });
+
+  it("uses the manager bundle for director-style QA agents", () => {
+    expect(resolveDefaultAgentInstructionsBundleRole("qa", { title: "Director of Quality Assurance" })).toBe("manager");
+  });
+
+  it("uses the manager bundle for agents with direct reports", () => {
+    expect(resolveDefaultAgentInstructionsBundleRole("qa", { title: "QA Analyst", hasDirectReports: true })).toBe(
+      "manager",
+    );
+  });
+
+  it("keeps non-manager QA specialists on the default bundle", () => {
+    expect(resolveDefaultAgentInstructionsBundleRole("qa", { title: "QA Analyst", hasDirectReports: false })).toBe(
+      "default",
+    );
+  });
 });
 
 describe("loadDefaultAgentInstructionsBundle", () => {

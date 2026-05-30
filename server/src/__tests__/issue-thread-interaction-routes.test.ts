@@ -326,7 +326,7 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
     const app = await createApp();

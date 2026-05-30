@@ -1172,6 +1172,8 @@ export function issueThreadInteractionService(db: Db) {
       const rows = await db
         .select({
           interaction: issueThreadInteractions,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
           issueStatus: issues.status,
@@ -1212,6 +1214,8 @@ export function issueThreadInteractionService(db: Db) {
           id: interaction.id,
           companyId: interaction.companyId,
           threadKind: "issue_interaction",
+          projectId: row.projectId ?? null,
+          goalId: row.goalId ?? null,
           issueId: interaction.issueId,
           issueIdentifier: row.issueIdentifier,
           issueTitle: row.issueTitle,
@@ -1597,6 +1601,7 @@ export function issueThreadInteractionService(db: Db) {
 
     reconcileMeetingWorkflow: async (companyId: string): Promise<ReconcileMeetingWorkflowResult> => {
       const meetingsSvc = meetingService(db);
+      await meetingsSvc.repairWorkflowMeetingLinks(companyId);
       const resolvedTerminal =
         await resolveTerminalMeetingWorkflowInteractions(companyId) +
         await meetingsSvc.resolveTerminalWorkflowMeetings(companyId);

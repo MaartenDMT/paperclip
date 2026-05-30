@@ -20,6 +20,8 @@ const DEFAULT_SKILL_REFERENCES = [
   "caveman",
   "karpathy-obsidian-memory",
   "para-memory-files",
+  "paperclip",
+  "diagnose-why-work-stopped",
 ] as const;
 const DEFAULT_INSTRUCTIONS: Record<string, string> = {
   "caveman":
@@ -28,6 +30,10 @@ const DEFAULT_INSTRUCTIONS: Record<string, string> = {
     "At the start of every run, read and apply the `karpathy-obsidian-memory` skill. Before starting work, search the memory graph for relevant prior work. Before declaring the run done, update the shared Obsidian issue memory with concise durable facts, decisions, blockers, and next steps.",
   "para-memory-files":
     "For any memory, planning, recall, daily-note, entity, or knowledge-organization operation, read and apply `para-memory-files`. Persist durable facts in the agent memory files instead of relying on session memory.",
+  "paperclip":
+    "At the start of every run, read and apply the `paperclip` skill. Use it for Paperclip control-plane API operations, company governance, task coordination, comments, issue updates, and work handoff.",
+  "diagnose-why-work-stopped":
+    "At the start of every run, read and apply the `diagnose-why-work-stopped` skill when the work is stalled, looping, blocked, unexpectedly idle, or recovering from unclear execution state.",
 };
 
 function asString(value: unknown): string | null {
@@ -147,7 +153,8 @@ export const mandatorySkillInstructionPreHook: PreHookHandler = async (ctx) => {
         "",
         `Skill key: ${skill.key}`,
         `Skill runtime name: ${skill.runtimeName ?? skill.key}`,
-        `Skill source: ${skill.source}`,
+        `Use the runtime skill named \`${skill.runtimeName ?? skill.key}\`; do not treat the original source path as the runtime skill root.`,
+        `Original skill source: ${skill.source}`,
         "",
       ]),
       existingInstructions.trim()

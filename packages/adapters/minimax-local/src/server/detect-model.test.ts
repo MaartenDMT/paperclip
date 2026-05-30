@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { modelProfiles, models } from "../index.js";
-import { detectModel, mapMiniMaxQuotaShowOutput, normalizeMiniMaxOpenCodeConfig } from "./index.js";
+import {
+  detectModel,
+  listMiniMaxModelsFromOpenCode,
+  mapMiniMaxQuotaShowOutput,
+  normalizeMiniMaxOpenCodeConfig,
+} from "./index.js";
 
 describe("minimax_local server adapter", () => {
   const originalMiniMaxModel = process.env.MINIMAX_MODEL;
@@ -25,9 +30,24 @@ describe("minimax_local server adapter", () => {
       "minimax/MiniMax-M2",
       "minimax/MiniMax-M2.1",
       "minimax/MiniMax-M2.5",
-      "minimax/MiniMax-M2.5-highspeed",
       "minimax/MiniMax-M2.7",
-      "minimax/MiniMax-M2.7-highspeed",
+    ]);
+  });
+
+  it("merges discovered MiniMax provider-routed models with safe defaults", () => {
+    expect(listMiniMaxModelsFromOpenCode([
+      { id: "opencode/minimax-m2.5-free", label: "OpenCode MiniMax M2.5 free" },
+      { id: "openrouter/minimax/minimax-m2.7", label: "OpenRouter MiniMax M2.7" },
+      { id: "minimax/MiniMax-M2.7-highspeed", label: "MiniMax M2.7 highspeed" },
+      { id: "openai/gpt-5.2", label: "OpenAI GPT-5.2" },
+      { id: "minimax/MiniMax-M2.7", label: "Duplicate MiniMax M2.7" },
+    ])).toEqual([
+      { id: "minimax/MiniMax-M2", label: "minimax/MiniMax-M2" },
+      { id: "minimax/MiniMax-M2.1", label: "minimax/MiniMax-M2.1" },
+      { id: "minimax/MiniMax-M2.5", label: "minimax/MiniMax-M2.5" },
+      { id: "minimax/MiniMax-M2.7", label: "minimax/MiniMax-M2.7" },
+      { id: "opencode/minimax-m2.5-free", label: "OpenCode MiniMax M2.5 free" },
+      { id: "openrouter/minimax/minimax-m2.7", label: "OpenRouter MiniMax M2.7" },
     ]);
   });
 
@@ -39,6 +59,13 @@ describe("minimax_local server adapter", () => {
       }),
       expect.objectContaining({
         key: "fallback",
+        adapterConfig: {
+          adapterType: "codex_local",
+          command: "codex",
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          modelReasoningEffort: "low",
+        },
       }),
     ]);
   });

@@ -6,6 +6,7 @@ import {
   meetingIssueLinks,
   meetingParticipants,
   meetings,
+  goals,
   issues,
 } from "@paperclipai/db";
 import type {
@@ -242,8 +243,8 @@ export function meetingService(db: Db) {
     linkKind: string;
   }) {
     const uniqueIssueIds = await validateCompanyIssueIds(txDb, input.companyId, input.issueIds);
-    if (uniqueIssueIds.length === 0) return;
-    await txDb
+    if (uniqueIssueIds.length === 0) return 0;
+    const inserted = await txDb
       .insert(meetingIssueLinks)
       .values(uniqueIssueIds.map((issueId) => ({
         companyId: input.companyId,
@@ -251,7 +252,121 @@ export function meetingService(db: Db) {
         issueId,
         linkKind: input.linkKind,
       })))
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ id: meetingIssueLinks.id });
+    return inserted.length;
+  }
+
+  async function readDefaultCompanyGoalId(companyId: string) {
+    return db
+      .select({ id: goals.id })
+      .from(goals)
+      .where(and(
+        eq(goals.companyId, companyId),
+        eq(goals.level, "company"),
+        eq(goals.status, "active"),
+        sql`${goals.parentId} is null`,
+      ))
+      .orderBy(asc(goals.createdAt))
+      .limit(1)
+      .then((rows) => rows[0]?.id ?? null);
+  }
+
+  async function repairWorkflowMeetingLinks(companyId: string) {
+    const rows = await db
+      .select()
+      .from(meetings)
+      .where(eq(meetings.companyId, companyId))
+      .orderBy(desc(meetings.updatedAt), desc(meetings.id))
+      .limit(500);
+
+    let sourceLinksInserted = 0;
+    let outcomeLinksInserted = 0;
+    let contextRowsUpdated = 0;
+    let defaultCompanyGoalId: string | null | undefined;
+
+    for (const meeting of rows) {
+      const result = meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null;
+      const outcomeIssueIds = readIssueIdsFromMeetingResult(result);
+      const candidateIssueIds = [
+        meeting.sourceIssueId,
+        ...outcomeIssueIds,
+      ].filter((value): value is string => Boolean(value));
+      const issueRows = candidateIssueIds.length > 0
+        ? await db
+            .select({
+              id: issues.id,
+              projectId: issues.projectId,
+              goalId: issues.goalId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(candidateIssueIds)])))
+        : [];
+      const issueById = new Map(issueRows.map((issue) => [issue.id, issue] as const));
+
+      if (meeting.sourceIssueId && issueById.has(meeting.sourceIssueId)) {
+        sourceLinksInserted += await linkIssues(db, {
+          companyId,
+          meetingId: meeting.id,
+          issueIds: [meeting.sourceIssueId],
+          linkKind: "source",
+        });
+      }
+      const validOutcomeIssueIds = outcomeIssueIds.filter((issueId) => issueById.has(issueId));
+      if (validOutcomeIssueIds.length > 0) {
+        outcomeLinksInserted += await linkIssues(db, {
+          companyId,
+          meetingId: meeting.id,
+          issueIds: validOutcomeIssueIds,
+          linkKind: "outcome",
+        });
+      }
+
+      if (!meeting.projectId || !meeting.goalId) {
+        const sourceIssue = meeting.sourceIssueId ? issueById.get(meeting.sourceIssueId) ?? null : null;
+        if (!sourceIssue && !meeting.goalId && defaultCompanyGoalId === undefined) {
+          defaultCompanyGoalId = await readDefaultCompanyGoalId(companyId);
+        }
+        const nextProjectId = meeting.projectId ?? sourceIssue?.projectId ?? null;
+        const nextGoalId = meeting.goalId ?? sourceIssue?.goalId ?? defaultCompanyGoalId ?? null;
+        if (nextProjectId !== meeting.projectId || nextGoalId !== meeting.goalId) {
+          await db
+            .update(meetings)
+            .set({
+              projectId: nextProjectId,
+              goalId: nextGoalId,
+              updatedAt: new Date(),
+            })
+            .where(eq(meetings.id, meeting.id));
+          contextRowsUpdated += 1;
+        }
+      }
+    }
+
+    const totalInsertedLinks = sourceLinksInserted + outcomeLinksInserted;
+    if (totalInsertedLinks > 0 || contextRowsUpdated > 0) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "meeting.workflow_repaired",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          checked: rows.length,
+          sourceLinksInserted,
+          outcomeLinksInserted,
+          contextRowsUpdated,
+        },
+      });
+    }
+
+    return {
+      checked: rows.length,
+      sourceLinksInserted,
+      outcomeLinksInserted,
+      contextRowsUpdated,
+    };
   }
 
   async function createFromRecommendation(
@@ -275,6 +390,15 @@ export function meetingService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (existing) return null;
 
+    const sourceContext = recommendation.issueId
+      ? await db
+          .select({ projectId: issues.projectId, goalId: issues.goalId })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, recommendation.issueId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const companyGoalId = recommendation.issueId ? null : await readDefaultCompanyGoalId(companyId);
+
     const now = new Date();
     const [created] = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -282,6 +406,8 @@ export function meetingService(db: Db) {
         .insert(meetings)
         .values({
           companyId,
+          projectId: sourceContext?.projectId ?? null,
+          goalId: sourceContext?.goalId ?? companyGoalId,
           sourceIssueId: recommendation.issueId ?? null,
           meetingType: recommendation.trigger === "no_recent_meetings" ? "standup" : "operating_review",
           title: input.title,
@@ -441,6 +567,8 @@ export function meetingService(db: Db) {
         id: row.id,
         companyId: row.companyId,
         threadKind: "meeting",
+        projectId: row.projectId ?? null,
+        goalId: row.goalId ?? null,
         issueId: primaryIssue?.issueId ?? row.sourceIssueId ?? null,
         issueIdentifier: primaryIssue?.identifier ?? null,
         issueTitle: primaryIssue?.title ?? null,
@@ -741,6 +869,7 @@ export function meetingService(db: Db) {
     listForCompany,
     respond,
     linkOutcomeIssue,
+    repairWorkflowMeetingLinks,
     resolveTerminalWorkflowMeetings,
     reconcilePendingWorkflowWakeups,
   };

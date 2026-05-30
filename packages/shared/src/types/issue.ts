@@ -733,6 +733,8 @@ export interface WorkMeetingSummary {
   id: string;
   companyId: string;
   threadKind?: "meeting" | "issue_interaction";
+  projectId?: string | null;
+  goalId?: string | null;
   issueId: string | null;
   issueIdentifier: string | null;
   issueTitle: string | null;

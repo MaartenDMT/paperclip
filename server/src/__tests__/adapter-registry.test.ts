@@ -206,9 +206,7 @@ describe("server adapter registry", () => {
       "minimax/MiniMax-M2",
       "minimax/MiniMax-M2.1",
       "minimax/MiniMax-M2.5",
-      "minimax/MiniMax-M2.5-highspeed",
       "minimax/MiniMax-M2.7",
-      "minimax/MiniMax-M2.7-highspeed",
     ]);
   });
 

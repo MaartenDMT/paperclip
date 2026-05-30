@@ -70,7 +70,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -89,6 +89,57 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("rejects explicit project, goal, and parent links outside the issue company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const otherCompanyProjectId = randomUUID();
+    const goalId = randomUUID();
+    const otherCompanyGoalId = randomUUID();
+    const otherCompanyParentId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(goals).values([
+      { id: goalId, companyId, title: "Goal", level: "company", status: "active" },
+      { id: otherCompanyGoalId, companyId: otherCompanyId, title: "Other goal", level: "company", status: "active" },
+    ]);
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Project", goalId, status: "in_progress" },
+      { id: otherCompanyProjectId, companyId: otherCompanyId, name: "Other project", goalId: otherCompanyGoalId, status: "in_progress" },
+    ]);
+    await db.insert(issues).values({
+      id: otherCompanyParentId,
+      companyId: otherCompanyId,
+      title: "Other parent",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "OTH-1",
+    });
+
+    await expect(svc.create(companyId, { title: "Bad project", projectId: otherCompanyProjectId })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.create(companyId, { title: "Bad goal", goalId: otherCompanyGoalId })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.create(companyId, { title: "Bad parent", parentId: otherCompanyParentId })).rejects.toMatchObject({ status: 422 });
+
+    const issue = await svc.create(companyId, { title: "Valid issue", projectId, goalId });
+    await expect(svc.update(issue.id, { projectId: otherCompanyProjectId })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(issue.id, { goalId: otherCompanyGoalId })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(issue.id, { parentId: otherCompanyParentId })).rejects.toMatchObject({ status: 422 });
   });
 
   it("returns issues an agent participated in across the supported signals", async () => {

@@ -839,6 +839,7 @@ export function campaignService(db: Db) {
       try {
         const issue = await issueService(db).create(approval.companyId, {
           projectId,
+          goalId: campaign.goalId ?? undefined,
           title: `Execute campaign phase: ${campaign.title} - ${updated.title}`,
           description: [
             `Execute the approved campaign phase plan for "${updated.title}" in campaign "${campaign.title}".`,

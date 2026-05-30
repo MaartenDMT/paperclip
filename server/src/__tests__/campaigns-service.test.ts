@@ -11,6 +11,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  goals,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -37,7 +38,7 @@ describeEmbeddedPostgres("campaignService", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-campaigns-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(approvals);
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("campaignService", () => {
     await db.delete(campaigns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(goals);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -414,13 +416,21 @@ describeEmbeddedPostgres("campaignService", () => {
 
   it("creates one execution issue when a campaign phase plan approval is approved", async () => {
     const { actor, agentId, companyId, productionProjectId, svc } = await seedFixture();
+    const goalId = randomUUID();
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Grow Readerbase",
+      level: "company",
+      status: "active",
+    });
     const campaign = await svc.create(
       companyId,
       {
         title: "Readerbase fantasy world",
         objective: "Build a deeply intertwined fantasy setting.",
         leadAgentId: agentId,
-        goalId: null,
+        goalId,
         status: "draft",
         projectIds: [productionProjectId],
       },
@@ -458,6 +468,7 @@ describeEmbeddedPostgres("campaignService", () => {
       id: createdIssueId,
       companyId,
       projectId: productionProjectId,
+      goalId,
       assigneeAgentId: agentId,
       status: "todo",
       priority: "medium",

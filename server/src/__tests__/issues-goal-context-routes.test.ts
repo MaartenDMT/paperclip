@@ -45,6 +45,10 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  pruneStaleIssueScopedFiles: vi.fn(async () => ({ removed: [] })),
+}));
+
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(async () => []),
   saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
@@ -102,6 +106,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
   accessService: () => mockAccessService,
+  agentInstructionsService: () => mockAgentInstructionsService,
   agentService: () => mockAgentService,
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,

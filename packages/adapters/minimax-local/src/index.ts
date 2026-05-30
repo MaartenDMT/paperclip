@@ -10,9 +10,7 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "minimax/MiniMax-M2", label: "minimax/MiniMax-M2" },
   { id: DEFAULT_MINIMAX_LOCAL_CHEAP_MODEL, label: "minimax/MiniMax-M2.1" },
   { id: "minimax/MiniMax-M2.5", label: "minimax/MiniMax-M2.5" },
-  { id: "minimax/MiniMax-M2.5-highspeed", label: "minimax/MiniMax-M2.5-highspeed" },
   { id: DEFAULT_MINIMAX_LOCAL_MODEL, label: "minimax/MiniMax-M2.7" },
-  { id: "minimax/MiniMax-M2.7-highspeed", label: "minimax/MiniMax-M2.7-highspeed" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [

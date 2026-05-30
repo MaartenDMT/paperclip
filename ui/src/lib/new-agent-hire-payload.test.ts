@@ -84,6 +84,98 @@ describe("buildNewAgentHirePayload", () => {
     });
   });
 
+  it("defaults lower-role agents to MiniMax cheap profile with Codex fallback", () => {
+    expect(
+      buildNewAgentHirePayload({
+        name: "General Worker",
+        effectiveRole: "general",
+        configValues: {
+          ...defaultCreateValues,
+          adapterType: "claude_local",
+          model: "claude-sonnet-4-6",
+        },
+        adapterConfig: { model: "claude-sonnet-4-6" },
+      }),
+    ).toMatchObject({
+      adapterType: "claude_local",
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "minimax_local",
+              command: "opencode",
+              model: "minimax/MiniMax-M2.1",
+            },
+          },
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              command: "codex",
+              provider: "openai",
+              model: "gpt-5.4-mini",
+              modelReasoningEffort: "low",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps high-stakes agents on Codex fallback profiles", () => {
+    expect(
+      buildNewAgentHirePayload({
+        name: "Security Lead",
+        effectiveRole: "security",
+        configValues: {
+          ...defaultCreateValues,
+          adapterType: "claude_local",
+          model: "claude-opus-4-7",
+        },
+        adapterConfig: { model: "claude-opus-4-7" },
+      }),
+    ).toMatchObject({
+      runtimeConfig: {
+        modelProfiles: {
+          fallback: {
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.3-codex",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps coding and QA agents on Codex fallback profiles", () => {
+    for (const effectiveRole of ["engineer", "qa"]) {
+      expect(
+        buildNewAgentHirePayload({
+          name: `${effectiveRole} Agent`,
+          effectiveRole,
+          configValues: {
+            ...defaultCreateValues,
+            adapterType: "claude_local",
+            model: "claude-sonnet-4-6",
+          },
+          adapterConfig: { model: "claude-sonnet-4-6" },
+        }),
+      ).toMatchObject({
+        runtimeConfig: {
+          modelProfiles: {
+            fallback: {
+              adapterConfig: {
+                adapterType: "codex_local",
+              },
+            },
+          },
+        },
+      });
+    }
+  });
+
   it("keeps explicit cheap models on the current adapter when no adapter override is supplied", () => {
     expect(
       buildNewAgentHirePayload({

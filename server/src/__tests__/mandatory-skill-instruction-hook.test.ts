@@ -58,6 +58,16 @@ describe("mandatorySkillInstructionPreHook", () => {
           runtimeName: "para-memory-files",
           source: path.join(home, "skills", "para-memory-files"),
         },
+        {
+          key: "paperclipai/paperclip/paperclip",
+          runtimeName: "paperclip",
+          source: path.join(home, "skills", "paperclip"),
+        },
+        {
+          key: "paperclipai/paperclip/diagnose-why-work-stopped",
+          runtimeName: "diagnose-why-work-stopped",
+          source: path.join(home, "skills", "diagnose-why-work-stopped"),
+        },
       ],
     };
     const contextSnapshot: Record<string, unknown> = {};
@@ -81,6 +91,7 @@ describe("mandatorySkillInstructionPreHook", () => {
         "company/caveman",
         "company/karpathy-obsidian-memory",
         "paperclipai/paperclip/para-memory-files",
+        "paperclipai/paperclip/diagnose-why-work-stopped",
       ],
     });
     expect(runtimeConfig.instructionsFilePath).not.toBe(existingInstructionsPath);
@@ -88,7 +99,12 @@ describe("mandatorySkillInstructionPreHook", () => {
     expect(generated).toContain("read and apply the `caveman` skill");
     expect(generated).toContain("read and apply the `karpathy-obsidian-memory` skill");
     expect(generated).toContain("read and apply `para-memory-files`");
+    expect(generated).toContain("read and apply the `paperclip` skill");
+    expect(generated).toContain("read and apply the `diagnose-why-work-stopped` skill");
     expect(generated).toContain("Skill key: company/caveman");
+    expect(generated).toContain("Use the runtime skill named `caveman`; do not treat the original source path as the runtime skill root.");
+    expect(generated).toContain(`Original skill source: ${path.join(home, "skills", "caveman")}`);
+    expect(generated).not.toContain(`Skill source: ${path.join(home, "skills", "caveman")}`);
     expect(generated).not.toContain("caveman--4573ebe2fc");
     expect(generated).toContain("Keep issue context tight.");
     expect(contextSnapshot.mandatorySkillInstructions).toEqual([
@@ -103,6 +119,14 @@ describe("mandatorySkillInstructionPreHook", () => {
       expect.objectContaining({
         skillKey: "paperclipai/paperclip/para-memory-files",
         runtimeName: "para-memory-files",
+      }),
+      expect.objectContaining({
+        skillKey: "paperclipai/paperclip/paperclip",
+        runtimeName: "paperclip",
+      }),
+      expect.objectContaining({
+        skillKey: "paperclipai/paperclip/diagnose-why-work-stopped",
+        runtimeName: "diagnose-why-work-stopped",
       }),
     ]);
     expect(contextSnapshot.mandatorySkillInstruction).toMatchObject({

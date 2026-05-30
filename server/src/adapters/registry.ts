@@ -89,6 +89,7 @@ import {
   detectModel as minimaxDetectModel,
   execute as minimaxExecute,
   getQuotaWindows as minimaxGetQuotaWindows,
+  listMiniMaxModels,
   testEnvironment as minimaxTestEnvironment,
 } from "@paperclipai/adapter-minimax-local/server";
 import {
@@ -420,6 +421,7 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   sessionCodec: openCodeSessionCodec,
   sessionManagement: getAdapterSessionManagement("minimax_local") ?? undefined,
   models: minimaxModels,
+  listModels: listMiniMaxModels,
   modelProfiles: minimaxModelProfiles,
   detectModel: minimaxDetectModel,
   supportsLocalAgentJwt: true,

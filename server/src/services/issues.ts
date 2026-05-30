@@ -1887,6 +1887,59 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertValidProjectId(companyId: string, projectId: string | null | undefined, dbOrTx: DbReader = db) {
+    if (!projectId) return;
+    const project = await dbOrTx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!project) throw unprocessable("Project must belong to same company");
+  }
+
+  async function assertValidGoalId(companyId: string, goalId: string | null | undefined, dbOrTx: DbReader = db) {
+    if (!goalId) return;
+    const goal = await dbOrTx
+      .select({ id: goals.id })
+      .from(goals)
+      .where(and(eq(goals.id, goalId), eq(goals.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!goal) throw unprocessable("Goal must belong to same company");
+  }
+
+  async function assertValidParentIssue(input: {
+    companyId: string;
+    parentId: string | null | undefined;
+    issueId?: string | null;
+    dbOrTx?: DbReader;
+  }) {
+    if (!input.parentId) return;
+    if (input.issueId && input.parentId === input.issueId) {
+      throw unprocessable("Issue cannot be its own parent");
+    }
+    const dbOrTx = input.dbOrTx ?? db;
+    let cursor: string | null = input.parentId;
+    const visited = new Set<string>();
+    while (cursor) {
+      if (input.issueId && cursor === input.issueId) {
+        throw unprocessable("Issue parent would create a cycle");
+      }
+      if (visited.has(cursor)) {
+        throw unprocessable("Issue parent hierarchy contains a cycle");
+      }
+      visited.add(cursor);
+      const parent = await dbOrTx
+        .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+        .from(issues)
+        .where(eq(issues.id, cursor))
+        .then((rows) => rows[0] ?? null);
+      if (!parent || parent.companyId !== input.companyId) {
+        throw unprocessable("Parent issue must belong to same company");
+      }
+      cursor = parent.parentId;
+    }
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -2929,6 +2982,9 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        await assertValidProjectId(companyId, issueData.projectId, tx);
+        await assertValidGoalId(companyId, issueData.goalId, tx);
+        await assertValidParentIssue({ companyId, parentId: issueData.parentId, dbOrTx: tx });
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let resolvedProjectId = issueData.projectId ?? null;
@@ -3244,6 +3300,20 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      if (issueData.projectId !== undefined) {
+        await assertValidProjectId(existing.companyId, issueData.projectId, dbOrTx);
+      }
+      if (issueData.goalId !== undefined) {
+        await assertValidGoalId(existing.companyId, issueData.goalId, dbOrTx);
+      }
+      if (issueData.parentId !== undefined) {
+        await assertValidParentIssue({
+          companyId: existing.companyId,
+          parentId: issueData.parentId,
+          issueId: existing.id,
+          dbOrTx,
+        });
       }
       let nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =

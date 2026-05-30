@@ -31,6 +31,7 @@ describe("buildCodexExecArgs", () => {
       "--search",
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4",
       "-c",
@@ -53,6 +54,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-c",
@@ -77,6 +79,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.3-codex",
       "-",
