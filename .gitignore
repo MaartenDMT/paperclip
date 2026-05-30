@@ -68,6 +68,7 @@ tests/release-smoke/playwright-report/
 # Local investigation / scratch artifacts
 .graphify-work/
 .graphify_detect.json
+.tmp-screenshots/
 .graphify_detect.py
 .pnpm/
 .worktrees/
