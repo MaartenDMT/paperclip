@@ -50,9 +50,9 @@ const existingRunnerHealthTimeoutMs = Number.parseInt(
   10,
 ) || 1_500;
 const migrationStatusTimeoutMs = Number.parseInt(
-  process.env.PAPERCLIP_MIGRATION_STATUS_TIMEOUT_MS ?? "90000",
+  process.env.PAPERCLIP_MIGRATION_STATUS_TIMEOUT_MS ?? "300000",
   10,
-) || 90_000;
+) || 300_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
