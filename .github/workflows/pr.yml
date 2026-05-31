@@ -3,6 +3,7 @@ name: PR
 on:
   pull_request:
     branches:
+      - main
       - master
 
 concurrency:
@@ -168,7 +169,7 @@ jobs:
       # `--skip-verify` bypasses the initial verification gate.
       - name: Release canary dry run via release.sh internal build
         run: |
-          git checkout -B master HEAD
+          git checkout -B "${{ github.event.pull_request.base.ref }}" HEAD
           git checkout -- pnpm-lock.yaml
           ./scripts/release.sh canary --skip-verify --dry-run
 

@@ -15,6 +15,7 @@ import {
   issueComments,
   issueInboxArchives,
   issueRelations,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -3384,12 +3385,13 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-guard-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(issueWorkProducts);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
@@ -3491,5 +3493,96 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
     expect(issue?.status).toBe("in_progress");
     expect(issue?.checkoutRunId).toBe(runId);
     expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("rejects marking an issue done while a linked pull request work product is still open", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ship merged PR only",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      externalId: "7",
+      title: "REA-1638 PR",
+      url: "https://github.com/MaartenDMT/paperclip/pull/7",
+      status: "ready_for_review",
+      reviewState: "approved",
+      isPrimary: true,
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      message: "Issue cannot be marked done while linked pull requests are still open",
+      details: {
+        openPullRequests: [
+          expect.objectContaining({
+            externalId: "7",
+            title: "REA-1638 PR",
+            status: "ready_for_review",
+          }),
+        ],
+      },
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+    expect(issue?.completedAt).toBeNull();
+  });
+
+  it("allows marking an issue done after its linked pull request work product is merged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ship merged PR only",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      externalId: "8",
+      title: "Merged PR",
+      url: "https://github.com/MaartenDMT/paperclip/pull/8",
+      status: "merged",
+      reviewState: "approved",
+      isPrimary: true,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).toBeInstanceOf(Date);
   });
 });

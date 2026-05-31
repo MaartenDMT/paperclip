@@ -259,7 +259,7 @@ const QUEUED_RUN_RECONCILIATION_LIMIT = Math.max(
 );
 const HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX = Math.max(
   1,
-  Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 5)),
+  Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 20)),
 );
 const HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX = Math.max(
   0,
@@ -9117,6 +9117,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+      }
+      if (!run.processStartedAt) {
+        const processStartedRun = await db
+          .update(heartbeatRuns)
+          .set({
+            processStartedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.processStartedAt)))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (processStartedRun) run = processStartedRun;
       }
       const adapterResult = await adapter.execute({
         runId: run.id,

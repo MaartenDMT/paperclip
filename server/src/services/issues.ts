@@ -21,6 +21,7 @@ import {
   issueDocuments,
   issueReadStates,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   labels,
   projectWorkspaces,
@@ -83,6 +84,36 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const TERMINAL_PULL_REQUEST_WORK_PRODUCT_STATUSES = new Set(["merged", "closed", "archived", "failed"]);
+type OpenPullRequestWorkProduct = {
+  id: string;
+  externalId: string | null;
+  title: string;
+  status: string;
+  url: string | null;
+};
+
+async function listOpenPullRequestWorkProducts(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+): Promise<OpenPullRequestWorkProduct[]> {
+  const rows = await dbOrTx
+    .select({
+      id: issueWorkProducts.id,
+      externalId: issueWorkProducts.externalId,
+      title: issueWorkProducts.title,
+      status: issueWorkProducts.status,
+      url: issueWorkProducts.url,
+    })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+      eq(issueWorkProducts.type, "pull_request"),
+    ));
+  return rows.filter((row) => !TERMINAL_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(row.status));
+}
 
 function sanitizeTextForPostgres(input: string) {
   // PostgreSQL rejects NUL bytes, and other C0 controls corrupt issue text
@@ -3284,6 +3315,20 @@ export function issueService(db: Db) {
       }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      if (patch.status === "done") {
+        const openPullRequests = await listOpenPullRequestWorkProducts(dbOrTx, existing.companyId, existing.id);
+        if (openPullRequests.length > 0) {
+          throw unprocessable("Issue cannot be marked done while linked pull requests are still open", {
+            openPullRequests: openPullRequests.map((pr) => ({
+              id: pr.id,
+              externalId: pr.externalId,
+              title: pr.title,
+              status: pr.status,
+              url: pr.url,
+            })),
+          });
+        }
       }
       if (patch.status === "in_progress") {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined

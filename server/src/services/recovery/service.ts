@@ -2743,6 +2743,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (
+        isStrandedIssueRecoveryIssue(issue) &&
+        (issue.status === "todo" || issue.status === "in_progress")
+      ) {
+        const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+        if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+          const updated = await escalateStrandedRecoveryIssueInPlace({
+            issue,
+            previousStatus: issue.status,
+            latestRun,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+
       const obsoleteStrandedRecovery = await resolveObsoleteStrandedRecoveryIssue(issue);
       if (obsoleteStrandedRecovery) {
         result.escalated += 1;
