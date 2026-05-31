@@ -402,6 +402,56 @@ describe("startEmbeddedPostgresWithRecovery", () => {
     }
   });
 
+  it("continues cleanup when terminating one stale postgres pid reveals another before restart", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
+    const postmasterPidFile = path.join(tempDir, "postmaster.pid");
+    writeFileSync(postmasterPidFile, "4242\n");
+
+    try {
+      let startCalls = 0;
+      const livePids = new Set([4242, 4343]);
+      let firstDiscovery = true;
+      const terminatedPids: number[] = [];
+      const recoveredMessages: string[] = [];
+      const instance = {
+        async start() {
+          startCalls += 1;
+          if (startCalls === 1) {
+            throw new Error("startup failed");
+          }
+        },
+      };
+
+      await startEmbeddedPostgresWithRecovery({
+        instance,
+        postmasterPidFile,
+        getRecentLogs: () => [
+          "FATAL:  lock file \"postmaster.pid\" already exists",
+          "HINT:  Is another postmaster (PID 4242) running in data directory \"D:/WindowsData/paperclip/instances/default/db\"?",
+        ],
+        findCandidateProcessPids: async () => {
+          if (firstDiscovery) {
+            firstDiscovery = false;
+            return livePids.has(4242) ? [4242] : [];
+          }
+          return Array.from(livePids);
+        },
+        terminateProcessTree: async (pid) => {
+          terminatedPids.push(pid);
+          livePids.delete(pid);
+          return true;
+        },
+        onRecovered: (message) => recoveredMessages.push(message),
+      });
+
+      expect(startCalls).toBe(2);
+      expect(terminatedPids).toEqual([4242, 4343]);
+      expect(recoveredMessages).toHaveLength(1);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not claim recovery when a conflicting postgres pid remains alive", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "paperclip-embedded-postgres-"));
     const postmasterPidFile = path.join(tempDir, "postmaster.pid");

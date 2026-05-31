@@ -14,9 +14,17 @@ const POSTGRES_STARTUP_READY_TIMEOUT_MS = Math.max(
   15_000,
   Number.parseInt(process.env.PAPERCLIP_POSTGRES_STARTUP_READY_TIMEOUT_MS ?? "", 10) || 60_000,
 );
+const POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS = Math.max(
+  1,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS ?? "", 10) || 5,
+);
 
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  return postgres(url, {
+    max: 1,
+    connect_timeout: POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS,
+    onnotice: () => {},
+  });
 }
 
 function isSafeIdentifier(value: string): boolean {

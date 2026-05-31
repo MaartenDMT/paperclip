@@ -316,8 +316,14 @@ async function cleanupEmbeddedPostgresCandidates(input: {
   }
   let remainingPids: number[] = [];
   if (terminatedAny) {
-    remainingPids = await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
-    await delay(EMBEDDED_POSTGRES_RECOVERY_SETTLE_MS);
+    const immediateRemainingPids = await input.findCandidateProcessPids(dataDir);
+    const discoveredNewConflict = immediateRemainingPids.some((pid) => !candidatePids.has(pid));
+    remainingPids = discoveredNewConflict
+      ? immediateRemainingPids
+      : await waitForEmbeddedPostgresProcessCleanup(dataDir, input.findCandidateProcessPids);
+    if (!discoveredNewConflict) {
+      await delay(EMBEDDED_POSTGRES_RECOVERY_SETTLE_MS);
+    }
   } else {
     remainingPids = await input.findCandidateProcessPids(dataDir);
   }
@@ -356,6 +362,7 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   const findCandidateProcessPids =
     input.findCandidateProcessPids ?? findEmbeddedPostgresProcessPidsForDataDir;
   const terminateProcessTree = input.terminateProcessTree ?? terminatePidTree;
+  const attemptedTerminationPids = new Set<number>();
   for (let recoveryAttempt = 0; ; recoveryAttempt += 1) {
     try {
       await startWithTimeout(input.instance, startTimeoutMs);
@@ -370,32 +377,56 @@ export async function startEmbeddedPostgresWithRecovery(input: {
         throw error;
       }
 
-      const cleanup = await cleanupEmbeddedPostgresCandidates({
-        stalePid:
-          recoveryAttempt === 0
-            ? initialStalePid ?? readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false })
-            : readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false }),
-        postmasterPidFile: input.postmasterPidFile,
-        findCandidateProcessPids,
-        findRelatedProcessTreePids: input.findRelatedProcessTreePids,
-        terminateProcessTree,
-      });
-      if (cleanup.candidatePids.length === 0) {
-        throw error;
-      }
-      const clearedStalePidFileWithoutLiveConflicts =
-        cleanup.stalePid !== null && cleanup.remainingPids.length === 0;
-      if (!cleanup.terminatedAny && !clearedStalePidFileWithoutLiveConflicts) {
-        throw error;
-      }
-      if (cleanup.remainingPids.length > 0) {
-        throw new Error(
-          `embedded postgres recovery could not clear conflicting process tree(s): ${cleanup.remainingPids.join(", ")}`,
-        );
+      const recoveredPids = new Set<number>();
+      let stalePidForCleanup =
+        recoveryAttempt === 0
+          ? initialStalePid ?? readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false })
+          : readEmbeddedPostgresPostmasterPid(input.postmasterPidFile, { requireRunning: false });
+
+      for (let cleanupAttempt = 0; ; cleanupAttempt += 1) {
+        const cleanup = await cleanupEmbeddedPostgresCandidates({
+          stalePid: stalePidForCleanup,
+          postmasterPidFile: input.postmasterPidFile,
+          findCandidateProcessPids,
+          findRelatedProcessTreePids: input.findRelatedProcessTreePids,
+          terminateProcessTree: async (pid) => {
+            if (attemptedTerminationPids.has(pid)) {
+              return false;
+            }
+            attemptedTerminationPids.add(pid);
+            return await terminateProcessTree(pid);
+          },
+        });
+        for (const pid of cleanup.candidatePids) {
+          recoveredPids.add(pid);
+        }
+        if (cleanup.candidatePids.length === 0) {
+          throw error;
+        }
+        if (cleanup.remainingPids.length > 0) {
+          const newlyDiscoveredRemainingPid = cleanup.remainingPids.some((pid) => !cleanup.candidatePids.includes(pid));
+          if (
+            !cleanup.terminatedAny ||
+            !newlyDiscoveredRemainingPid ||
+            cleanupAttempt >= MAX_EMBEDDED_POSTGRES_START_RECOVERY_ATTEMPTS
+          ) {
+            throw new Error(
+              `embedded postgres recovery could not clear conflicting process tree(s): ${cleanup.remainingPids.join(", ")}`,
+            );
+          }
+          stalePidForCleanup = cleanup.remainingPids[0] ?? null;
+          continue;
+        }
+
+        const clearedStalePidFileWithoutLiveConflicts = cleanup.stalePid !== null;
+        if (!cleanup.terminatedAny && !clearedStalePidFileWithoutLiveConflicts) {
+          throw error;
+        }
+        break;
       }
 
       input.onRecovered?.(
-        `Recovered embedded PostgreSQL startup by terminating stale postgres process tree(s): ${cleanup.candidatePids.join(", ")}.`,
+        `Recovered embedded PostgreSQL startup by terminating stale postgres process tree(s): ${Array.from(recoveredPids).join(", ")}.`,
       );
     }
   }
