@@ -12,6 +12,7 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
+  canRepairControlPlane?: boolean;
 }
 
 export interface AgentModelProfileConfig {
@@ -22,6 +23,13 @@ export interface AgentModelProfileConfig {
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  heartbeat?: {
+    enabled?: boolean;
+    intervalSec?: number;
+    wakeOnDemand?: boolean;
+    maxConcurrentRuns?: number;
+    [key: string]: unknown;
+  };
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

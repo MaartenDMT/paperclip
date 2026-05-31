@@ -75,7 +75,35 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
+export const AGENT_COORDINATION_MAX_CONCURRENT_RUNS = 2;
+export const AGENT_COORDINATION_ROLES = ["ceo", "cto", "cmo", "cfo", "pm", "manager"] as const;
+
+export function defaultAgentMaxConcurrentRuns(input: {
+  role?: unknown;
+  title?: unknown;
+  name?: unknown;
+} = {}) {
+  const role = typeof input.role === "string" ? input.role.trim().toLowerCase() : "";
+  const title = typeof input.title === "string" ? input.title.trim().toLowerCase() : "";
+  const name = typeof input.name === "string" ? input.name.trim().toLowerCase() : "";
+  const hasExecutiveTitle =
+    title.includes("chief executive officer") ||
+    title.includes("chief technology officer") ||
+    title.includes("chief marketing officer") ||
+    title.includes("chief financial officer");
+  if (
+    (AGENT_COORDINATION_ROLES as readonly string[]).includes(role) ||
+    (AGENT_COORDINATION_ROLES as readonly string[]).includes(name) ||
+    hasExecutiveTitle ||
+    title.includes("coordinator") ||
+    name.includes("coordinator") ||
+    title.includes("manager")
+  ) {
+    return AGENT_COORDINATION_MAX_CONCURRENT_RUNS;
+  }
+  return AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+}
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap", "fallback"] as const;

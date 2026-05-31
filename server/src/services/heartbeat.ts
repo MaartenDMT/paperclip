@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  defaultAgentMaxConcurrentRuns,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -203,7 +204,6 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const MANAGEMENT_AGENT_LIVE_RUN_CAP = 4;
-const MANAGEMENT_AGENT_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "pm"]);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -6527,10 +6527,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function isManagementQueueCappedAgent(agent: typeof agents.$inferSelect) {
-    const role = String(agent.role ?? "").toLowerCase();
-    const title = String(agent.title ?? "").toLowerCase();
-    const name = String(agent.name ?? "").toLowerCase();
-    return MANAGEMENT_AGENT_ROLES.has(role) || title.includes("coordinator") || name.includes("coordinator");
+    return defaultAgentMaxConcurrentRuns(agent) > AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
 
   async function shouldSkipForManagementQueueCap(agent: typeof agents.$inferSelect) {

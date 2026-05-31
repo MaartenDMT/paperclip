@@ -33,6 +33,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  defaultAgentMaxConcurrentRuns,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
@@ -843,12 +844,15 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
+function disableImportedTimerHeartbeat(
+  runtimeConfig: unknown,
+  agent?: { role?: unknown; title?: unknown; name?: unknown },
+) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = defaultAgentMaxConcurrentRuns(agent);
   }
   next.heartbeat = heartbeat;
   return next;
@@ -4294,7 +4298,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           reportsTo: null,
           adapterType: normalizedAdapter.adapterType,
           adapterConfig: normalizedAdapter.adapterConfig,
-          runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+          runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig, {
+            role: manifestAgent.role,
+            title: manifestAgent.title,
+            name: planAgent.plannedName,
+          }),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,
           metadata: manifestAgent.metadata,

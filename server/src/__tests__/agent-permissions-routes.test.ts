@@ -882,7 +882,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
-  it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
+  it("normalizes direct specialist agent creation to one active run by default", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -913,7 +913,45 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
+          },
+        },
+      }),
+    );
+  });
+
+  it("normalizes direct CEO agent creation to two active runs by default", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            intervalSec: 3600,
+          },
+        },
+      }));
+
+    expect([200, 201]).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 3600,
+            maxConcurrentRuns: 2,
           },
         },
       }),
@@ -992,7 +1030,7 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
-  it("normalizes hire requests to disable timer heartbeats by default", async () => {
+  it("normalizes specialist hire requests to one active run by default", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -1023,7 +1061,46 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
+          },
+        },
+      }),
+    );
+  });
+
+  it("normalizes coordinator hire requests to two active runs by default", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Delivery Coordinator",
+        role: "general",
+        title: "Coordinator",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            intervalSec: 3600,
+          },
+        },
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 3600,
+            maxConcurrentRuns: 2,
           },
         },
       }),

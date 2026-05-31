@@ -7,10 +7,10 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  defaultAgentMaxConcurrentRuns,
   deriveAgentUrlKey,
   isUuidLike,
   normalizeIssueIdentifier,
@@ -1015,7 +1015,10 @@ export function agentRoutes(
     };
   }
 
-  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
+  function normalizeNewAgentRuntimeConfig(
+    runtimeConfig: unknown,
+    agent?: { role?: unknown; title?: unknown; name?: unknown },
+  ): Record<string, unknown> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -1025,7 +1028,7 @@ export function agentRoutes(
       heartbeat.enabled = false;
     }
     if (parseNumberLike(heartbeat.maxConcurrentRuns) == null) {
-      heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+      heartbeat.maxConcurrentRuns = defaultAgentMaxConcurrentRuns(agent);
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
@@ -2189,7 +2192,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       hireInput.adapterType,
-      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig, hireInput),
       normalizedAdapterConfig,
     );
     const normalizedHireInput = {
@@ -2375,7 +2378,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       createInput.adapterType,
-      normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+      normalizeNewAgentRuntimeConfig(createInput.runtimeConfig, createInput),
       normalizedAdapterConfig,
     );
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
