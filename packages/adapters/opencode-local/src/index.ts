@@ -1,4 +1,5 @@
 import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+export { parseOpenCodeStdoutLine } from "./ui/parse-stdout.js";
 
 export const type = "opencode_local";
 export const label = "OpenCode (local)";

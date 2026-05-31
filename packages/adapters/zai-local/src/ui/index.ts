@@ -1,5 +1,5 @@
 import { buildSimpleCliConfig } from "@paperclipai/adapter-utils/simple-cli-ui";
-import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local/ui";
+import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import { DEFAULT_ZAI_LOCAL_MODEL } from "../index.js";
 
