@@ -846,6 +846,210 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return closed;
   }
 
+  async function closeHealthyStaleRunEvaluations(opts?: { companyId?: string; now?: Date }) {
+    const now = opts?.now ?? new Date();
+    const suspicionAfter = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+    const rows = await db
+      .select({
+        evaluation: {
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          companyId: issues.companyId,
+        },
+        run: {
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          lastOutputAt: heartbeatRuns.lastOutputAt,
+          lastOutputSeq: heartbeatRuns.lastOutputSeq,
+          lastOutputStream: heartbeatRuns.lastOutputStream,
+          processStartedAt: heartbeatRuns.processStartedAt,
+          startedAt: heartbeatRuns.startedAt,
+          createdAt: heartbeatRuns.createdAt,
+        },
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, issues.companyId),
+          sql`${heartbeatRuns.id}::text = ${issues.originId}`,
+        ),
+      )
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+          eq(heartbeatRuns.status, "running"),
+          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) > ${suspicionAfter.toISOString()}::timestamptz`,
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(100);
+
+    let closed = 0;
+    for (const row of rows) {
+      const sourceIssueId = issueIdFromRunContext(row.run.contextSnapshot);
+      const sourceIssue = sourceIssueId
+        ? await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, row.evaluation.companyId), eq(issues.id, sourceIssueId)))
+          .then((sourceRows) => sourceRows[0] ?? null)
+        : null;
+      const prefix = await getCompanyIssuePrefix(row.evaluation.companyId);
+      const openRecoveryWrappers = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, row.evaluation.companyId),
+            eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+            eq(issues.originId, row.evaluation.id),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        );
+
+      for (const recoveryIssue of openRecoveryWrappers) {
+        const recoveryUpdated = await issuesSvc.update(recoveryIssue.id, { status: "done" });
+        if (!recoveryUpdated) continue;
+        await issuesSvc.addComment(recoveryIssue.id, [
+          "Paperclip closed this recovery wrapper because the source stale-run review is no longer actionable.",
+          "",
+          `- Source review: ${issueUiLink({ identifier: row.evaluation.identifier, id: row.evaluation.id }, prefix)}`,
+          `- Monitored run: ${runUiLink({ id: row.run.id, agentId: row.run.agentId }, prefix)}`,
+          `- Run status: \`${row.run.status}\``,
+          `- Last output at: ${row.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+          "",
+          "Next action: none on this wrapper.",
+        ].join("\n"), {}, { authorType: "system" });
+        await logActivity(db, {
+          companyId: recoveryIssue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: row.run.id,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: recoveryIssue.id,
+          details: {
+            identifier: recoveryIssue.identifier,
+            status: "done",
+            previousStatus: recoveryIssue.status,
+            source: "recovery.resolve_healthy_stale_run_evaluation_wrapper",
+            sourceIssueId: row.evaluation.id,
+            staleRunId: row.run.id,
+          },
+        });
+      }
+
+      const updated = await issuesSvc.update(row.evaluation.id, {
+        status: "done",
+        blockedByIssueIds: [],
+      });
+      if (!updated) continue;
+
+      const removableBlockerIds = new Set([
+        row.evaluation.id,
+        ...openRecoveryWrappers.map((recoveryIssue) => recoveryIssue.id),
+      ]);
+      if (sourceIssue?.status === "blocked") {
+        const sourceBlockerIds = await existingBlockerIssueIds(row.evaluation.companyId, sourceIssue.id);
+        const remainingSourceBlockerIds = sourceBlockerIds.filter((blockerId) => !removableBlockerIds.has(blockerId));
+        if (remainingSourceBlockerIds.length !== sourceBlockerIds.length) {
+          const remainingUnresolvedBlockerIssueIds = remainingSourceBlockerIds.length > 0
+            ? await existingUnresolvedBlockerIssueIds(row.evaluation.companyId, sourceIssue.id)
+              .then((blockerIds) => blockerIds.filter((blockerId) => remainingSourceBlockerIds.includes(blockerId)))
+            : [];
+          await issuesSvc.update(sourceIssue.id, {
+            status: remainingUnresolvedBlockerIssueIds.length === 0 ? "todo" : sourceIssue.status,
+            blockedByIssueIds: remainingUnresolvedBlockerIssueIds,
+          });
+          await issuesSvc.addComment(sourceIssue.id, [
+            remainingUnresolvedBlockerIssueIds.length === 0
+              ? "Paperclip returned this source issue to `todo` because its stale-run review was a false-positive blocker and the monitored run has fresh output again."
+              : "Paperclip pruned a stale-run review blocker because the monitored run has fresh output again.",
+            "",
+            `- Cleared stale review: ${issueUiLink({ identifier: row.evaluation.identifier, id: row.evaluation.id }, prefix)}`,
+            `- Monitored run: ${runUiLink({ id: row.run.id, agentId: row.run.agentId }, prefix)}`,
+            `- Last output at: ${row.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+            "",
+            remainingUnresolvedBlockerIssueIds.length === 0
+              ? "Next action: assigned owner should continue the live source issue normally."
+              : "Next action: remaining blockers still own the source issue.",
+          ].join("\n"), {}, { authorType: "system" });
+          await logActivity(db, {
+            companyId: row.evaluation.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: sourceIssue.assigneeAgentId ?? null,
+            runId: row.run.id,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: sourceIssue.id,
+            details: {
+              identifier: sourceIssue.identifier,
+              status: remainingUnresolvedBlockerIssueIds.length === 0 ? "todo" : sourceIssue.status,
+              previousStatus: sourceIssue.status,
+              source: "recovery.resolve_healthy_stale_run_source_prune",
+              staleRunEvaluationIssueId: row.evaluation.id,
+              staleRunId: row.run.id,
+              remainingBlockerIssueIds: remainingUnresolvedBlockerIssueIds,
+            },
+          });
+        }
+      }
+
+      await issuesSvc.addComment(row.evaluation.id, [
+        "Paperclip closed this stale-run review automatically because the monitored run has fresh output again.",
+        "",
+        `- Monitored run: ${runUiLink({ id: row.run.id, agentId: row.run.agentId }, prefix)}`,
+        `- Run status: \`${row.run.status}\``,
+        sourceIssue
+          ? `- Source issue: ${issueUiLink(sourceIssue, prefix)} (\`${sourceIssue.status}\`)`
+          : "- Source issue: none",
+        `- Last output at: ${row.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+        `- Last output sequence: ${row.run.lastOutputSeq ?? 0}`,
+        `- Last output stream: \`${row.run.lastOutputStream ?? "unknown"}\``,
+        "",
+        "Next action: none unless the run becomes silent again after the re-arm window.",
+      ].join("\n"), {}, { authorType: "system" });
+
+      await logActivity(db, {
+        companyId: row.evaluation.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: row.run.id,
+        action: "heartbeat.output_stale_evaluation_closed_healthy_source",
+        entityType: "issue",
+        entityId: row.evaluation.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          sourceRunId: row.run.id,
+          lastOutputAt: row.run.lastOutputAt?.toISOString() ?? null,
+          lastOutputSeq: row.run.lastOutputSeq ?? 0,
+          closedAt: now.toISOString(),
+        },
+      });
+
+      closed += 1;
+    }
+
+    return closed;
+  }
+
   // Same dismissal-record rationale as the stranded-issue recovery path. A
   // silent-run evaluation that was explicitly cancelled stays cancelled - the
   // watchdog never re-creates one for the same run until the dismissal row is
@@ -1370,6 +1574,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         escalated: 0,
         snoozed: 0,
         skipped: 0,
+        closedTerminal: 0,
+        closedHealthy: 0,
         evaluationIssueIds: [] as string[],
       };
     }
@@ -1397,6 +1603,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       snoozed: 0,
       skipped: 0,
       closedTerminal: await closeTerminalStaleRunEvaluations({ now, companyId: opts?.companyId }),
+      closedHealthy: await closeHealthyStaleRunEvaluations({ now, companyId: opts?.companyId }),
       evaluationIssueIds: [] as string[],
     };
 

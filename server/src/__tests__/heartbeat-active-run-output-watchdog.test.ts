@@ -600,6 +600,75 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(comments.some((comment) => comment.body.includes("returned this source issue to `todo`"))).toBe(true);
   });
 
+  it("closes stale-run evaluations when the source run resumes fresh output", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover stale review missing disposition",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      parentId: evaluation?.id,
+      originKind: "stranded_issue_recovery",
+      originId: evaluation?.id,
+      originRunId: randomUUID(),
+      originFingerprint: `stranded_issue_recovery:${companyId}:${evaluation?.id}:fresh-output`,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      type: "blocks",
+      issueId: recoveryIssueId,
+      relatedIssueId: evaluation!.id,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastOutputAt: new Date(now.getTime() + 30_000),
+        lastOutputSeq: 12,
+        lastOutputStream: "stdout",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.scanSilentActiveRuns({
+      now: new Date(now.getTime() + 60_000),
+      companyId,
+    });
+
+    expect(result.closedHealthy).toBe(1);
+    const [resolvedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(resolvedEvaluation?.status).toBe("done");
+    const [resolvedWrapper] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+    expect(resolvedWrapper?.status).toBe("done");
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue?.status).toBe("todo");
+    const sourceBlockers = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId));
+    expect(sourceBlockers).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, evaluation!.id));
+    expect(comments.some((comment) => comment.body.includes("fresh output again"))).toBe(true);
+  });
+
   it("returns source issues to todo when obsolete recovery wrappers are their only blocker", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({

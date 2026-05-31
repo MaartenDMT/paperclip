@@ -8,6 +8,12 @@ describe("isEmbeddedPostgresStartupTransientError", () => {
   it("treats startup connection churn as transient", () => {
     expect(isEmbeddedPostgresStartupTransientError(new Error("write CONNECT_TIMEOUT 127.0.0.1:54329"))).toBe(true);
     expect(isEmbeddedPostgresStartupTransientError(new Error("write CONNECTION_ENDED 127.0.0.1:54329"))).toBe(true);
+    expect(
+      isEmbeddedPostgresStartupTransientError(Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+        syscall: "read",
+      })),
+    ).toBe(true);
     expect(isEmbeddedPostgresStartupTransientError(new Error("database system is not yet accepting connections"))).toBe(
       true,
     );
@@ -38,6 +44,34 @@ describe("waitForEmbeddedPostgresReady", () => {
       }),
     ).resolves.toBe(true);
     expect(ensureDatabase).toHaveBeenCalledTimes(3);
+  });
+
+  it("waits through connection resets while verifying the target database", async () => {
+    const ensureDatabase = vi.fn(async () => "exists" as const);
+    let verifyCalls = 0;
+    const verifyConnection = vi.fn(async () => {
+      verifyCalls += 1;
+      if (verifyCalls < 2) {
+        throw Object.assign(new Error("read ECONNRESET"), {
+          code: "ECONNRESET",
+          syscall: "read",
+        });
+      }
+    });
+
+    await expect(
+      waitForEmbeddedPostgresReady({
+        adminConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/postgres",
+        targetConnectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+        ensureDatabase,
+        verifyConnection,
+        timeoutMs: 5,
+        stabilityGraceMs: 3,
+        pollMs: 1,
+      }),
+    ).resolves.toBe(true);
+    expect(ensureDatabase).toHaveBeenCalledTimes(1);
+    expect(verifyConnection).toHaveBeenCalledTimes(2);
   });
 
   it("returns false when transient startup churn outlasts the grace window", async () => {

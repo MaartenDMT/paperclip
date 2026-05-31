@@ -57,6 +57,7 @@ export function isEmbeddedPostgresStartupTransientError(error: unknown): boolean
     haystack.includes("connection_ended") ||
     haystack.includes("connection ended") ||
     haystack.includes("connection terminated") ||
+    haystack.includes("econnreset") ||
     haystack.includes("econnrefused")
   );
 }
