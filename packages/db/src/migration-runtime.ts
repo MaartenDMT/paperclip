@@ -163,10 +163,7 @@ async function ensureEmbeddedPostgresConnection(
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
   const preferredAvailablePort = await findAvailablePort(preferredPort);
-  const selectedPort =
-    preferredAvailablePort !== preferredPort && existsSync(pgVersionFile)
-      ? preferredPort
-      : preferredAvailablePort;
+  const selectedPort = preferredAvailablePort;
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
   const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
