@@ -181,6 +181,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { readBlockedCheckoutUnresolvedBlockerIssueIds } from "./heartbeat-checkout-errors.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -7847,8 +7848,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues();
+  async function reconcileStrandedAssignedIssues(opts?: { companyId?: string }) {
+    return recovery.reconcileStrandedAssignedIssues(opts);
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -7882,7 +7883,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function buildIssueGraphLivenessAutoRecoveryPreview(opts?: { lookbackHours?: number; now?: Date }) {
+  async function buildIssueGraphLivenessAutoRecoveryPreview(opts?: { lookbackHours?: number; now?: Date; companyId?: string }) {
     return recovery.buildIssueGraphLivenessAutoRecoveryPreview(opts);
   }
 
@@ -7890,6 +7891,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    companyId?: string;
   }) {
     return recovery.reconcileIssueGraphLiveness(opts);
   }
@@ -8230,6 +8232,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await issuesSvc.checkout(issueId, agent.id, autoCheckoutExpectedStatusesForWake(context), run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
+        const unresolvedBlockerIssueIds = readBlockedCheckoutUnresolvedBlockerIssueIds(error);
+        if (unresolvedBlockerIssueIds) {
+          await cancelQueuedRunForBlockedDependencies(run, issueId, unresolvedBlockerIssueIds);
+          return;
+        }
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }

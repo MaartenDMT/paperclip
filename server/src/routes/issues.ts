@@ -1186,6 +1186,126 @@ export function issueRoutes(
     return true;
   }
 
+  async function resolveCompanyIdForUnscopedIssueCreate(req: Request, res: Response): Promise<string | null> {
+    const parentId = readNonEmptyString(req.body?.parentId);
+    if (parentId) {
+      const parent = await svc.getById(parentId);
+      if (!parent) {
+        res.status(404).json({ error: "Parent issue not found" });
+        return null;
+      }
+      return parent.companyId;
+    }
+
+    const projectId = readNonEmptyString(req.body?.projectId);
+    if (projectId) {
+      const project = await projectsSvc.getById(projectId);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return null;
+      }
+      return project.companyId;
+    }
+
+    if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
+    if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
+      return req.actor.companyIds[0]!;
+    }
+
+    throw unprocessable(
+      "Company could not be inferred for issue creation; use /api/companies/:companyId/issues or include parentId/projectId",
+    );
+  }
+
+  async function createIssueForCompany(req: Request, res: Response, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+      await assertCanAssignTasks(req, companyId);
+    }
+    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
+
+    const actor = getActorInfo(req);
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      actor.actorType,
+    );
+    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const issue = await svc.create(companyId, {
+      ...req.body,
+      executionPolicy,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await issueReferencesSvc.syncIssue(issue.id);
+    const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+      issueReferencesSvc.emptySummary(),
+      referenceSummary,
+    );
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        title: issue.title,
+        identifier: issue.identifier,
+        ...buildCreateIssueActivityStatusDetails(issue, res),
+        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+        ...summarizeIssueReferenceActivityDetails({
+          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+        }),
+      },
+    });
+
+    if (executionPolicy?.monitor) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          nextCheckAt: executionPolicy.monitor.nextCheckAt,
+          notes: executionPolicy.monitor.notes,
+          scheduledBy: executionPolicy.monitor.scheduledBy,
+          serviceName: executionPolicy.monitor.serviceName ?? null,
+          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+        },
+      });
+    }
+
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue,
+      reason: "issue_assigned",
+      mutation: "create",
+      contextSource: "issue.create",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
+
+    res.status(201).json({
+      ...issue,
+      relatedWork: referenceSummary,
+      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+    });
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -2391,94 +2511,14 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  router.post("/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+    const companyId = await resolveCompanyIdForUnscopedIssueCreate(req, res);
+    if (!companyId) return;
+    await createIssueForCompany(req, res, companyId);
+  });
+
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
-    }
-    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
-
-    const actor = getActorInfo(req);
-    const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
-      actor.actorType,
-    );
-    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-    const issue = await svc.create(companyId, {
-      ...req.body,
-      executionPolicy,
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
-    await issueReferencesSvc.syncIssue(issue.id);
-    const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      issueReferencesSvc.emptySummary(),
-      referenceSummary,
-    );
-
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        title: issue.title,
-        identifier: issue.identifier,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
-      });
-    }
-
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
-
-    res.status(201).json({
-      ...issue,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
-    });
+    await createIssueForCompany(req, res, req.params.companyId as string);
   });
 
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {

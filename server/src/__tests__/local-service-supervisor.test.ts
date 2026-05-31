@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   doesCommandLineMatchLocalServiceRecord,
+  findAdoptableLocalService,
   pruneStaleLocalServiceRegistryRecords,
   removeLocalServiceRegistryRecord,
   type LocalServiceRegistryRecord,
@@ -77,6 +78,31 @@ describe("local service supervisor", () => {
         serviceName: "paperclip-dev-watch",
       }),
     ).toBe(false);
+  });
+
+  it("removes an old alive service record when its health check fails", async () => {
+    const record = createRegistryRecord({
+      serviceKey: "paperclip-dev-unhealthy",
+      serviceName: "node",
+      pid: process.pid,
+      startedAt: "2026-05-29T00:00:00.000Z",
+      lastSeenAt: "2026-05-29T00:00:00.000Z",
+    });
+
+    vi.spyOn(fs, "readFile").mockResolvedValueOnce(JSON.stringify(record) as never);
+    const rm = vi.spyOn(fs, "rm").mockResolvedValue(undefined as never);
+
+    await expect(
+      findAdoptableLocalService({
+        serviceKey: "paperclip-dev-unhealthy",
+        port: 3100,
+        minAgeMsBeforeHealthCheck: 1,
+        healthCheck: async () => false,
+      }),
+    ).resolves.toBeNull();
+
+    expect(rm).toHaveBeenCalledOnce();
+    expect(String(rm.mock.calls[0]?.[0])).toContain("paperclip-dev-unhealthy.json");
   });
 });
 

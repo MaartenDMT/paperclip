@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+const parentIssueId = "11111111-1111-4111-8111-111111111111";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -27,6 +28,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(async () => null),
   }),
+  agentInstructionsService: () => ({}),
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
@@ -309,5 +311,36 @@ describe("assigned backlog creation contract", () => {
       }),
     );
     expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("accepts unscoped issue creation when parentId identifies the company", async () => {
+    const res = await request(await createApp())
+      .post("/api/issues")
+      .send({
+        title: "Follow-up from runtime",
+        parentId: parentIssueId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.getById).toHaveBeenCalledWith(parentIssueId);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Follow-up from runtime",
+        parentId: parentIssueId,
+        status: "backlog",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        companyId: "company-1",
+        details: expect.objectContaining({
+          status: "backlog",
+          statusDefaulted: true,
+        }),
+      }),
+    );
   });
 });

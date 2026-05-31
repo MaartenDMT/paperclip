@@ -6,6 +6,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+- Work only inside your company boundary and use the company id from identity/context for company-scoped APIs.
 
 ## 2. Local Planning Check
 
@@ -34,6 +35,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
+- Never retry checkout for unresolved blocker errors. Route or assign the blocker issue first and let Paperclip wake the blocked assignee when blockers resolve.
 - Do the work. Update status and comment when done.
 
 Status quick guide:
@@ -48,6 +50,8 @@ Status quick guide:
 ## 6. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
+- Use `POST /api/issues` only when the company can be inferred from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when the follow-up should inherit child-issue behavior from the current issue.
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
 - For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
 - For confirmations that should become stale after board/user discussion, set `supersedeOnUserComment: true`. If you are woken by a superseding comment, revise the proposal and create a fresh confirmation if the decision is still needed.

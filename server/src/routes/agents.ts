@@ -78,7 +78,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
-import { agentRoleCanAssignTasks } from "../services/agent-permissions.js";
+import { agentRoleCanAssignTasks, normalizeAgentPermissions } from "../services/agent-permissions.js";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
   DEFAULT_ACPX_LOCAL_MODE,
@@ -598,8 +598,7 @@ export function agentRoutes(
   }
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+    return normalizeAgentPermissions(agent.permissions, agent.role).canCreateAgents;
   }
 
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -2499,6 +2498,7 @@ export function agentRoutes(
       entityId: agent.id,
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
+        canRepairControlPlane: agent.permissions?.canRepairControlPlane ?? false,
         canAssignTasks: effectiveCanAssignTasks,
       },
     });

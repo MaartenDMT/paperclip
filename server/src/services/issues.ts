@@ -1928,7 +1928,7 @@ export function issueService(db: Db) {
         throw unprocessable("Issue parent hierarchy contains a cycle");
       }
       visited.add(cursor);
-      const parent = await dbOrTx
+      const parent: { id: string; companyId: string; parentId: string | null } | null = await dbOrTx
         .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
         .from(issues)
         .where(eq(issues.id, cursor))

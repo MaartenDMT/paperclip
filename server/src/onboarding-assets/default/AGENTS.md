@@ -18,6 +18,14 @@ Your personal instruction files live alongside this entry file. Treat this direc
 - If someone needs to unblock you, assign or route the ticket with a comment that names the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
+## Company Context
+
+- Every issue, agent, project, goal, and activity belongs to a company. Do not read or mutate another company's work.
+- Prefer company-scoped APIs when the company id is known. For issue creation, use `POST /api/companies/{companyId}/issues`.
+- `POST /api/issues` is only for runtime clients when Paperclip can infer the company from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when you need child-issue semantics such as inherited execution workspace behavior.
+- If work is blocked by unresolved blocker issues, work or route the blockers first. Do not retry checkout loops against blocked work.
+
 Do not let work sit here. You must always update your task with a comment.
 
 ## References

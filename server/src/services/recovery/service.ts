@@ -582,7 +582,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(budgetBlock);
   }
 
-  async function reconcileUnassignedBlockingIssues() {
+  async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
     const candidates = await db
       .select({
         id: issues.id,
@@ -596,6 +596,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           eq(issueRelations.type, "blocks"),
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           inArray(issues.status, ["todo", "blocked"]),
           isNull(issues.assigneeAgentId),
           isNull(issues.assigneeUserId),
@@ -1922,6 +1923,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     if (!updated) return null;
 
+    const obsoleteRecoveryWrapperLine = openRecoveryWrappers.length > 0
+      ? `- Closed obsolete recovery wrapper(s): ${formatIssueLinksForComment(openRecoveryWrappers)}`
+      : null;
+
     await issuesSvc.addComment(issue.id, [
       sourceIssueTerminal
         ? "Paperclip closed this stale-run review automatically because the monitored run is already terminal and its source issue is already resolved."
@@ -1934,6 +1939,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       sourceIssue
         ? `- Source issue: ${issueUiLink(sourceIssue, prefix)} (\`${sourceIssue.status}\`)`
         : "- Source issue: none",
+      ...(obsoleteRecoveryWrapperLine ? [obsoleteRecoveryWrapperLine] : []),
       `- Error code: \`${staleRun.errorCode ?? "none"}\``,
       `- Finished at: ${staleRun.finishedAt?.toISOString() ?? "unknown"}`,
       `- Last output at: ${staleRun.lastOutputAt?.toISOString() ?? "none recorded"}`,
@@ -2648,15 +2654,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function reconcileStrandedAssignedIssues() {
+  async function reconcileStrandedAssignedIssues(opts?: { companyId?: string }) {
     const candidates = await db
       .select()
       .from(issues)
       .where(
         and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress", "blocked"]),
         ),
+      )
+      .orderBy(
+        sql`case when ${issues.originKind} = ${STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND} then 0 else 1 end`,
+        asc(issues.createdAt),
       );
 
     const result = {
@@ -2914,7 +2925,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues({ companyId: opts?.companyId });
     result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
     result.skipped += orphanBlockerRecovery.skipped;
     result.issueIds.push(...orphanBlockerRecovery.issueIds);
@@ -2922,7 +2933,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
-  async function collectIssueGraphLivenessFindings() {
+  async function collectIssueGraphLivenessFindings(opts?: { companyId?: string }) {
     const [
       issueRows,
       relationRows,
@@ -2956,6 +2967,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(
           and(
+            opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
             isNull(issues.hiddenAt),
             notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
           ),
@@ -2967,7 +2979,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           blockedIssueId: issueRelations.relatedIssueId,
         })
         .from(issueRelations)
-        .where(eq(issueRelations.type, "blocks")),
+        .where(and(
+          eq(issueRelations.type, "blocks"),
+          opts?.companyId ? eq(issueRelations.companyId, opts.companyId) : undefined,
+        )),
       db
         .select({
           id: agents.id,
@@ -2978,7 +2993,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: agents.status,
           reportsTo: agents.reportsTo,
         })
-        .from(agents),
+        .from(agents)
+        .where(opts?.companyId ? eq(agents.companyId, opts.companyId) : undefined),
       db
         .select({
           companyId: heartbeatRuns.companyId,
@@ -2987,7 +3003,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])),
+        .where(and(
+          opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        )),
       db
         .select({
           companyId: issues.companyId,
@@ -2999,6 +3018,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
         .where(
           and(
+            opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
             isNull(issues.hiddenAt),
             notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
@@ -3012,7 +3032,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           payload: agentWakeupRequests.payload,
         })
         .from(agentWakeupRequests)
-        .where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])),
+        .where(and(
+          opts?.companyId ? eq(agentWakeupRequests.companyId, opts.companyId) : undefined,
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        )),
       db
         .select({
           companyId: issueThreadInteractions.companyId,
@@ -3020,7 +3043,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: issueThreadInteractions.status,
         })
         .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.status, "pending")),
+        .where(and(
+          opts?.companyId ? eq(issueThreadInteractions.companyId, opts.companyId) : undefined,
+          eq(issueThreadInteractions.status, "pending"),
+        )),
       db
         .select({
           companyId: issueApprovals.companyId,
@@ -3029,7 +3055,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
-        .where(inArray(approvals.status, ["pending", "revision_requested"])),
+        .where(and(
+          opts?.companyId ? eq(issueApprovals.companyId, opts.companyId) : undefined,
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        )),
       db
         .select({
           companyId: issues.companyId,
@@ -3041,6 +3070,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(
           and(
+            opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
             isNull(issues.hiddenAt),
             inArray(issues.originKind, [
               STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
@@ -3209,7 +3239,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(contextRun || issueRun);
   }
 
-  async function retireObsoleteLivenessRecoveryIssues(findings: IssueLivenessFinding[]) {
+  async function retireObsoleteLivenessRecoveryIssues(findings: IssueLivenessFinding[], opts?: { companyId?: string }) {
     const currentIncidentKeys = new Set(findings.map((finding) => finding.incidentKey));
     const currentLeafKeys = new Set(
       findings.map((finding) =>
@@ -3226,6 +3256,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           isNull(issues.hiddenAt),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
@@ -3318,12 +3349,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function buildIssueGraphLivenessAutoRecoveryPreview(
-    opts?: { lookbackHours?: number; now?: Date },
+    opts?: { lookbackHours?: number; now?: Date; companyId?: string },
   ): Promise<IssueGraphLivenessAutoRecoveryPreview> {
     const now = opts?.now ?? new Date();
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(opts?.lookbackHours);
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
-    const findings = await collectIssueGraphLivenessFindings();
+    const findings = await collectIssueGraphLivenessFindings({ companyId: opts?.companyId });
     const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
     const issueIds = [...new Set(findings.map((finding) => finding.recoveryIssueId))];
     const recoveryRows = issueIds.length > 0
@@ -3645,8 +3676,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    companyId?: string;
   }) {
-    const findings = await collectIssueGraphLivenessFindings();
+    const findings = await collectIssueGraphLivenessFindings({ companyId: opts?.companyId });
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
       experimentalSettings.enableIssueGraphLivenessAutoRecovery,
@@ -3657,7 +3689,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     );
     const now = new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
-    const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
+    const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings, { companyId: opts?.companyId });
     const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
     const result = {
       findings: findings.length,

@@ -6,13 +6,18 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
+import {
+  createCapturedOutputBuffer,
+  parseJsonCommandOutput,
+  parseJsonResponseWithLimit,
+} from "./dev-runner-output.ts";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createCompatibleDevServiceIdentities, createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
+  terminateLocalService,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
@@ -36,7 +41,18 @@ const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const commandTimeoutTerminationGraceMs = 2_000;
-const migrationStatusTimeoutMs = 30_000;
+const existingRunnerHealthGraceMs = Number.parseInt(
+  process.env.PAPERCLIP_DEV_EXISTING_RUNNER_HEALTH_GRACE_MS ?? "90000",
+  10,
+) || 90_000;
+const existingRunnerHealthTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_DEV_EXISTING_RUNNER_HEALTH_TIMEOUT_MS ?? "1500",
+  10,
+) || 1_500;
+const migrationStatusTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_MIGRATION_STATUS_TIMEOUT_MS ?? "90000",
+  10,
+) || 90_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
@@ -194,6 +210,21 @@ const devService = createDevServiceIdentity({
   port: serverPort,
 });
 
+async function isExistingDevRunnerHealthy(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), existingRunnerHealthTimeoutMs);
+  try {
+    const response = await fetch(`${url.replace(/\/$/, "")}/api/health`, {
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 let existingRunner: Awaited<ReturnType<typeof findAdoptableLocalService>> | null = null;
 for (const candidate of createCompatibleDevServiceIdentities({
   mode,
@@ -206,6 +237,17 @@ for (const candidate of createCompatibleDevServiceIdentities({
     cwd: repoRoot,
     envFingerprint: candidate.envFingerprint,
     port: serverPort,
+    minAgeMsBeforeHealthCheck: existingRunnerHealthGraceMs,
+    healthCheck: async (record) => {
+      const url = record.url ?? (typeof record.metadata?.url === "string" ? record.metadata.url : null);
+      return typeof url === "string" && await isExistingDevRunnerHealthy(url);
+    },
+    onUnhealthyRecord: async (record) => {
+      console.warn(
+        `[paperclip] ${record.serviceName} registry entry is alive but health check failed; stopping stale runner (pid ${record.pid}${typeof record.metadata?.childPid === "number" ? `, child ${record.metadata.childPid}` : ""})`,
+      );
+      await terminateLocalService(record);
+    },
   });
   if (existingRunner) {
     break;
@@ -536,7 +578,12 @@ async function getMigrationStatusPayload() {
   }
 
   try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
+    return parseJsonCommandOutput<{ status?: string; pendingMigrations?: string[] }>({
+      stdout: status.stdout,
+      stderr: status.stderr,
+      signal: status.signal,
+      commandDescription: "migration-status",
+    });
   } catch (error) {
     process.stderr.write(
       status.stderr ||

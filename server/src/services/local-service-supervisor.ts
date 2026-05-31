@@ -391,6 +391,9 @@ export async function findAdoptableLocalService(input: {
   cwd?: string | null;
   envFingerprint?: string | null;
   port?: number | null;
+  minAgeMsBeforeHealthCheck?: number;
+  healthCheck?: (record: LocalServiceRegistryRecord) => Promise<boolean>;
+  onUnhealthyRecord?: (record: LocalServiceRegistryRecord) => Promise<void>;
 }) {
   const record = await readLocalServiceRegistryRecord(input.serviceKey);
   if (!record) return null;
@@ -407,6 +410,28 @@ export async function findAdoptableLocalService(input: {
   if (input.cwd && path.resolve(record.cwd) !== path.resolve(input.cwd)) return null;
   if (input.envFingerprint && record.envFingerprint !== input.envFingerprint) return null;
   if (input.port !== undefined && input.port !== null && record.port !== input.port) return null;
+  if (input.healthCheck) {
+    const lastSeenAt = Date.parse(record.lastSeenAt);
+    const startedAt = Date.parse(record.startedAt);
+    const referenceTime = Math.max(
+      Number.isFinite(lastSeenAt) ? lastSeenAt : 0,
+      Number.isFinite(startedAt) ? startedAt : 0,
+    );
+    const minAgeMs = input.minAgeMsBeforeHealthCheck ?? 0;
+    if (Date.now() - referenceTime >= minAgeMs) {
+      let healthy = false;
+      try {
+        healthy = await input.healthCheck(record);
+      } catch {
+        healthy = false;
+      }
+      if (!healthy) {
+        await input.onUnhealthyRecord?.(record);
+        await removeLocalServiceRegistryRecord(input.serviceKey);
+        return null;
+      }
+    }
+  }
   return record;
 }
 

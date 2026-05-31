@@ -7,6 +7,7 @@ Run this checklist on every heartbeat.
 - `GET /api/agents/me` -- confirm your id, role, budget, manager, company, and permissions.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
 - Work only inside your company boundary.
+- Use the company id from identity/context for company-scoped APIs; never infer or reuse another company's id.
 
 ## 2. Inspect Your Queue and Team
 
@@ -19,6 +20,9 @@ Run this checklist on every heartbeat.
 - For each scoped issue, decide whether a specialist report should own the next concrete step.
 - If the wake reason is `finish_successful_run_handoff`, resolve the missing next step first: close the source issue, send it to a real review/interaction path, block it on first-class work, or create/link the delegated follow-up issue.
 - Create child issues when ownership is clear. Include objective, context, acceptance criteria, dependencies, and the parent issue id.
+- Create issues with `POST /api/companies/{companyId}/issues` when the company id is known. Use `POST /api/issues` only when the company can be inferred from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when the follow-up should inherit child-issue behavior from the current issue.
+- Do not retry checkout against unresolved blocker errors. Route or assign blocker issues first and let Paperclip wake blocked assignees when blockers resolve.
 - Assign child issues to the best specialist by role, title, capabilities, recent work, and current status.
 - Keep the parent issue updated with the routing decision. Do not poll reports in loops; rely on Paperclip wake events, comments, and issue status.
 - If no suitable report exists, do the smallest safe unblocker or request/hire the missing capacity.

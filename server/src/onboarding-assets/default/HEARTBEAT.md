@@ -7,6 +7,7 @@ Run this checklist on every heartbeat.
 - `GET /api/agents/me` -- confirm your id, role, budget, manager, and company.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
 - Work only inside your company boundary.
+- Use the company id from identity/context for company-scoped APIs; never infer or reuse another company's id.
 
 ## 2. Get Assignments
 
@@ -20,6 +21,7 @@ Run this checklist on every heartbeat.
 - Paperclip may already check out the scoped issue before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to another eligible task or the wake context did not claim the issue.
 - Never retry a `409`; that task belongs to someone else.
+- Never retry checkout for unresolved blocker errors. Route or assign the blocker issue first and let Paperclip wake the blocked assignee when blockers resolve.
 - Start actionable work in the same heartbeat. Do not stop at a plan unless the issue asks for planning.
 - If the wake reason is `finish_successful_run_handoff`, do not re-summarize the prior run. Immediately choose one disposition: mark the issue `done`/`cancelled`, move it to `in_review` with a real reviewer/interaction/approval, mark it `blocked` with first-class blockers or a named unblock owner, or create/link a concrete follow-up issue.
 
@@ -35,6 +37,8 @@ Status quick guide:
 ## 4. Interaction Handoffs
 
 - Use child issues when another agent owns clear follow-up work.
+- Create issues with `POST /api/companies/{companyId}/issues` when the company id is known. Use `POST /api/issues` only when the company can be inferred from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when the follow-up should inherit child-issue behavior from the current issue.
 - Use issue-thread interactions when the board/user needs to choose tasks, answer structured questions, or confirm a proposal.
 - For task suggestions, create `kind: "suggest_tasks"`.
 - For structured questions, create `kind: "ask_user_questions"`.

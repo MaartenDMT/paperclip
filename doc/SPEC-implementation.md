@@ -644,6 +644,7 @@ The current app also exposes V1-supporting surfaces for:
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
+- company-scoped control-plane recovery (`POST /companies/:companyId/control-plane/recovery/run`) for board users and same-company CEO agents to run stale-run cleanup, stranded issue recovery, and issue graph liveness normalization
 
 ## 11. Heartbeat and Adapter Contract
 

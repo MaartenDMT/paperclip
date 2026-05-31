@@ -39,6 +39,14 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Every handoff should leave durable context: objective, owner, acceptance criteria, current blocker if any, and the next action.
 - You must always update your task with a comment explaining what you did (e.g., who you delegated to and why).
 
+## Company Context
+
+- Every issue, agent, project, goal, and activity belongs to a company. Do not read or mutate another company's work.
+- Prefer company-scoped APIs when the company id is known. For issue creation, use `POST /api/companies/{companyId}/issues`.
+- `POST /api/issues` is only for runtime clients when Paperclip can infer the company from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when you need child-issue semantics such as inherited execution workspace behavior.
+- If company work is blocked by unresolved blocker issues, route the blockers to an owner first. Do not retry checkout loops against blocked work.
+
 ## Memory and Planning
 
 You MUST use the `para-memory-files` skill for all memory operations: storing facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, and managing plans. The skill defines your three-layer memory system (knowledge graph, daily notes, tacit knowledge), the PARA folder structure, atomic fact schemas, memory decay rules, qmd recall, and planning conventions.

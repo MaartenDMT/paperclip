@@ -158,6 +158,20 @@ Typical failure causes:
 - malformed adapter args/env
 - prompt too broad or missing constraints
 - process timeout
+- global heartbeat concurrency is saturated; lower timer frequency or raise `PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING` only if the host has capacity
+- queued runs target issues that are still blocked by unresolved blockers; resolve or route blocker issues instead of retrying checkout loops
+
+If agents create issues through the API:
+
+- Prefer `POST /api/companies/{companyId}/issues` when the company id is available.
+- `POST /api/issues` can be used by runtime clients when the company can be inferred from `parentId`, `projectId`, or the agent API key.
+- Use `POST /api/issues/{issueId}/children` for child-issue behavior that should inherit execution workspace context.
+
+If the local dev server does not come up:
+
+- Embedded Postgres startup on NTFS can take 30-60 seconds.
+- Stop duplicate Paperclip processes before restarting.
+- Leave `DATABASE_URL` unset for embedded PGlite/Postgres dev unless you intentionally run an external database.
 
 Claude-specific note:
 

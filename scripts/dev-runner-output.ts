@@ -100,3 +100,31 @@ export async function parseJsonResponseWithLimit<T>(
 
   return JSON.parse(text) as T;
 }
+
+export function parseJsonCommandOutput<T>(input: {
+  stdout: string;
+  stderr?: string;
+  signal?: NodeJS.Signals | null;
+  commandDescription: string;
+}): T {
+  if (input.signal) {
+    throw new Error(`${input.commandDescription} terminated by ${input.signal}`);
+  }
+
+  const body = input.stdout.trim();
+  if (body.length === 0) {
+    const stderr = input.stderr?.trim();
+    throw new Error(
+      stderr && stderr.length > 0
+        ? `${input.commandDescription} produced no JSON output: ${stderr}`
+        : `${input.commandDescription} produced no JSON output`,
+    );
+  }
+
+  try {
+    return JSON.parse(body) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "unknown JSON parse error");
+    throw new Error(`${input.commandDescription} returned invalid JSON: ${message}`);
+  }
+}

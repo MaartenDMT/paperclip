@@ -78,7 +78,7 @@ export function goalService(db: Db) {
         throw unprocessable("Goal parent hierarchy contains a cycle");
       }
       visited.add(cursor);
-      const parent = await db
+      const parent: { id: string; companyId: string; parentId: string | null } | null = await db
         .select({ id: goals.id, companyId: goals.companyId, parentId: goals.parentId })
         .from(goals)
         .where(eq(goals.id, cursor))
