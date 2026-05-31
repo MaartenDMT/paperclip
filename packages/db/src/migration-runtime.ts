@@ -265,9 +265,10 @@ async function ensureEmbeddedPostgresConnection(
   return {
     connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
     source: `embedded-postgres@${selectedPort}`,
-    stop: async () => {
-      await instance.stop();
-    },
+    // Embedded Postgres is a shared local runtime dependency for the Paperclip
+    // control plane. Helper commands like migration-status must not tear it
+    // down on exit, or they can drop a live API server's DB out from under it.
+    stop: async () => {},
   };
 }
 

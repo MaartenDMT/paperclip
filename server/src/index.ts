@@ -279,6 +279,19 @@ async function waitForExternalAdaptersWithTimeout(
 export async function startServer(): Promise<StartedServer> {
   startupDebug("startServer: begin");
   let config = loadConfig();
+  const shutdownTimers: ReturnType<typeof setInterval>[] = [];
+  const registerShutdownInterval = (callback: () => void, intervalMs: number) => {
+    const timer = setInterval(callback, intervalMs);
+    timer.unref?.();
+    shutdownTimers.push(timer);
+    return timer;
+  };
+  const clearShutdownIntervals = () => {
+    while (shutdownTimers.length > 0) {
+      const timer = shutdownTimers.pop();
+      if (timer) clearInterval(timer);
+    }
+  };
   startupDebug("startServer: config loaded");
   const startupLease = await acquireInstanceLease({
     filename: STARTUP_LEASE_FILENAME,
@@ -834,6 +847,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const shutdownController = new AbortController();
   startupDebug("startServer: plugin worker manager created");
   logger.info({ uiMode }, "Creating Paperclip app");
   startupDebug("startServer: creating app");
@@ -864,6 +878,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    shutdownSignal: shutdownController.signal,
   });
   logger.info("Paperclip app created");
   startupDebug("startServer: app created");
@@ -1058,7 +1073,7 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
-    setInterval(() => {
+    registerShutdownInterval(() => {
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
@@ -1174,7 +1189,7 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
+    registerShutdownInterval(() => {
       void runServerDatabaseBackup("scheduled").catch(() => {
         // runServerDatabaseBackup already logs the failure with context.
       });
@@ -1276,6 +1291,9 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      clearShutdownIntervals();
+      shutdownController.abort();
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
@@ -1314,6 +1332,7 @@ export async function startServer(): Promise<StartedServer> {
       databaseUrl: activeDatabaseConnectionString,
     };
   } catch (error) {
+    clearShutdownIntervals();
     await startupLease.release();
     throw error;
   }

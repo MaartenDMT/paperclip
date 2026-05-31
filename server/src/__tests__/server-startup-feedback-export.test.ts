@@ -19,6 +19,7 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  heartbeatServiceInstanceMock,
   loadConfigMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
@@ -30,6 +31,27 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const heartbeatServiceInstanceMock = {
+    reapOrphanedRuns: vi.fn(async () => undefined),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
+    resumeQueuedRuns: vi.fn(async () => undefined),
+    reconcileStrandedAssignedIssues: vi.fn(async () => ({
+      assignmentDispatched: 0,
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [],
+    })),
+    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
+    reconcilePersistedHeartbeatRuntimeState: vi.fn(async () => undefined),
+    refreshStockInstructionsForManagerAgents: vi.fn(async () => ({ updated: 0, failed: [] })),
+    reconcileIssueGraphLiveness: vi.fn(async () => ({ escalationsCreated: 0 })),
+    scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
+    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    wakeup: vi.fn(async () => undefined),
+  };
   const fakeServer = {
     on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
@@ -51,6 +73,7 @@ const {
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    heartbeatServiceInstanceMock,
     loadConfigMock,
   };
 });
@@ -152,20 +175,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
-  heartbeatService: vi.fn(() => ({
-    reapOrphanedRuns: vi.fn(async () => undefined),
-    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
-    resumeQueuedRuns: vi.fn(async () => undefined),
-    reconcileStrandedAssignedIssues: vi.fn(async () => ({
-      dispatchRequeued: 0,
-      continuationRequeued: 0,
-      successfulRunHandoffEscalated: 0,
-      escalated: 0,
-      skipped: 0,
-      issueIds: [],
-    })),
-    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
-  })),
+  heartbeatService: vi.fn(() => heartbeatServiceInstanceMock),
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
@@ -178,6 +188,12 @@ vi.mock("../services/index.js", () => ({
   })),
   memoryMaintenanceRoutineService: vi.fn(() => ({
     ensureForCompanies: vi.fn(async () => ({ companies: 0, created: 0, updated: 0, unchanged: 0 })),
+  })),
+  executionWorkspaceService: vi.fn(() => ({
+    reconcileStaleSharedWorkspaces: vi.fn(async () => ({ archived: 0, detachedIssues: 0 })),
+  })),
+  issueThreadInteractionService: vi.fn(() => ({
+    reconcileMeetingWorkflow: vi.fn(async () => ({ created: 0, meetings: [] })),
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
@@ -219,6 +235,26 @@ vi.mock("../adapters/registry.js", () => ({
 import { startServer } from "../index.ts";
 import { logger } from "../middleware/logger.js";
 import { heartbeatService } from "../services/index.js";
+
+const INITIAL_SIGINT_LISTENERS = new Set(process.rawListeners("SIGINT"));
+const INITIAL_SIGTERM_LISTENERS = new Set(process.rawListeners("SIGTERM"));
+
+beforeEach(async () => {
+  process.env.PAPERCLIP_HOME = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-test-"));
+});
+
+afterEach(() => {
+  for (const listener of process.rawListeners("SIGINT")) {
+    if (!INITIAL_SIGINT_LISTENERS.has(listener)) {
+      process.removeListener("SIGINT", listener);
+    }
+  }
+  for (const listener of process.rawListeners("SIGTERM")) {
+    if (!INITIAL_SIGTERM_LISTENERS.has(listener)) {
+      process.removeListener("SIGTERM", listener);
+    }
+  }
+});
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -431,6 +467,47 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       { requestedPort: 3100, listenPort: 3110 },
       "Heartbeat scheduler disabled because this server is not the primary Paperclip control-plane process",
     );
+  });
+
+  it("clears heartbeat scheduler intervals during shutdown before they can keep querying the database", async () => {
+    vi.useFakeTimers();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const existingSigtermListeners = new Set(process.rawListeners("SIGTERM"));
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 1000,
+    }));
+
+    try {
+      await startServer();
+
+      heartbeatServiceInstanceMock.tickTimers.mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(heartbeatServiceInstanceMock.tickTimers).toHaveBeenCalledTimes(1);
+
+      const shutdownListener = process
+        .rawListeners("SIGTERM")
+        .find((listener) => !existingSigtermListeners.has(listener)) as (() => void) | undefined;
+      expect(shutdownListener).toBeDefined();
+
+      shutdownListener?.();
+      await vi.waitFor(() => {
+        expect(exitSpy).toHaveBeenCalledWith(0);
+      });
+      heartbeatServiceInstanceMock.tickTimers.mockClear();
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(heartbeatServiceInstanceMock.tickTimers).not.toHaveBeenCalled();
+    } finally {
+      for (const listener of process.rawListeners("SIGTERM")) {
+        if (!existingSigtermListeners.has(listener)) {
+          process.removeListener("SIGTERM", listener);
+        }
+      }
+      exitSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("does not start heartbeat scheduling when another process owns the scheduler lease", async () => {

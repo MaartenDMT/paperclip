@@ -171,6 +171,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    shutdownSignal?: AbortSignal;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -503,12 +504,21 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
-  process.once("exit", () => {
+  let runtimeLoopsCleanedUp = false;
+  const cleanupRuntimeLoops = () => {
+    if (runtimeLoopsCleanedUp) return;
+    runtimeLoopsCleanedUp = true;
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    scheduler.stop();
+    jobCoordinator.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+  };
+  opts.shutdownSignal?.addEventListener("abort", cleanupRuntimeLoops, { once: true });
+  process.once("exit", () => {
+    cleanupRuntimeLoops();
   });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();

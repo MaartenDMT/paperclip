@@ -289,6 +289,7 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let migrationPreflightUnavailable = false;
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -550,6 +551,14 @@ async function runNode(args: string[], options: {
 function createCommandTimeout(spawned: ReturnType<typeof spawn>, timeoutMs: number | undefined) {
   if (!timeoutMs || timeoutMs <= 0) return null;
   const timeoutTimer = setTimeout(() => {
+    if (process.platform === "win32" && spawned.pid) {
+      const killer = spawn("taskkill.exe", ["/PID", String(spawned.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.on("error", () => {});
+      return;
+    }
     spawned.kill("SIGTERM");
     setTimeout(() => {
       spawned.kill("SIGKILL");
@@ -595,7 +604,27 @@ async function getMigrationStatusPayload() {
 }
 
 async function refreshPendingMigrations() {
-  const payload = await getMigrationStatusPayload();
+  if (migrationPreflightUnavailable && mode === "watch") {
+    pendingMigrations = [];
+    writeDevServerStatus();
+    return { status: "unknown", pendingMigrations: [] };
+  }
+  let payload: { status?: string; pendingMigrations?: string[] };
+  try {
+    payload = await getMigrationStatusPayload();
+  } catch (error) {
+    if (mode !== "watch" || process.env.PAPERCLIP_DEV_STRICT_MIGRATION_PREFLIGHT === "true") {
+      throw error;
+    }
+    const err = toError(error, "Migration preflight failed");
+    console.warn(
+      `[paperclip] migration preflight did not complete (${err.message}); continuing startup and letting the server perform migration checks.`,
+    );
+    migrationPreflightUnavailable = true;
+    pendingMigrations = [];
+    writeDevServerStatus();
+    return { status: "unknown", pendingMigrations: [] };
+  }
   pendingMigrations =
     payload.status === "needsMigrations" && Array.isArray(payload.pendingMigrations)
       ? payload.pendingMigrations.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
