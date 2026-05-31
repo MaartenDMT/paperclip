@@ -53,6 +53,10 @@ const migrationStatusTimeoutMs = Number.parseInt(
   process.env.PAPERCLIP_MIGRATION_STATUS_TIMEOUT_MS ?? "300000",
   10,
 ) || 300_000;
+const migrationStatusRecoveryRetries = Number.parseInt(
+  process.env.PAPERCLIP_MIGRATION_STATUS_RECOVERY_RETRIES ?? "6",
+  10,
+) || 6;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
@@ -572,11 +576,33 @@ function createCommandTimeout(spawned: ReturnType<typeof spawn>, timeoutMs: numb
   };
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryMigrationStatusAfterRecovery(status: { code: number; stdout: string; stderr: string }) {
+  if (status.code === 0) return false;
+  const output = `${status.stderr}\n${status.stdout}`.toLowerCase();
+  return output.includes("recovered embedded postgresql startup") ||
+    output.includes("stale shared-memory") ||
+    output.includes("pre-existing shared memory block is still in use");
+}
+
 async function getMigrationStatusPayload() {
-  const status = await runNode(
+  let status = await runNode(
     [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
     { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
   );
+  for (let attempt = 1; attempt <= migrationStatusRecoveryRetries && shouldRetryMigrationStatusAfterRecovery(status); attempt += 1) {
+    process.stderr.write(
+      `[paperclip] embedded PostgreSQL recovery interrupted migration preflight; retrying (${attempt}/${migrationStatusRecoveryRetries})\n`,
+    );
+    await delay(Math.min(5_000, 500 * attempt));
+    status = await runNode(
+      [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+      { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
+    );
+  }
   if (status.code !== 0) {
     process.stderr.write(
       status.stderr ||
