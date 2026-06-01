@@ -57,6 +57,10 @@ const migrationStatusRecoveryRetries = Number.parseInt(
   process.env.PAPERCLIP_MIGRATION_STATUS_RECOVERY_RETRIES ?? "6",
   10,
 ) || 6;
+const pluginSdkBuildTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_PLUGIN_SDK_BUILD_TIMEOUT_MS ?? "120000",
+  10,
+) || 120_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
@@ -718,16 +722,30 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 }
 
 async function buildPluginSdk() {
+  const pluginSdkDistEntry = path.join(repoRoot, "packages", "plugins", "sdk", "dist", "index.js");
+  if (existsSync(pluginSdkDistEntry)) {
+    console.log(
+      `[paperclip] plugin sdk build already exists at ${path.relative(repoRoot, pluginSdkDistEntry)}; skipping prebuild`,
+    );
+    return;
+  }
+
   console.log("[paperclip] building plugin sdk...");
   const result = await runPnpm(
     ["--filter", "@paperclipai/plugin-sdk", "build"],
-    { stdio: "inherit" },
+    { stdio: "inherit", timeoutMs: pluginSdkBuildTimeoutMs },
   );
   if (result.signal) {
     exitForSignal(result.signal);
     return;
   }
   if (result.code !== 0) {
+    if (existsSync(pluginSdkDistEntry)) {
+      console.warn(
+        `[paperclip] plugin sdk build failed or timed out; continuing with existing ${path.relative(repoRoot, pluginSdkDistEntry)}`,
+      );
+      return;
+    }
     console.error("[paperclip] plugin sdk build failed");
     process.exit(result.code);
   }

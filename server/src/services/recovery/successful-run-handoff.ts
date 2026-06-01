@@ -80,6 +80,7 @@ export type SuccessfulRunHandoffCompletionDecision =
   | {
       kind: "accept";
       reason: string;
+      autoCompleteIssue?: true;
     }
   | {
       kind: "reject";
@@ -311,6 +312,19 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+export function hasExplicitNoRemainingWorkDisposition(body: string | null | undefined) {
+  const normalized = (body ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+
+  const recordsNoRemainingWork =
+    /\bremaining work\s*:\s*(none|nothing|no\b)/.test(normalized) ||
+    /\bnext (follow-up|followup|action)\s*:\s*(none|no action required)\b/.test(normalized) ||
+    /\bno (new )?action (is )?required\b/.test(normalized);
+  if (!recordsNoRemainingWork) return false;
+
+  return /\b(done|resolved|closed|false[- ]positive|no live blocker|no new action|nothing left)\b/.test(normalized);
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -449,6 +463,7 @@ export function decideSuccessfulRunHandoffCompletion(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
+  correctiveSummary?: string | null;
 }): SuccessfulRunHandoffCompletionDecision {
   if (!isSuccessfulRunHandoffRun(input.run)) {
     return { kind: "not_applicable", reason: "run is not a successful-run handoff" };
@@ -477,6 +492,13 @@ export function decideSuccessfulRunHandoffCompletion(input: {
   }
   if (input.hasActiveExecutionPath || input.hasQueuedWake) {
     return { kind: "accept", reason: "issue has an explicit continuation path" };
+  }
+  if (hasExplicitNoRemainingWorkDisposition(input.correctiveSummary)) {
+    return {
+      kind: "accept",
+      reason: "corrective handoff recorded an explicit no-remaining-work disposition",
+      autoCompleteIssue: true,
+    };
   }
 
   return {

@@ -33,6 +33,10 @@ export type MigrationConnection = {
   stop: () => Promise<void>;
 };
 
+export type ResolveMigrationConnectionOptions = {
+  stopStartedEmbeddedPostgres?: boolean;
+};
+
 const EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS = 5_000;
 const EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS = 250;
 const EMBEDDED_POSTGRES_STABILITY_GRACE_MS = 1_500;
@@ -159,6 +163,7 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
+  options: ResolveMigrationConnectionOptions = {},
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
@@ -262,14 +267,13 @@ async function ensureEmbeddedPostgresConnection(
   return {
     connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
     source: `embedded-postgres@${selectedPort}`,
-    // Embedded Postgres is a shared local runtime dependency for the Paperclip
-    // control plane. Helper commands like migration-status must not tear it
-    // down on exit, or they can drop a live API server's DB out from under it.
-    stop: async () => {},
+    stop: options.stopStartedEmbeddedPostgres ? () => instance.stop() : async () => {},
   };
 }
 
-export async function resolveMigrationConnection(): Promise<MigrationConnection> {
+export async function resolveMigrationConnection(
+  options: ResolveMigrationConnectionOptions = {},
+): Promise<MigrationConnection> {
   const target = resolveDatabaseTarget();
   if (target.mode === "postgres") {
     return {
@@ -279,5 +283,5 @@ export async function resolveMigrationConnection(): Promise<MigrationConnection>
     };
   }
 
-  return ensureEmbeddedPostgresConnection(target.dataDir, target.port);
+  return ensureEmbeddedPostgresConnection(target.dataDir, target.port, options);
 }

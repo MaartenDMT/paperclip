@@ -39,6 +39,7 @@ import {
   REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  hasExplicitNoRemainingWorkDisposition,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
@@ -152,16 +153,7 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 function hasNoRemainingRecoveryWorkDisposition(body: string) {
-  const normalized = body.toLowerCase().replace(/\s+/g, " ").trim();
-  if (!normalized) return false;
-
-  const recordsNoRemainingWork =
-    /\bremaining work\s*:\s*(none|nothing|no\b)/.test(normalized) ||
-    /\bnext (follow-up|followup|action)\s*:\s*(none|no action required)\b/.test(normalized) ||
-    /\bno (new )?action (is )?required\b/.test(normalized);
-  if (!recordsNoRemainingWork) return false;
-
-  return /\b(done|resolved|closed|false[- ]positive|no live blocker|no new action)\b/.test(normalized);
+  return hasExplicitNoRemainingWorkDisposition(body);
 }
 
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {

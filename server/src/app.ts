@@ -83,7 +83,7 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
-const DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS = 15_000;
+const DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS = 60_000;
 
 function isPluginDevWatcherEnabled(): boolean {
   const raw = process.env.PAPERCLIP_PLUGIN_DEV_WATCHER?.trim().toLowerCase();

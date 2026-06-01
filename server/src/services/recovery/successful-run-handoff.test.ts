@@ -322,12 +322,43 @@ describe("successful run handoff decision", () => {
       hasQueuedWake: false,
       hasPendingInteractionOrApproval: false,
       hasExplicitBlockerPath: false,
+      correctiveSummary: null,
     });
 
     expect(decision).toEqual({
       kind: "reject",
       errorCode: "missing_issue_disposition",
       reason: "corrective handoff finished without a valid issue disposition",
+    });
+  });
+
+  it("accepts corrective handoff completion when the run records no remaining work", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: [
+        "Disposition: blocked/closed.",
+        "- Remaining work: none on this issue.",
+        "- Next follow-up: no action required.",
+      ].join("\n"),
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "corrective handoff recorded an explicit no-remaining-work disposition",
+      autoCompleteIssue: true,
     });
   });
 

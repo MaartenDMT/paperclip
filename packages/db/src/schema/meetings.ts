@@ -35,6 +35,7 @@ export const meetings = pgTable(
   },
   (table) => ({
     companyStatusCreatedIdx: index("meetings_company_status_created_idx").on(table.companyId, table.status, table.createdAt),
+    companyStatusUpdatedIdx: index("meetings_company_status_updated_idx").on(table.companyId, table.status, table.updatedAt),
     companySourceIssueIdx: index("meetings_company_source_issue_idx").on(table.companyId, table.sourceIssueId),
     companyIdempotencyUq: uniqueIndex("meetings_company_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)

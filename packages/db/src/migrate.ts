@@ -2,7 +2,7 @@ import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 async function main(): Promise<void> {
-  const resolved = await resolveMigrationConnection();
+  const resolved = await resolveMigrationConnection({ stopStartedEmbeddedPostgres: true });
 
   console.log(`Migrating database via ${resolved.source}`);
 

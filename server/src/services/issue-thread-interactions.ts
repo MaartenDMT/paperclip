@@ -1386,11 +1386,11 @@ export function issueThreadInteractionService(db: Db) {
 
       const blockerEdgeRows = openIssueIds.length > 0
         ? await db
-            .select({ issueId: issueRelations.issueId })
+            .select({ issueId: issueRelations.relatedIssueId })
             .from(issueRelations)
             .where(and(
               eq(issueRelations.companyId, companyId),
-              inArray(issueRelations.issueId, openIssueIds),
+              inArray(issueRelations.relatedIssueId, openIssueIds),
               eq(issueRelations.type, "blocks"),
             ))
         : [];

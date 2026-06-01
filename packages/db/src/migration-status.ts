@@ -16,7 +16,7 @@ function toError(error: unknown, context = "Migration status check failed"): Err
 }
 
 async function main(): Promise<void> {
-  const connection = await resolveMigrationConnection();
+  const connection = await resolveMigrationConnection({ stopStartedEmbeddedPostgres: true });
 
   try {
     const state = await inspectMigrations(connection.connectionString);

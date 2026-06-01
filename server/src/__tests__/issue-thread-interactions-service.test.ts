@@ -1526,6 +1526,103 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(participantIds).not.toContain(ceoId);
   });
 
+  it("does not recommend blocker-hygiene meetings for blocked issues with first-class blocker edges", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const engineeringHeadId = randomUUID();
+    const engineerId = randomUUID();
+    const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineeringHeadId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: engineeringHeadId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked issue with blocker edge",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: engineerId,
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "First-class blocker",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: engineeringHeadId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const health = await interactionsSvc.getMeetingWorkflowHealth(companyId);
+    expect(health.recommendations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        trigger: "blocked_without_edge",
+        issueId,
+      }),
+    ]));
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+    expect(reconciled.meetings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId }),
+    ]));
+    const meetingRows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
+    expect(meetingRows).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceIssueId: issueId,
+        idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}`,
+      }),
+    ]));
+  });
+
   it("lets a direct department head chair their own blocked issue without the CEO", async () => {
     const companyId = randomUUID();
     const ceoId = randomUUID();

@@ -265,6 +265,10 @@ const HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX = Math.max(
   0,
   Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX ?? 1)),
 );
+const LOCAL_ACTIVE_RUN_EXECUTIONS_MAX = Math.max(
+  1,
+  Math.floor(Number(process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX ?? 3)),
+);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -2585,7 +2589,11 @@ function buildProcessLossMessage(run: {
   descendantOnly?: boolean;
   criticallySilentDetachedChild?: boolean;
   criticallySilentTrackedChild?: boolean;
+  staleActiveWithoutTrackedChild?: boolean;
 }) {
+  if (options?.staleActiveWithoutTrackedChild) {
+    return "Process lost -- active local execution exceeded the startup timeout before recording process metadata";
+  }
   if (options?.criticallySilentDetachedChild && run.processPid) {
     return `Process lost -- child pid ${run.processPid} was still alive after the server lost its in-memory handle, but the run was critically silent and the process was terminated`;
   }
@@ -4732,7 +4740,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  async function validateSuccessfulRunHandoffCompletion(run: typeof heartbeatRuns.$inferSelect) {
+  async function validateSuccessfulRunHandoffCompletion(
+    run: typeof heartbeatRuns.$inferSelect,
+    correctiveSummary?: string | null,
+  ) {
     const handoffWake = run.wakeupRequestId
       ? await db
         .select({ reason: agentWakeupRequests.reason })
@@ -4873,6 +4884,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
+      correctiveSummary: correctiveSummary ??
+        (typeof run.resultJson === "object" && run.resultJson !== null && "summary" in run.resultJson
+          ? String((run.resultJson as { summary?: unknown }).summary ?? "")
+          : null),
     });
   }
 
@@ -6614,13 +6629,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(heartbeatRuns.agentId, agent.id),
           eq(heartbeatRuns.status, "running"),
           isNull(heartbeatRuns.processPid),
-          isNull(heartbeatRuns.processStartedAt),
           isNull(heartbeatRuns.lastOutputAt),
           lt(heartbeatRuns.startedAt, staleBefore),
         ),
       )
       .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId });
     if (rows.length > 0) {
+      for (const row of rows) {
+        runningProcesses.delete(row.id);
+        activeRunExecutions.delete(row.id);
+      }
       const wakeupRequestIds = rows
         .map((row) => row.wakeupRequestId)
         .filter((id): id is string => Boolean(id));
@@ -6791,9 +6809,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = new Date();
     const preSpawnStaleBefore = new Date(now.getTime() - LOCAL_AGENT_PRE_SPAWN_STALE_MS);
 
-    const terminalClaimedWakeups = await db
+    const terminalLinkedWakeups = await db
       .select({
         id: agentWakeupRequests.id,
+        wakeupStatus: agentWakeupRequests.status,
         runStatus: heartbeatRuns.status,
         runFinishedAt: heartbeatRuns.finishedAt,
         runError: heartbeatRuns.error,
@@ -6802,12 +6821,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .innerJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
       .where(
         and(
-          eq(agentWakeupRequests.status, "claimed"),
+          inArray(agentWakeupRequests.status, ["queued", "claimed"]),
           inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
         ),
       );
 
-    for (const wakeup of terminalClaimedWakeups) {
+    for (const wakeup of terminalLinkedWakeups) {
       await db
         .update(agentWakeupRequests)
         .set({
@@ -6827,7 +6846,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(heartbeatRuns.status, "running"),
           isNull(heartbeatRuns.processPid),
-          isNull(heartbeatRuns.processStartedAt),
           isNull(heartbeatRuns.lastOutputAt),
           lt(heartbeatRuns.startedAt, preSpawnStaleBefore),
         ),
@@ -6876,7 +6894,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .returning({ id: agents.id });
 
     const result = {
-      terminalClaimedWakeups: terminalClaimedWakeups.length,
+      terminalClaimedWakeups: terminalLinkedWakeups.filter((wakeup) => wakeup.wakeupStatus === "claimed").length,
+      terminalQueuedWakeups: terminalLinkedWakeups.filter((wakeup) => wakeup.wakeupStatus === "queued").length,
       stalePreSpawnRuns,
       orphanedQueuedWakeups: orphanedQueuedWakeups.length,
       staleQueuedRuns: queuedRunReconciliation.staleQueuedRuns,
@@ -6885,6 +6904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     if (
       result.terminalClaimedWakeups > 0 ||
+      result.terminalQueuedWakeups > 0 ||
       result.stalePreSpawnRuns > 0 ||
       result.orphanedQueuedWakeups > 0 ||
       result.staleQueuedRuns > 0 ||
@@ -7681,6 +7701,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const activeInMemory = runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
+      const hasTrackedProcessRef = Boolean(run.processPid || run.processGroupId);
+      const lostTrackedChild = tracksLocalChild && hasTrackedProcessRef && !processPidAlive && !processGroupAlive;
       const silenceStartedAt = run.lastOutputAt ?? run.processStartedAt ?? null;
       const criticallySilent =
         silenceStartedAt !== null &&
@@ -7689,7 +7712,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         tracksLocalChild &&
         criticallySilent &&
         Boolean(processPidAlive || processGroupAlive);
-      if ((runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) && !allowCriticallySilentTrackedCleanup) {
+      const staleActiveWithoutTrackedChild =
+        activeInMemory &&
+        tracksLocalChild &&
+        !hasTrackedProcessRef &&
+        staleThresholdMs > 0;
+      if (
+        activeInMemory &&
+        !allowCriticallySilentTrackedCleanup &&
+        !lostTrackedChild &&
+        !staleActiveWithoutTrackedChild
+      ) {
         continue;
       }
 
@@ -7755,6 +7788,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           : descendantOnlyCleanup
             ? { descendantOnly: true }
+            : staleActiveWithoutTrackedChild
+              ? { staleActiveWithoutTrackedChild: true }
             : undefined,
       );
       const retrySuppressionMessage = retryCapReached
@@ -7813,6 +7848,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(criticallySilentDetachedCleanup ? { criticallySilentDetachedCleanup: true } : {}),
           ...(criticallySilentTrackedCleanup ? { criticallySilentTrackedCleanup: true } : {}),
+          ...(staleActiveWithoutTrackedChild ? { staleActiveWithoutTrackedChild: true } : {}),
           ...(retryCapReached ? {
             processLossRetryCap: PROCESS_LOSS_RETRY_AGENT_ISSUE_CAP,
             processLossRetryWindowMs: PROCESS_LOSS_RETRY_WINDOW_MS,
@@ -7824,6 +7860,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
+      activeRunExecutions.delete(run.id);
       reaped.push(run.id);
     }
 
@@ -8074,12 +8111,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return [];
       }
+      const localActiveRunExecutions = activeRunExecutions.size;
+      if (localActiveRunExecutions >= LOCAL_ACTIVE_RUN_EXECUTIONS_MAX) {
+        logger.debug(
+          {
+            agentId,
+            localActiveRunExecutions,
+            maxLocalActiveRunExecutions: LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+          },
+          "skipping queued-run start because local heartbeat launch capacity is full",
+        );
+        return [];
+      }
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
         Math.min(
           policy.maxConcurrentRuns - runningCount,
           maxGlobalRunningRuns - globalRunningCount,
+          LOCAL_ACTIVE_RUN_EXECUTIONS_MAX - localActiveRunExecutions,
         ),
       );
       if (availableSlots <= 0) return [];
@@ -9130,6 +9180,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .then((rows) => rows[0] ?? null);
         if (processStartedRun) run = processStartedRun;
       }
+      const latestBeforeAdapterInvoke = await getRun(run.id);
+      if (latestBeforeAdapterInvoke && isHeartbeatRunTerminalStatus(latestBeforeAdapterInvoke.status)) {
+        await appendRunEvent(latestBeforeAdapterInvoke, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "adapter invocation skipped because the run was already terminal",
+        });
+        return;
+      }
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent: adapterAgent,
@@ -9155,6 +9215,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
+      const latestAfterAdapterInvoke = await getRun(run.id);
+      if (latestAfterAdapterInvoke && isHeartbeatRunTerminalStatus(latestAfterAdapterInvoke.status)) {
+        await appendRunEvent(latestAfterAdapterInvoke, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "adapter result ignored because the run was already terminal",
+        });
+        return;
+      }
       const skillActivations = normalizeAdapterSkillActivations(adapterResult.skillActivations, runtimeSkillEntries);
       if (skillActivations.length > 0) {
         await db.insert(heartbeatRunSkillEvents).values(
@@ -9245,7 +9315,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "failed";
       }
       const handoffCompletionDecision = outcome === "succeeded"
-        ? await validateSuccessfulRunHandoffCompletion({ ...run, status: "succeeded" })
+        ? await validateSuccessfulRunHandoffCompletion({ ...run, status: "succeeded" }, adapterResult.summary ?? null)
         : { kind: "not_applicable" as const, reason: "run did not succeed" };
       if (handoffCompletionDecision.kind === "reject") {
         outcome = "failed";
@@ -9370,6 +9440,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             exitCode: adapterResult.exitCode,
           },
         });
+        if (
+          outcome === "succeeded" &&
+          handoffCompletionDecision.kind === "accept" &&
+          handoffCompletionDecision.autoCompleteIssue &&
+          issueId
+        ) {
+          try {
+            const updatedIssue = await issuesSvc.update(issueId, { status: "done" });
+            if (updatedIssue) {
+              await issuesSvc.addComment(issueId, [
+                "Paperclip marked this issue done because the corrective missing-disposition handoff recorded an explicit no-remaining-work disposition.",
+                "",
+                `- Corrective handoff run: \`${finalizedRun.id}\``,
+                `- Reason: ${handoffCompletionDecision.reason}`,
+                "",
+                "Next action: none unless a fresh signal reopens the work.",
+              ].join("\n"), { agentId: agent.id, runId: finalizedRun.id });
+            }
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to auto-complete no-remaining-work handoff issue: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         if (issueId && outcome === "succeeded") {
@@ -11111,6 +11206,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     runningProcesses.delete(run.id);
+    activeRunExecutions.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
     if (!options.suppressFollowUp) {
       await startNextQueuedRunForAgent(run.agentId);
@@ -11158,6 +11254,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           processGroupId: run.processGroupId,
         });
       }
+      activeRunExecutions.delete(run.id);
       await releaseIssueExecutionAndPromote(run);
     }
 

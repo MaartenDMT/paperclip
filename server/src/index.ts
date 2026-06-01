@@ -670,7 +670,9 @@ export async function startServer(): Promise<StartedServer> {
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, {
+      max: Math.max(1, Math.floor(Number(process.env.PAPERCLIP_EMBEDDED_POSTGRES_POOL_MAX ?? 3))),
+    });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     startupDebug("startServer: embedded postgres ready");
@@ -944,6 +946,8 @@ export async function startServer(): Promise<StartedServer> {
     const issueThreadInteractions = issueThreadInteractionService(db as any);
     const memoryMaintenance = memoryMaintenanceRoutineService(db as any);
     const executionWorkspaces = executionWorkspaceService(db as any);
+    type ProductivityReviewReconcileResult = Awaited<ReturnType<typeof heartbeat.reconcileProductivityReviews>>;
+    let productivityReviewReconcileInFlight: Promise<ProductivityReviewReconcileResult> | null = null;
     let lastMemoryMaintenanceRoutineReconcileAt = 0;
     const reconcileMeetings = async (source: "startup" | "periodic") => {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
@@ -1004,6 +1008,35 @@ export async function startServer(): Promise<StartedServer> {
     const reconcileStaleSharedExecutionWorkspaces = async () => {
       return executionWorkspaces.reconcileStaleSharedWorkspaces();
     };
+    const reconcileProductivityReviews = async (): Promise<ProductivityReviewReconcileResult & { coalesced?: boolean }> => {
+      if (productivityReviewReconcileInFlight) {
+        return {
+          scanned: 0,
+          created: 0,
+          updated: 0,
+          existing: 0,
+          snoozed: 0,
+          creationCapped: 0,
+          skipped: 0,
+          failed: 0,
+          reassigned: 0,
+          reviewIssueIds: [],
+          failedIssueIds: [],
+          reassignedReviewIssueIds: [],
+          coalesced: true,
+        };
+      }
+
+      const task = heartbeat.reconcileProductivityReviews();
+      productivityReviewReconcileInFlight = task;
+      try {
+        return await task;
+      } finally {
+        if (productivityReviewReconcileInFlight === task) {
+          productivityReviewReconcileInFlight = null;
+        }
+      }
+    };
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -1047,7 +1080,7 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
+        const reviewed = await reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
@@ -1162,7 +1195,7 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
+          const reviewed = await reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
