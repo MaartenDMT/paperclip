@@ -59,6 +59,11 @@ function hasStalePendingMeeting(meeting: WorkMeetingSummary) {
   return meeting.status === "pending" && (meeting.pendingAgeHours ?? 0) >= 24;
 }
 
+function contributionLabel(meeting: WorkMeetingSummary) {
+  const contributed = meeting.contributedAgentIds?.length ?? meeting.contributions?.length ?? 0;
+  return `${contributed}/${meeting.participantAgentIds.length} contributed`;
+}
+
 function severityClasses(severity: string) {
   if (severity === "urgent") return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
   if (severity === "warning") return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
@@ -331,6 +336,7 @@ export function WorkMeetings() {
 
                   <div className="flex flex-wrap gap-1.5">
                     <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusClasses(meeting.status)}`}>{meeting.status}</span>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{contributionLabel(meeting)}</span>
                     {hasStalePendingMeeting(meeting) ? <span className="text-xs text-amber-700 dark:text-amber-300">stale</span> : null}
                   </div>
 
@@ -536,6 +542,7 @@ function MeetingDetailModal({
         <div className="max-h-[calc(100vh-6.5rem)] overflow-y-auto p-4 md:max-h-[calc(100vh-8rem)]">
           <div className="flex flex-wrap gap-1.5">
             <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusClasses(meeting.status)}`}>{meeting.status}</span>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{contributionLabel(meeting)}</span>
             {meeting.issueStatus ? (
               <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{meeting.issueStatus}</span>
             ) : null}
@@ -550,6 +557,29 @@ function MeetingDetailModal({
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Purpose</h3>
                 <p className="text-sm leading-6">{meeting.purpose}</p>
               </section>
+
+              {meeting.contributions && meeting.contributions.length > 0 ? (
+                <section className="mt-5 space-y-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Participant Updates</h3>
+                  <div className="space-y-3">
+                    {meeting.contributions.map((contribution) => (
+                      <div key={contribution.id} className="border border-border p-3">
+                        <div className="text-sm font-medium">
+                          {contribution.agentName ?? contribution.agentId.slice(0, 8)}
+                          {contribution.agentRole ? <span className="text-muted-foreground"> · {contribution.agentRole}</span> : null}
+                        </div>
+                        <MarkdownBody className="mt-2">{contribution.summaryMarkdown}</MarkdownBody>
+                        <OutcomeTextList title="Progress" items={contribution.progress} />
+                        <OutcomeTextList title="Blockers" items={contribution.blockers} />
+                        <OutcomeTextList title="Risks" items={contribution.risks} />
+                        <OutcomeTextList title="Next actions" items={contribution.nextActions} />
+                        <OutcomeTextList title="Proposed decisions" items={contribution.proposedDecisions} />
+                        <OutcomeTextList title="Better alternatives" items={contribution.betterAlternatives} />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
 
               {meeting.result ? (
                 <>

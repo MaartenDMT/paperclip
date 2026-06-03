@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createIssueThreadInteractionSchema, respondIssueThreadInteractionSchema } from "./validators/issue.js";
+import {
+  createIssueThreadInteractionSchema,
+  meetingContributionPayloadSchema,
+  respondIssueThreadInteractionSchema,
+} from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
   it("parses request_confirmation payloads with default no-wake continuation", () => {
@@ -67,6 +71,21 @@ describe("issue thread interaction schemas", () => {
     if (parsed.kind !== "agent_meeting") return;
     expect(parsed.payload.expectedOutputs).toContain("business_requirements");
     expect(parsed.payload.expectedOutputs).toContain("agent_performance");
+  });
+
+  it("validates structured meeting contribution payloads", () => {
+    expect(meetingContributionPayloadSchema.parse({
+      summaryMarkdown: "Progress is healthy but the API decision is blocked.",
+      progress: ["Finished schema review."],
+      blockers: ["Need API owner."],
+      risks: ["Review may slip."],
+      nextActions: ["Assign owner."],
+      proposedDecisions: ["Split API and UI work."],
+      betterAlternatives: ["Move API work to platform team."],
+    })).toMatchObject({
+      summaryMarkdown: "Progress is healthy but the API decision is blocked.",
+      blockers: ["Need API owner."],
+    });
   });
 
   it("parses rich agent meeting results with memory and workflow corrections", () => {

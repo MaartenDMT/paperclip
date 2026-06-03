@@ -688,6 +688,26 @@ export interface AgentMeetingResult {
   }>;
 }
 
+export interface MeetingContributionPayload {
+  summaryMarkdown: string;
+  progress: string[];
+  blockers: string[];
+  risks: string[];
+  nextActions: string[];
+  proposedDecisions: string[];
+  betterAlternatives: string[];
+}
+
+export interface MeetingContributionSummary extends MeetingContributionPayload {
+  id: string;
+  meetingId: string;
+  agentId: string;
+  agentName: string | null;
+  agentRole: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -761,6 +781,9 @@ export interface WorkMeetingSummary {
     title: string | null;
     status: string;
   }>;
+  contributions?: MeetingContributionSummary[];
+  contributedAgentIds?: string[];
+  pendingParticipantAgentIds?: string[];
   expectedOutputs: AgentMeetingExpectedOutput[];
   result: AgentMeetingResult | null;
   resultSummaryMarkdown: string | null;

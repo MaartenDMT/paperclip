@@ -286,6 +286,52 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("deduplicates matching persisted-log reads across mounted transcript surfaces", async () => {
+    type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
+    let resolveLog: ((value: RunLogResult | PromiseLike<RunLogResult>) => void) | null = null;
+    logMock.mockImplementation(
+      () =>
+        new Promise<RunLogResult>((resolve) => {
+          resolveLog = resolve;
+        }),
+    );
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        enableRealtimeUpdates: false,
+      });
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    await Promise.resolve();
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveLog?.({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 });
+      await Promise.resolve();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("rebuilds only the transcript for the run that receives live output", async () => {
     function Harness() {
       useLiveRunTranscripts({

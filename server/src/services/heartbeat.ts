@@ -168,6 +168,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { computeLocalActiveRunExecutionsMax } from "./heartbeat-capacity.ts";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -265,10 +266,6 @@ const HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX = Math.max(
   0,
   Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX ?? 1)),
 );
-const LOCAL_ACTIVE_RUN_EXECUTIONS_MAX = Math.max(
-  1,
-  Math.floor(Number(process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX ?? 3)),
-);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -276,6 +273,11 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+const LOCAL_ACTIVE_RUN_EXECUTIONS_MAX = computeLocalActiveRunExecutionsMax(
+  process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+  undefined,
+  HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX,
+);
 
 type ActiveRunExecution = {
   runId: string;
@@ -2396,6 +2398,9 @@ function isHeartbeatRunTerminalStatus(
 const MEETING_RESULT_RESPONSE_BODY_SHAPE =
   "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"businessReview\": { \"goalAlignment\": \"...\", \"targetOrKpiImpact\": \"...\", \"financeOrBudgetImpact\": \"...\", \"customerOrBusinessValue\": \"...\", \"requirements\": [\"...\"], \"risks\": [\"...\"] }, \"agentPerformanceReviews\": [{ \"agentId\": \"...\", \"assessment\": \"on_track\", \"summary\": \"...\", \"evidence\": [\"...\"], \"corrections\": [\"...\"], \"issueId\": null }], \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }";
 
+const MEETING_CONTRIBUTION_RESPONSE_BODY_SHAPE =
+  "- Contribution body shape: { \"summaryMarkdown\": \"...\", \"progress\": [\"...\"], \"blockers\": [\"...\"], \"risks\": [\"...\"], \"nextActions\": [\"...\"], \"proposedDecisions\": [\"...\"], \"betterAlternatives\": [\"...\"] }";
+
 const MEETING_BUSINESS_RESPONSE_GUIDANCE = [
   "- Business review is mandatory for real operating meetings: connect the outcome to goals, targets, KPIs, finance/budget impact, customer or business value, and concrete requirements.",
   "- Agent performance reviews should treat participants as employees: assess ownership, velocity, quality, communication, blocker handling, and whether they are on the highest-leverage work.",
@@ -2421,7 +2426,9 @@ export function buildPaperclipTaskMarkdown(input: {
   meeting?: {
     id?: string | null;
     status?: string | null;
+    chairAgentId?: string | null;
   } | null;
+  currentAgentId?: string | null;
 }) {
   const graphifyCommand = () => {
     const configuredRaw =
@@ -2449,6 +2456,9 @@ export function buildPaperclipTaskMarkdown(input: {
   const issue = input.issue;
   const wakeComment = input.wakeComment ?? null;
   const meetingId = input.meeting?.id?.trim() || null;
+  const currentAgentId = input.currentAgentId?.trim() || null;
+  const chairAgentId = input.meeting?.chairAgentId?.trim() || null;
+  const currentAgentIsChair = Boolean(meetingId && currentAgentId && chairAgentId && currentAgentId === chairAgentId);
   const acceptedPlanContinuation =
     !wakeComment &&
     input.interaction?.kind === "request_confirmation" &&
@@ -2509,15 +2519,24 @@ export function buildPaperclipTaskMarkdown(input: {
     }
   }
   if (meetingId && input.interaction?.kind === "agent_meeting" && input.interaction.status === "pending") {
-    lines.push(
-      "",
-      "Pending company meeting response requirement:",
-      "This wake is for a first-class Paperclip meeting thread. Resolve the meeting before treating the heartbeat as complete.",
-      `- Respond with POST /api/meetings/${meetingId}/respond`,
-      MEETING_RESULT_RESPONSE_BODY_SHAPE,
-      ...MEETING_BUSINESS_RESPONSE_GUIDANCE,
-      "- Meeting threads are separate from issue threads. Link outcome items to issues by setting issueId, or create/update issues through the API before responding when the meeting creates real work.",
-    );
+    lines.push("", "Pending company meeting response requirement:");
+    if (currentAgentIsChair) {
+      lines.push(
+        "This wake is for chair synthesis of a first-class Paperclip meeting thread. Review participant contributions and resolve the meeting before treating the heartbeat as complete.",
+        `- Respond with POST /api/meetings/${meetingId}/respond`,
+        MEETING_RESULT_RESPONSE_BODY_SHAPE,
+        ...MEETING_BUSINESS_RESPONSE_GUIDANCE,
+        "- Meeting threads are separate from issue threads. Link outcome items to issues by setting issueId, or create/update issues through the API before responding when the meeting creates real work.",
+      );
+    } else {
+      lines.push(
+        "This wake is for your participant update in a first-class Paperclip meeting thread. Submit your contribution before treating the heartbeat as complete.",
+        `- Submit with POST /api/meetings/${meetingId}/contributions`,
+        MEETING_CONTRIBUTION_RESPONSE_BODY_SHAPE,
+        "- Contribution updates should state progress, blockers, risks, next actions, proposed decisions, and better alternatives from your role's perspective.",
+        "- Do not close the meeting unless you are explicitly chairing it; the chair will synthesize participant contributions into final decisions and linked work.",
+      );
+    }
   }
   if (issue) {
     const issueCode = issue.identifier || issue.id;
@@ -6533,8 +6552,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function countExecutionPathRunsForAgent(agentId: string) {
-    const [{ count }] = await db
+  async function countExecutionPathRunsForAgent(agentId: string, client: Pick<Db, "select"> = db) {
+    const [{ count }] = await client
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])));
@@ -6545,9 +6564,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return defaultAgentMaxConcurrentRuns(agent) > AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
 
-  async function shouldSkipForManagementQueueCap(agent: typeof agents.$inferSelect) {
+  async function shouldSkipForManagementQueueCap(agent: typeof agents.$inferSelect, client: Pick<Db, "select"> = db) {
     if (!isManagementQueueCappedAgent(agent)) return false;
-    return await countExecutionPathRunsForAgent(agent.id) >= MANAGEMENT_AGENT_LIVE_RUN_CAP;
+    return await countExecutionPathRunsForAgent(agent.id, client) >= MANAGEMENT_AGENT_LIVE_RUN_CAP;
   }
 
   async function countRunningRuns() {
@@ -8445,7 +8464,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       meeting: {
         id: readNonEmptyString(context.meetingId),
         status: readNonEmptyString(context.interactionStatus),
+        chairAgentId: readNonEmptyString(context.chairAgentId),
       },
+      currentAgentId: agent.id,
     });
     if (issueRef) {
       context.paperclipIssue = {
@@ -8455,8 +8476,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         description: issueRef.description,
         workMode: issueRef.workMode,
       };
+
+      const executionEnvironment: Record<string, string> = {};
+      const wakeTaskId = readNonEmptyString(context.taskId) ?? issueRef.id;
+      if (wakeTaskId) executionEnvironment.PAPERCLIP_TASK_ID = wakeTaskId;
+      const wakeReason = readNonEmptyString(context.wakeReason);
+      if (wakeReason) executionEnvironment.PAPERCLIP_WAKE_REASON = wakeReason;
+      const wakeCommentId = readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
+      if (wakeCommentId) executionEnvironment.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+      executionEnvironment.PAPERCLIP_ISSUE_ID = issueRef.id;
+      executionEnvironment.PAPERCLIP_ISSUE_IDENTIFIER = issueRef.identifier;
+      executionEnvironment.PAPERCLIP_ISSUE_TITLE = issueRef.title;
+
+      context.executionMetadata = {
+        paperclipIssue: {
+          id: issueRef.id,
+          identifier: issueRef.identifier,
+          title: issueRef.title,
+          description: issueRef.description,
+        },
+        environment: executionEnvironment,
+      };
     } else {
       delete context.paperclipIssue;
+      delete context.executionMetadata;
     }
     if (wakeCommentContext) {
       context.paperclipWakeComment = wakeCommentContext;
@@ -10769,7 +10812,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "deferred" as const };
         }
 
-        if (await shouldSkipForManagementQueueCap(agent)) {
+        if (await shouldSkipForManagementQueueCap(agent, tx)) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,

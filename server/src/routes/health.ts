@@ -60,6 +60,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    databaseProbe?: () => Promise<void>;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -88,7 +89,10 @@ export function healthRoutes(
     }
 
     try {
-      await withHealthProbeTimeout("database", db.execute(sql`SELECT 1`));
+      const databaseProbe = opts.databaseProbe
+        ? opts.databaseProbe()
+        : db.execute(sql`SELECT 1`).then(() => undefined);
+      await withHealthProbeTimeout("database", databaseProbe);
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
       res.status(503).json({

@@ -594,7 +594,12 @@ function shouldRetryMigrationStatusAfterRecovery(status: { code: number; stdout:
 
 async function getMigrationStatusPayload() {
   let status = await runNode(
-    [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+    [
+      tsxCliPath,
+      path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+      "--json",
+      "--keep-embedded-postgres",
+    ],
     { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
   );
   for (let attempt = 1; attempt <= migrationStatusRecoveryRetries && shouldRetryMigrationStatusAfterRecovery(status); attempt += 1) {
@@ -603,7 +608,12 @@ async function getMigrationStatusPayload() {
     );
     await delay(Math.min(5_000, 500 * attempt));
     status = await runNode(
-      [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+      [
+        tsxCliPath,
+        path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+        "--json",
+        "--keep-embedded-postgres",
+      ],
       { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
     );
   }
@@ -825,7 +835,7 @@ async function startServerChild() {
         }
       : {
           command: process.execPath,
-          args: [tsxCliPath, path.join(serverRoot, "src", "index.ts"), ...forwardedArgs],
+          args: [tsxCliPath, path.join(serverRoot, "scripts", "start-server-launcher.ts"), ...forwardedArgs],
           cwd: serverRoot,
         };
   child = spawn(

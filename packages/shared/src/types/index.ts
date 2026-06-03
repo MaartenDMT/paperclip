@@ -200,6 +200,8 @@ export type {
   AgentMeetingExpectedOutput,
   AgentMeetingPayload,
   AgentMeetingResult,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
   WorkMeetingSummary,
   MeetingWorkflowTrigger,
   MeetingWorkflowPolicyTrigger,

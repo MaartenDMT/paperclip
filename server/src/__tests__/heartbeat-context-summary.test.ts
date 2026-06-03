@@ -141,7 +141,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(meetingWake).toContain("ideas");
   });
 
-  it("prefers first-class meeting response guidance when meeting id is present", () => {
+  it("uses contribution guidance for first-class meeting participant wakes", () => {
     const meetingWake = buildPaperclipTaskMarkdown({
       issue: {
         id: "issue-1",
@@ -157,10 +157,40 @@ describe("buildPaperclipTaskMarkdown", () => {
       meeting: {
         id: "meeting-thread-1",
         status: "pending",
+        chairAgentId: "chair-agent-1",
       },
+      currentAgentId: "participant-agent-1",
+    });
+
+    expect(meetingWake).toContain("/api/meetings/meeting-thread-1/contributions");
+    expect(meetingWake).toContain("participant update");
+    expect(meetingWake).not.toContain("/api/meetings/meeting-thread-1/respond");
+    expect(meetingWake).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
+  });
+
+  it("uses response guidance for first-class meeting chair wakes", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "legacy-meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+      meeting: {
+        id: "meeting-thread-1",
+        status: "pending",
+        chairAgentId: "chair-agent-1",
+      },
+      currentAgentId: "chair-agent-1",
     });
 
     expect(meetingWake).toContain("/api/meetings/meeting-thread-1/respond");
+    expect(meetingWake).toContain("chair synthesis");
     expect(meetingWake).toContain("Meeting threads are separate from issue threads");
     expect(meetingWake).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
   });

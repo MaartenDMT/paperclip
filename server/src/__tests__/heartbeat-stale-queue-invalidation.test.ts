@@ -290,6 +290,51 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   }
 
+  it("checks the management queue cap inside the issue wake transaction", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      agentName: "Manager",
+      agentRole: "manager",
+      maxConcurrentRuns: 20,
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Management follow-up",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId: randomUUID(),
+        wakeReason: `management_queue_${i}`,
+      });
+    }
+
+    const result = await Promise.race([
+      heartbeat.wakeup(agentId, {
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: { issueId },
+      }),
+      new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 1_000)),
+    ]);
+
+    expect(result).not.toBe("timed_out");
+    expect(result).toBeNull();
+
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "management_queue_cap_reached"))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({ status: "skipped", reason: "management_queue_cap_reached" });
+  });
+
   it("cancels queued runs when the issue assignee changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
     const replacementAgentId = randomUUID();

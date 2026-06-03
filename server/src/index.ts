@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
+  checkPostgresConnection,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -568,12 +569,14 @@ export async function startServer(): Promise<StartedServer> {
           targetConnectionString: candidateConnectionString,
         });
         if (!ready) {
-          throw new Error(
-            `embedded postgres pid ${runningPid} exists but port ${candidatePort} did not become ready within the grace window`,
+          logger.warn(
+            `Embedded PostgreSQL pid ${runningPid} exists but port ${candidatePort} did not become ready within the grace window; attempting managed restart instead.`,
           );
+          shouldStartManagedEmbeddedPostgres = true;
+        } else {
+          port = candidatePort;
+          logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
         }
-        port = candidatePort;
-        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
       } catch (err) {
         if (!isEmbeddedPostgresStartupTransientError(err)) {
           throw err;
@@ -643,6 +646,11 @@ export async function startServer(): Promise<StartedServer> {
           instance: embeddedPostgres,
           postmasterPidFile,
           getRecentLogs: () => logBuffer.getRecentLogs(),
+          verifyStarted: () => waitForEmbeddedPostgresReady({
+            adminConnectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`,
+            databaseName: "paperclip",
+            targetConnectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+          }),
           onRecovered: (message) => logger.warn(message),
         });
       } catch (err) {
@@ -857,6 +865,9 @@ export async function startServer(): Promise<StartedServer> {
     uiMode,
     serverPort: listenPort,
     storageService,
+    databaseProbe: async () => {
+      await checkPostgresConnection(activeDatabaseConnectionString);
+    },
     feedbackExportService: feedback,
     databaseBackupService: {
       runManualBackup: async () => {
@@ -956,9 +967,10 @@ export async function startServer(): Promise<StartedServer> {
         const result = await issueThreadInteractions.reconcileMeetingWorkflow(companyId);
         created += result.created;
         for (const meeting of result.meetings) {
-          const agentIdsToWake = [meeting.chairAgentId ?? meeting.participantAgentIds[0]].filter(
-            (agentId): agentId is string => Boolean(agentId),
-          );
+          const agentIdsToWake = [
+            ...meeting.participantAgentIds,
+            ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
+          ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
           for (const agentId of agentIdsToWake) {
             try {
               await heartbeat.wakeup(agentId, {

@@ -11,6 +11,25 @@ const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
+type RunLogReadResult = Awaited<ReturnType<typeof heartbeatsApi.log>>;
+
+const inflightLogReads = new Map<string, Promise<RunLogReadResult>>();
+
+function readPersistedRunLog(runId: string, offset: number, limitBytes: number): Promise<RunLogReadResult> {
+  const key = `${runId}:${offset}:${limitBytes}`;
+  const existing = inflightLogReads.get(key);
+  if (existing) return existing;
+
+  const request = heartbeatsApi.log(runId, offset, limitBytes)
+    .finally(() => {
+      if (inflightLogReads.get(key) === request) {
+        inflightLogReads.delete(key);
+      }
+    });
+  inflightLogReads.set(key, request);
+  return request;
+}
+
 export interface RunTranscriptSource {
   id: string;
   status: string;
@@ -218,7 +237,7 @@ export function useLiveRunTranscripts({
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readPersistedRunLog(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));

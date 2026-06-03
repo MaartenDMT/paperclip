@@ -669,6 +669,18 @@ export const agentMeetingResultSchema = z.object({
   })).max(50).optional(),
 });
 
+const meetingContributionListSchema = z.array(z.string().trim().min(1).max(1000)).max(20);
+
+export const meetingContributionPayloadSchema = z.object({
+  summaryMarkdown: z.string().trim().min(1).max(10000),
+  progress: meetingContributionListSchema.default([]),
+  blockers: meetingContributionListSchema.default([]),
+  risks: meetingContributionListSchema.default([]),
+  nextActions: meetingContributionListSchema.default([]),
+  proposedDecisions: meetingContributionListSchema.default([]),
+  betterAlternatives: meetingContributionListSchema.default([]),
+});
+
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),

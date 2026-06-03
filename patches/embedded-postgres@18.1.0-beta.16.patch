@@ -10,7 +10,31 @@ diff --git a/dist/index.js b/dist/index.js
  // The default configuration options for the class
  const defaults = {
      databaseDir: path.join(process.cwd(), 'data', 'db'),
-@@ -133,7 +133,7 @@
+@@ -43,8 +43,11 @@
+ const BIN_PERMISSIONS = 0b101101101;
+ const ensureBinIsExecutable = (filePath) => __awaiter(void 0, void 0, void 0, function* () {
++    if (platform() === 'win32') {
++        return;
++    }
+     // Only fix the file's mode if it's missing a permission. This is useful
+     // when the binaries are in a read-only file system, as a call to chmod
+     // (even unnecessary) would cause a crash.
+     const stat = yield fs.stat(filePath);
+     if ((stat.mode & BIN_PERMISSIONS) !== BIN_PERMISSIONS) {
+         yield fs.chmod(filePath, stat.mode | BIN_PERMISSIONS);
+@@ -121,9 +124,9 @@
+             const randomId = crypto.randomBytes(6).readUIntLE(0, 6).toString(36);
+             const passwordFile = path.resolve(tmpdir(), `pg-password-${randomId}`);
+             yield fs.writeFile(passwordFile, this.options.password + '\n');
+             // Make the files executable, in case they are not
+-            ensureBinIsExecutable(postgres);
+-            ensureBinIsExecutable(initdb);
++            yield ensureBinIsExecutable(postgres);
++            yield ensureBinIsExecutable(initdb);
+             // Initialize the database
+             yield new Promise((resolve, reject) => {
+                 var _a;
+@@ -133,7 +136,7 @@
                      `--pwfile=${passwordFile}`,
                      `--lc-messages=${LC_MESSAGES_LOCALE}`,
                      ...this.options.initdbFlags,
@@ -19,7 +43,16 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -177,7 +177,7 @@
+@@ -168,7 +171,7 @@
+                 throw new Error('Postgres cannot run as a root user. embedded-postgres could not find a postgres user to run as instead. Consider using the `createPostgresUser` option.');
+             });
+             // Make the file executable, in case it is not
+-            ensureBinIsExecutable(postgres);
++            yield ensureBinIsExecutable(postgres);
+             yield new Promise((resolve, reject) => {
+                 var _a;
+                 // Spawn a postgres server
+@@ -177,7 +180,7 @@
                      '-p',
                      this.options.port.toString(),
                      ...this.options.postgresFlags,

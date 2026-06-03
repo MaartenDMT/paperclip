@@ -25,6 +25,7 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  meetingContributionPayloadSchema,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -3875,6 +3876,27 @@ export function issueRoutes(
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
     res.json(linked);
+  });
+
+  router.post("/meetings/:meetingId/contributions", validate(meetingContributionPayloadSchema), async (req, res) => {
+    const meetingId = req.params.meetingId as string;
+    const meetingsSvc = meetingService(db);
+    const meeting = await meetingsSvc.getById(meetingId);
+    if (!meeting) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    assertCompanyAccess(req, meeting.companyId);
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      throw forbidden("Board users cannot submit agent meeting contributions");
+    }
+    const actor = getActorInfo(req);
+    const contribution = await meetingsSvc.contribute(meetingId, req.body, {
+      agentId: actor.agentId,
+      userId: null,
+    });
+    res.json(contribution);
   });
 
   router.post("/meetings/:meetingId/respond", validate(respondIssueThreadInteractionSchema), async (req, res) => {

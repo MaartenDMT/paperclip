@@ -15,6 +15,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  meetingContributions,
   meetingIssueLinks,
   meetingParticipants,
   meetings,
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 120_000);
 
   afterEach(async () => {
+    await db.delete(meetingContributions);
     await db.delete(meetingIssueLinks);
     await db.delete(meetingParticipants);
     await db.delete(meetings);
@@ -1706,6 +1708,179 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       projectId,
       goalId,
     });
+  });
+
+  it("records participant meeting contributions without resolving the meeting", async () => {
+    const companyId = randomUUID();
+    const chairAgentId = randomUUID();
+    const contributorAgentId = randomUUID();
+    const meetingId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: chairAgentId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: contributorAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: chairAgentId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      title: "Execution check-in",
+      purpose: "Review stalled work.",
+      status: "pending",
+      chairAgentId,
+      agenda: ["Review progress.", "Choose next action."],
+      expectedOutputs: ["tasks", "blockers", "decisions"],
+    });
+    await db.insert(meetingParticipants).values([
+      { companyId, meetingId, agentId: chairAgentId, role: "chair" },
+      { companyId, meetingId, agentId: contributorAgentId, role: "participant" },
+    ]);
+
+    const contributed = await meetingService(db).contribute(meetingId, {
+      summaryMarkdown: "Implementation is blocked by missing API details.",
+      progress: ["Finished the data model sketch."],
+      blockers: ["Need API ownership decision."],
+      risks: ["Delay will push the review past the target date."],
+      nextActions: ["Assign API owner."],
+      proposedDecisions: ["Move API ownership to the platform team."],
+      betterAlternatives: ["Split the issue into API and UI tasks."],
+    }, { agentId: contributorAgentId });
+
+    expect(contributed.agentId).toBe(contributorAgentId);
+    const [meeting] = await db.select().from(meetings).where(eq(meetings.id, meetingId));
+    expect(meeting?.status).toBe("pending");
+    expect(meeting?.result).toBeNull();
+    const participants = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, meetingId));
+    expect(participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: contributorAgentId, status: "contributed" }),
+      expect.objectContaining({ agentId: chairAgentId, status: "pending" }),
+    ]));
+    const listed = await meetingService(db).listForCompany(companyId);
+    expect(listed[0]).toEqual(expect.objectContaining({
+      id: meetingId,
+      contributedAgentIds: [contributorAgentId],
+      pendingParticipantAgentIds: [chairAgentId],
+    }));
+    expect(listed[0]?.contributions).toEqual([
+      expect.objectContaining({
+        agentId: contributorAgentId,
+        summaryMarkdown: "Implementation is blocked by missing API details.",
+        blockers: ["Need API ownership decision."],
+        betterAlternatives: ["Split the issue into API and UI tasks."],
+      }),
+    ]);
+  });
+
+  it("requeues missing meeting contributors before waking the chair for synthesis", async () => {
+    const companyId = randomUUID();
+    const chairAgentId = randomUUID();
+    const contributorAgentId = randomUUID();
+    const meetingId = randomUUID();
+    const staleUpdatedAt = new Date(Date.now() - 20 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: chairAgentId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: contributorAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: chairAgentId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      title: "Execution check-in",
+      purpose: "Review stalled work.",
+      status: "pending",
+      chairAgentId,
+      idempotencyKey: `meeting-workflow:stale_in_progress:${meetingId}`,
+      agenda: ["Review progress.", "Choose next action."],
+      expectedOutputs: ["tasks", "blockers", "decisions"],
+      updatedAt: staleUpdatedAt,
+    });
+    await db.insert(meetingParticipants).values([
+      { companyId, meetingId, agentId: chairAgentId, role: "chair", status: "pending" },
+      { companyId, meetingId, agentId: contributorAgentId, role: "participant", status: "pending" },
+    ]);
+
+    const missingContributorWake = await meetingService(db).reconcilePendingWorkflowWakeups(companyId);
+
+    expect(missingContributorWake.meetings).toEqual([
+      expect.objectContaining({
+        id: meetingId,
+        participantAgentIds: [contributorAgentId],
+        chairAgentId,
+      }),
+    ]);
+
+    await meetingService(db).contribute(meetingId, {
+      summaryMarkdown: "Contributor update is ready for synthesis.",
+      progress: ["Completed technical review."],
+      blockers: [],
+      risks: [],
+      nextActions: ["Chair should decide next owner."],
+      proposedDecisions: ["Proceed with the split plan."],
+      betterAlternatives: [],
+    }, { agentId: contributorAgentId });
+
+    const chairWake = await meetingService(db).reconcilePendingWorkflowWakeups(companyId);
+
+    expect(chairWake.meetings).toEqual([
+      expect.objectContaining({
+        id: meetingId,
+        participantAgentIds: [chairAgentId],
+        chairAgentId,
+      }),
+    ]);
   });
 
   it("creates company-level meeting workflow meetings when no recent meeting exists", async () => {

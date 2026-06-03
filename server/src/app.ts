@@ -65,6 +65,7 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+const FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS = 10_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -135,6 +136,40 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   return req.accepts(["html"]) === "html";
 }
 
+function createFeedbackExportFlushRunner(
+  flushPendingFeedbackTraces: () => Promise<unknown>,
+) {
+  let flushGeneration = 0;
+  let flushStartedAt: Date | null = null;
+
+  return () => {
+    const generation = ++flushGeneration;
+    flushStartedAt = new Date();
+
+    void waitForStartup(
+      flushPendingFeedbackTraces(),
+      FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS,
+    ).then((result) => {
+      if (generation !== flushGeneration) return;
+      if (result.status === "timed_out") {
+        logger.warn(
+          {
+            timeoutMs: FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS,
+            flushStartedAt: flushStartedAt?.toISOString() ?? null,
+          },
+          "Feedback export flush timed out; allowing the next cycle to continue",
+        );
+      }
+    }).catch((err) => {
+      if (generation !== flushGeneration) return;
+      logger.error({ err }, "Failed to flush pending feedback exports");
+    }).finally(() => {
+      if (generation !== flushGeneration) return;
+      flushStartedAt = null;
+    });
+  };
+}
+
 export function shouldEnablePrivateHostnameGuard(opts: {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -166,6 +201,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    databaseProbe?: () => Promise<void>;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -226,6 +262,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      databaseProbe: opts.databaseProbe,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
@@ -472,19 +509,14 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
-  const feedbackExportTimer = opts.feedbackExportService
-    ? setInterval(() => {
-      void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
-        logger.error({ err }, "Failed to flush pending feedback exports");
-      });
-    }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
+  const runFeedbackExportFlush = opts.feedbackExportService
+    ? createFeedbackExportFlushRunner(() => opts.feedbackExportService!.flushPendingFeedbackTraces())
+    : null;
+  const feedbackExportTimer = runFeedbackExportFlush
+    ? setInterval(runFeedbackExportFlush, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (opts.feedbackExportService) {
-    void opts.feedbackExportService.flushPendingFeedbackTraces().catch((err) => {
-      logger.error({ err }, "Failed to flush pending feedback exports");
-    });
-  }
+  runFeedbackExportFlush?.();
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });

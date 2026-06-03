@@ -815,6 +815,7 @@ export function renderPaperclipWakePrompt(
     if (normalized.meetingId) {
       lines.push(
         `- Respond with POST /api/meetings/${normalized.meetingId}/respond`,
+        `- If this wake is for your participant update rather than chair synthesis, submit POST /api/meetings/${normalized.meetingId}/contributions first and do not close the meeting.`,
         "- Meetings are first-class company coordination threads. They may link to issues, create issues, update workflows, correct memory, or capture ideas, but they are not issue comments.",
         "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
       );

@@ -17,6 +17,8 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
   MeetingWorkflowHealth,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
@@ -181,6 +183,8 @@ export const issuesApi = {
   },
   getWorkMeetingHealth: (companyId: string) =>
     api.get<MeetingWorkflowHealth>(`/companies/${companyId}/work-meetings/health`),
+  contributeToMeeting: (meetingId: string, data: MeetingContributionPayload) =>
+    api.post<MeetingContributionSummary>(`/meetings/${meetingId}/contributions`, data),
   linkWorkMeetingOutcome: (
     companyId: string,
     meetingId: string,

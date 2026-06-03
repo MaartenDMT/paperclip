@@ -129,13 +129,59 @@ async function execTar(args: string[]): Promise<void> {
   });
 }
 
+function isMissingPathError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function toTarPath(relativePath: string): string {
+  return relativePath.split(path.sep).join("/");
+}
+
+export async function listBrokenSymlinkTarExcludes(localDir: string): Promise<string[]> {
+  const out: string[] = [];
+
+  async function walk(relative = ""): Promise<void> {
+    const current = path.join(localDir, relative);
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const nextRelative = relative ? path.join(relative, entry.name) : entry.name;
+      const entryPath = path.join(localDir, nextRelative);
+      if (entry.isSymbolicLink()) {
+        try {
+          await fs.stat(entryPath);
+        } catch (error) {
+          if (!isMissingPathError(error)) throw error;
+          const tarPath = toTarPath(nextRelative);
+          out.push(tarPath, `./${tarPath}`);
+        }
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await walk(nextRelative);
+      }
+    }
+  }
+
+  await walk();
+  return out;
+}
+
 async function createTarballFromDirectory(input: {
   localDir: string;
   archivePath: string;
   exclude?: string[];
   followSymlinks?: boolean;
 }): Promise<void> {
-  const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
+  const exclude = [
+    "._*",
+    ...(input.exclude ?? []),
+    ...(input.followSymlinks ? await listBrokenSymlinkTarExcludes(input.localDir) : []),
+  ];
+  const excludeArgs = exclude.flatMap((entry) => ["--exclude", entry]);
   await execTar([
     "-c",
     ...(input.followSymlinks ? ["-h"] : []),

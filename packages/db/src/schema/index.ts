@@ -30,7 +30,7 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { campaigns, campaignProjects, campaignPhases } from "./campaigns.js";
 export { issues } from "./issues.js";
-export { meetings, meetingParticipants, meetingIssueLinks } from "./meetings.js";
+export { meetings, meetingParticipants, meetingIssueLinks, meetingContributions } from "./meetings.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";

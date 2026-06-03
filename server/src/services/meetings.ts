@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   heartbeatRuns,
+  meetingContributions,
   meetingIssueLinks,
   meetingParticipants,
   meetings,
@@ -13,11 +14,13 @@ import type {
   AgentMeetingExpectedOutput,
   AgentMeetingResult,
   IssueThreadInteractionStatus,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
   MeetingWorkflowRecommendation,
   WorkMeetingSummary,
 } from "@paperclipai/shared";
-import { agentMeetingResultSchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { agentMeetingResultSchema, meetingContributionPayloadSchema } from "@paperclipai/shared";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import {
   countUnlinkedMeetingOutcomes,
@@ -257,6 +260,59 @@ export function meetingService(db: Db) {
     return inserted.length;
   }
 
+  function contributionSummary(row: {
+    id: string;
+    meetingId: string;
+    agentId: string;
+    agentName: string | null;
+    agentRole: string | null;
+    summaryMarkdown: string;
+    progress: string[] | null;
+    blockers: string[] | null;
+    risks: string[] | null;
+    nextActions: string[] | null;
+    proposedDecisions: string[] | null;
+    betterAlternatives: string[] | null;
+    createdAt: Date | string;
+    updatedAt: Date | string;
+  }): MeetingContributionSummary {
+    return {
+      id: row.id,
+      meetingId: row.meetingId,
+      agentId: row.agentId,
+      agentName: row.agentName,
+      agentRole: row.agentRole,
+      summaryMarkdown: row.summaryMarkdown,
+      progress: row.progress ?? [],
+      blockers: row.blockers ?? [],
+      risks: row.risks ?? [],
+      nextActions: row.nextActions ?? [],
+      proposedDecisions: row.proposedDecisions ?? [],
+      betterAlternatives: row.betterAlternatives ?? [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  function pendingParticipantIdsForMeeting(input: {
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+    contributedAgentIds: string[];
+    status: string;
+  }) {
+    if (input.status !== "pending") return [];
+    const contributed = new Set(input.contributedAgentIds);
+    const chairAgentId = input.chairAgentId;
+    const missingNonChairIds = input.participantAgentIds.filter(
+      (agentId) => agentId !== chairAgentId && !contributed.has(agentId),
+    );
+    if (missingNonChairIds.length > 0) return missingNonChairIds;
+    if (chairAgentId && input.participantAgentIds.includes(chairAgentId) && !contributed.has(chairAgentId)) {
+      return [chairAgentId];
+    }
+    return input.participantAgentIds.filter((agentId) => !contributed.has(agentId));
+  }
+
   async function readDefaultCompanyGoalId(companyId: string) {
     return db
       .select({ id: goals.id })
@@ -464,6 +520,89 @@ export function meetingService(db: Db) {
     };
   }
 
+  async function contribute(
+    meetingId: string,
+    input: MeetingContributionPayload,
+    actor: MeetingActor,
+  ): Promise<MeetingContributionSummary> {
+    if (!actor.agentId) throw forbidden("Only meeting participants can contribute to this meeting");
+    const meeting = await getMeetingById(meetingId);
+    if (!meeting) throw notFound("Meeting not found");
+    if (meeting.status !== "pending") throw conflict("Meeting has already been resolved");
+    if (!(await isParticipant(meetingId, actor.agentId))) {
+      throw forbidden("Only meeting participants can contribute to this meeting");
+    }
+    const payload = meetingContributionPayloadSchema.parse(input);
+    const now = new Date();
+    const row = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [contribution] = await txDb
+        .insert(meetingContributions)
+        .values({
+          companyId: meeting.companyId,
+          meetingId,
+          agentId: actor.agentId!,
+          summaryMarkdown: payload.summaryMarkdown,
+          progress: payload.progress,
+          blockers: payload.blockers,
+          risks: payload.risks,
+          nextActions: payload.nextActions,
+          proposedDecisions: payload.proposedDecisions,
+          betterAlternatives: payload.betterAlternatives,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [meetingContributions.meetingId, meetingContributions.agentId],
+          set: {
+            summaryMarkdown: payload.summaryMarkdown,
+            progress: payload.progress,
+            blockers: payload.blockers,
+            risks: payload.risks,
+            nextActions: payload.nextActions,
+            proposedDecisions: payload.proposedDecisions,
+            betterAlternatives: payload.betterAlternatives,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      await txDb
+        .update(meetingParticipants)
+        .set({ status: "contributed", updatedAt: now })
+        .where(and(
+          eq(meetingParticipants.meetingId, meetingId),
+          eq(meetingParticipants.agentId, actor.agentId!),
+        ));
+      return contribution;
+    });
+    if (!row) throw unprocessable("Meeting contribution could not be recorded");
+    await logActivity(db, {
+      companyId: meeting.companyId,
+      actorType: "agent",
+      actorId: actor.agentId,
+      agentId: actor.agentId,
+      action: "meeting.contributed",
+      entityType: "meeting",
+      entityId: meetingId,
+      details: {
+        progressCount: payload.progress.length,
+        blockerCount: payload.blockers.length,
+        riskCount: payload.risks.length,
+        nextActionCount: payload.nextActions.length,
+      },
+    });
+    const [agent] = await db
+      .select({ name: agents.name, role: agents.role })
+      .from(agents)
+      .where(and(eq(agents.companyId, meeting.companyId), eq(agents.id, actor.agentId)))
+      .limit(1);
+    return contributionSummary({
+      ...row,
+      agentName: agent?.name ?? null,
+      agentRole: agent?.role ?? null,
+    });
+  }
+
   async function listForCompany(companyId: string, options: {
     limit?: number;
     status?: string | null;
@@ -521,6 +660,39 @@ export function meetingService(db: Db) {
       participantsByMeetingId.set(row.meetingId, list);
     }
 
+    const contributionRows = meetingIds.length > 0
+      ? await db
+          .select({
+            id: meetingContributions.id,
+            meetingId: meetingContributions.meetingId,
+            agentId: meetingContributions.agentId,
+            agentName: agents.name,
+            agentRole: agents.role,
+            summaryMarkdown: meetingContributions.summaryMarkdown,
+            progress: meetingContributions.progress,
+            blockers: meetingContributions.blockers,
+            risks: meetingContributions.risks,
+            nextActions: meetingContributions.nextActions,
+            proposedDecisions: meetingContributions.proposedDecisions,
+            betterAlternatives: meetingContributions.betterAlternatives,
+            createdAt: meetingContributions.createdAt,
+            updatedAt: meetingContributions.updatedAt,
+          })
+          .from(meetingContributions)
+          .innerJoin(agents, eq(agents.id, meetingContributions.agentId))
+          .where(and(
+            eq(meetingContributions.companyId, companyId),
+            inArray(meetingContributions.meetingId, meetingIds),
+          ))
+          .orderBy(asc(meetingContributions.createdAt), asc(meetingContributions.id))
+      : [];
+    const contributionsByMeetingId = new Map<string, MeetingContributionSummary[]>();
+    for (const row of contributionRows) {
+      const list = contributionsByMeetingId.get(row.meetingId) ?? [];
+      list.push(contributionSummary(row));
+      contributionsByMeetingId.set(row.meetingId, list);
+    }
+
     const issueLinkRows = meetingIds.length > 0
       ? await db
           .select({
@@ -558,6 +730,9 @@ export function meetingService(db: Db) {
       const result = row.result ? agentMeetingResultSchema.parse(row.result) : null;
       const unlinked = countUnlinkedMeetingOutcomes(result);
       const linkedIssues = linkedIssuesByMeetingId.get(row.id) ?? [];
+      const participants = participantsByMeetingId.get(row.id) ?? [];
+      const contributions = contributionsByMeetingId.get(row.id) ?? [];
+      const contributedAgentIds = contributions.map((contribution) => contribution.agentId);
       const primaryIssue =
         linkedIssues.find((issue) => issue.issueId === row.sourceIssueId) ??
         linkedIssues.find((issue) => issue.linkKind === "source") ??
@@ -581,8 +756,16 @@ export function meetingService(db: Db) {
         status: rowStatus(row.status),
         purpose: row.purpose,
         agenda: row.agenda ?? [],
-        participantAgentIds: (participantsByMeetingId.get(row.id) ?? []).map((agent) => agent.id),
-        participants: participantsByMeetingId.get(row.id) ?? [],
+        participantAgentIds: participants.map((agent) => agent.id),
+        participants,
+        contributions,
+        contributedAgentIds,
+        pendingParticipantAgentIds: pendingParticipantIdsForMeeting({
+          participantAgentIds: participants.map((agent) => agent.id),
+          chairAgentId: row.chairAgentId,
+          contributedAgentIds,
+          status: row.status,
+        }),
         expectedOutputs: row.expectedOutputs ?? [],
         result,
         resultSummaryMarkdown: result?.summaryMarkdown ?? null,
@@ -818,6 +1001,26 @@ export function meetingService(db: Db) {
       participantsByMeetingId.set(participant.meetingId, list);
     }
 
+    const contributionRows = meetingIds.length > 0
+      ? await db
+          .select({
+            meetingId: meetingContributions.meetingId,
+            agentId: meetingContributions.agentId,
+            updatedAt: meetingContributions.updatedAt,
+          })
+          .from(meetingContributions)
+          .where(and(
+            eq(meetingContributions.companyId, companyId),
+            inArray(meetingContributions.meetingId, meetingIds),
+          ))
+      : [];
+    const contributionsByMeetingId = new Map<string, Array<{ agentId: string; updatedAt: Date }>>();
+    for (const contribution of contributionRows) {
+      const list = contributionsByMeetingId.get(contribution.meetingId) ?? [];
+      list.push({ agentId: contribution.agentId, updatedAt: contribution.updatedAt });
+      contributionsByMeetingId.set(contribution.meetingId, list);
+    }
+
     const wakeTargets: MeetingWakeTarget[] = [];
     let cancelledUnrunnable = 0;
     for (const meeting of rows) {
@@ -829,7 +1032,6 @@ export function meetingService(db: Db) {
         participantsByMeetingId.get(meeting.id) ?? [],
         activeRuns,
       );
-      if (!repairResult.repaired && meeting.updatedAt > cutoff) continue;
       const runnableIds = await listRunnableParticipantIds(
         companyId,
         repairResult.participantAgentIds,
@@ -843,19 +1045,35 @@ export function meetingService(db: Db) {
         if (updated) cancelledUnrunnable += 1;
         continue;
       }
+      const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
+        ? meeting.chairAgentId
+        : runnableIds[0] ?? null;
+      const contributionRowsForMeeting = contributionsByMeetingId.get(meeting.id) ?? [];
+      const contributedIds = new Set(contributionRowsForMeeting.map((contribution) => contribution.agentId));
+      const missingContributorIds = runnableIds.filter(
+        (agentId) => agentId !== chairAgentId && !contributedIds.has(agentId),
+      );
+      const hasFreshContribution = contributionRowsForMeeting.some(
+        (contribution) => toTimeMillis(contribution.updatedAt) >= toTimeMillis(meeting.updatedAt),
+      );
+      if (!repairResult.repaired && meeting.updatedAt > cutoff && !(missingContributorIds.length === 0 && hasFreshContribution)) {
+        continue;
+      }
       const [updated] = await db
         .update(meetings)
         .set({ updatedAt: new Date() })
         .where(and(eq(meetings.id, meeting.id), eq(meetings.status, "pending")))
         .returning();
       if (!updated) continue;
-      const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
-        ? meeting.chairAgentId
-        : runnableIds[0] ?? null;
+      const wakeParticipantIds = missingContributorIds.length > 0
+        ? missingContributorIds
+        : chairAgentId
+          ? [chairAgentId]
+          : runnableIds.slice(0, 1);
       wakeTargets.push({
         id: meeting.id,
         issueId: meeting.sourceIssueId,
-        participantAgentIds: runnableIds,
+        participantAgentIds: wakeParticipantIds,
         chairAgentId,
       });
     }
@@ -866,6 +1084,7 @@ export function meetingService(db: Db) {
     getById: getMeetingById,
     isParticipant,
     createFromRecommendation,
+    contribute,
     listForCompany,
     respond,
     linkOutcomeIssue,
