@@ -14,6 +14,8 @@ import {
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createCompatibleDevServiceIdentities, createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { resolvePaperclipEnvPath } from "../server/src/paths.ts";
+import { config as loadDotenv } from "dotenv";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -34,6 +36,14 @@ if (worktreeEnvBootstrap.missingEnv) {
   );
   process.exit(1);
 }
+
+// Load the resolved Paperclip instance .env (e.g. DATABASE_URL) into the
+// environment BEFORE spawning the migration preflight and server child. The
+// worktree bootstrap above only covers a linked worktree's repo-local
+// .paperclip/.env; for the default instance, DATABASE_URL lives in the instance
+// .env. Without it the preflight's migration-status falls back to embedded
+// Postgres and can hang. override:false so shell/worktree values still win.
+loadDotenv({ path: resolvePaperclipEnvPath(), override: false, quiet: true });
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);

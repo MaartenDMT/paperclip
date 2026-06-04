@@ -1,7 +1,70 @@
+diff --git a/dist/binary.js b/dist/binary.js
+index 74f1b1811197b6f2e578c411f7024153ea38929a..4f709ccbb6a83793d4d71b99571ede20e803678f 100644
+--- a/dist/binary.js
++++ b/dist/binary.js
+@@ -1,4 +1,17 @@
+ import os from 'os';
++import { createRequire } from 'module';
++import { pathToFileURL } from 'url';
++// Resolve the platform-specific binaries package via the CommonJS resolution
++// algorithm. Unlike a bare ESM `import('@embedded-postgres/<platform>')`, this
++// skips an incomplete hoisted shadow copy (e.g. a nested
++// `embedded-postgres/node_modules/@embedded-postgres/<platform>` dir that only
++// contains a partial `native/` folder and no package.json) and resolves to the
++// complete top-level package. Fixes ERR_MODULE_NOT_FOUND under pnpm's hoisted
++// node-linker + tsx on Windows.
++const require = createRequire(import.meta.url);
++function loadPlatformPackage(packageName) {
++    return import(pathToFileURL(require.resolve(packageName)).href);
++}
+ function getBinaries() {
+     const arch = os.arch();
+     const platform = os.platform();
+@@ -6,31 +19,31 @@ function getBinaries() {
+         case 'darwin':
+             switch (arch) {
+                 case 'arm64':
+-                    return import('@embedded-postgres/darwin-arm64');
++                    return loadPlatformPackage('@embedded-postgres/darwin-arm64');
+                 case 'x64':
+-                    return import('@embedded-postgres/darwin-x64');
++                    return loadPlatformPackage('@embedded-postgres/darwin-x64');
+                 default:
+                     throw new Error(`Unsupported arch "${arch}" for platform "${platform}"`);
+             }
+         case 'linux':
+             switch (arch) {
+                 case 'arm64':
+-                    return import('@embedded-postgres/linux-arm64');
++                    return loadPlatformPackage('@embedded-postgres/linux-arm64');
+                 case 'arm':
+-                    return import('@embedded-postgres/linux-arm');
++                    return loadPlatformPackage('@embedded-postgres/linux-arm');
+                 case 'ia32':
+-                    return import('@embedded-postgres/linux-ia32');
++                    return loadPlatformPackage('@embedded-postgres/linux-ia32');
+                 case 'ppc64':
+-                    return import('@embedded-postgres/linux-ppc64');
++                    return loadPlatformPackage('@embedded-postgres/linux-ppc64');
+                 case 'x64':
+-                    return import('@embedded-postgres/linux-x64');
++                    return loadPlatformPackage('@embedded-postgres/linux-x64');
+                 default:
+                     throw new Error(`Unsupported arch "${arch}" for platform "${platform}"`);
+             }
+         case 'win32':
+             switch (arch) {
+                 case 'x64':
+-                    return import('@embedded-postgres/windows-x64');
++                    return loadPlatformPackage('@embedded-postgres/windows-x64');
+                 default:
+                     throw new Error(`Unsupported arch "${arch}" for platform "${platform}"`);
+             }
 diff --git a/dist/index.js b/dist/index.js
+index ccfe17a82f4879bf20cc345c579a987d9eba5309..bcb7c097adda5d2305fa3d0f3c2708616964bc8c 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -23,7 +23,7 @@
+@@ -23,7 +23,7 @@ const { Client } = pg;
   * for a particular string, we need to force that string into the right locale.
   * @see https://github.com/leinelissen/embedded-postgres/issues/15
   */
@@ -10,7 +73,8 @@ diff --git a/dist/index.js b/dist/index.js
  // The default configuration options for the class
  const defaults = {
      databaseDir: path.join(process.cwd(), 'data', 'db'),
-@@ -43,8 +43,11 @@
+@@ -42,6 +42,9 @@ const defaults = {
+ //                        r-xr-xr-x
  const BIN_PERMISSIONS = 0b101101101;
  const ensureBinIsExecutable = (filePath) => __awaiter(void 0, void 0, void 0, function* () {
 +    if (platform() === 'win32') {
@@ -19,11 +83,7 @@ diff --git a/dist/index.js b/dist/index.js
      // Only fix the file's mode if it's missing a permission. This is useful
      // when the binaries are in a read-only file system, as a call to chmod
      // (even unnecessary) would cause a crash.
-     const stat = yield fs.stat(filePath);
-     if ((stat.mode & BIN_PERMISSIONS) !== BIN_PERMISSIONS) {
-         yield fs.chmod(filePath, stat.mode | BIN_PERMISSIONS);
-@@ -121,9 +124,9 @@
-             const randomId = crypto.randomBytes(6).readUIntLE(0, 6).toString(36);
+@@ -121,8 +124,8 @@ class EmbeddedPostgres {
              const passwordFile = path.resolve(tmpdir(), `pg-password-${randomId}`);
              yield fs.writeFile(passwordFile, this.options.password + '\n');
              // Make the files executable, in case they are not
@@ -34,7 +94,7 @@ diff --git a/dist/index.js b/dist/index.js
              // Initialize the database
              yield new Promise((resolve, reject) => {
                  var _a;
-@@ -133,7 +136,7 @@
+@@ -133,7 +136,7 @@ class EmbeddedPostgres {
                      `--pwfile=${passwordFile}`,
                      `--lc-messages=${LC_MESSAGES_LOCALE}`,
                      ...this.options.initdbFlags,
@@ -43,7 +103,7 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -168,7 +171,7 @@
+@@ -167,7 +170,7 @@ class EmbeddedPostgres {
                  throw new Error('Postgres cannot run as a root user. embedded-postgres could not find a postgres user to run as instead. Consider using the `createPostgresUser` option.');
              });
              // Make the file executable, in case it is not
@@ -52,7 +112,7 @@ diff --git a/dist/index.js b/dist/index.js
              yield new Promise((resolve, reject) => {
                  var _a;
                  // Spawn a postgres server
-@@ -177,7 +180,7 @@
+@@ -177,7 +180,7 @@ class EmbeddedPostgres {
                      '-p',
                      this.options.port.toString(),
                      ...this.options.postgresFlags,

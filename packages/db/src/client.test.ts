@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
+  createDb,
   inspectMigrations,
 } from "./client.js";
 import {
@@ -44,6 +46,20 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it(
+    "configures a nonzero idle-in-transaction session timeout for pooled connections",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const db = createDb(connectionString, { max: 1 });
+
+      const result = await db.execute(sql.raw("show idle_in_transaction_session_timeout"));
+      const timeoutRaw = result[0]?.idle_in_transaction_session_timeout;
+
+      expect(Number.parseInt(String(timeoutRaw), 10)).toBeGreaterThan(0);
+    },
+    embeddedPostgresTestTimeoutMs,
+  );
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
