@@ -4,12 +4,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   documentRevisions,
   documents,
   goals,
   heartbeatRuns,
+  issueApprovals,
   issueDocuments,
   instanceSettings,
   issueRelations,
@@ -49,6 +51,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(meetingIssueLinks);
     await db.delete(meetingParticipants);
     await db.delete(meetings);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issueDocuments);
@@ -1611,6 +1615,115 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("creates a repeat meeting when an old answered meeting no longer covers an open gap", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const ctoId = randomUUID();
+    const engineerId = randomUUID();
+    const issueId = randomUUID();
+    const meetingId = randomUUID();
+    const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ctoId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        reportsTo: ctoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Still blocked",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: engineerId,
+      createdAt: oldDate,
+      updatedAt: oldDate,
+    });
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      sourceIssueId: issueId,
+      purpose: "Older blocker review.",
+      status: "answered",
+      idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}`,
+      agenda: ["Review the blocker."],
+      expectedOutputs: ["decisions"],
+      result: {
+        version: 1,
+        summaryMarkdown: "The old meeting was answered, but the issue remains blocked.",
+        decisions: ["Keep investigating."],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      },
+      createdAt: oldDate,
+      updatedAt: oldDate,
+      resolvedAt: oldDate,
+    });
+    await db.insert(meetingIssueLinks).values({
+      companyId,
+      meetingId,
+      issueId,
+      linkKind: "source",
+    });
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled.created).toBe(1);
+    const rows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: meetingId,
+        status: "answered",
+        idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}`,
+      }),
+      expect.objectContaining({
+        status: "pending",
+        sourceIssueId: issueId,
+        idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}:repeat:2`,
+      }),
+    ]));
+  });
+
   it("creates company-level meeting workflow meetings when no recent meeting exists", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1671,6 +1784,72 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
     const links = await db.select().from(meetingIssueLinks).where(eq(meetingIssueLinks.meetingId, rows[0]!.id));
     expect(links).toHaveLength(0);
+  });
+
+  it("does not recommend blocked_without_edge meetings when a pending non-meeting interaction already owns next action", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Covered blocked issue",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CTO",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Blocked but already waiting on board input",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "publish_path",
+          prompt: "Which publish path will you provide?",
+          selectionMode: "single",
+          options: [{
+            id: "scheduler",
+            label: "Connected scheduler",
+            description: "Board will provide scheduler access.",
+          }],
+        }],
+      },
+    });
+
+    const health = await interactionsSvc.getMeetingWorkflowHealth(companyId);
+
+    expect(health.recommendations.filter((recommendation) => recommendation.issueId === issueId)).toEqual([]);
   });
 
   it("keeps company-level no-recent-meeting cadence to CEO and direct heads", async () => {
@@ -2282,6 +2461,205 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(reconciled.meetings).toEqual([]);
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
     expect(row?.updatedAt?.getTime()).toBe(staleAt.getTime());
+  });
+
+  it("auto-resolves stale pending meeting workflow interactions when a pending non-meeting interaction already owns next action", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const staleAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Superseded legacy meeting",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CTO",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Blocked issue with explicit next action",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "agent_meeting",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}`,
+        title: "Work meeting: PAP-2",
+        summary: "Issue is blocked, but no first-class blocker edge exists.",
+        createdAt: staleAt,
+        updatedAt: staleAt,
+        payload: {
+          version: 1,
+          purpose: "Issue is blocked, but no first-class blocker edge exists.",
+          participantAgentIds: [agentId],
+          agenda: ["Review the stale meeting."],
+          expectedOutputs: ["decisions"],
+          contextMarkdown: null,
+        },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "publish_path",
+            prompt: "Which publish path will you provide?",
+            selectionMode: "single",
+            options: [{
+              id: "scheduler",
+              label: "Connected scheduler",
+              description: "Board will provide scheduler access.",
+            }],
+          }],
+        },
+      },
+    ]);
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled).toMatchObject({
+      created: 0,
+      requeuedPending: 0,
+      cancelledUnrunnable: 0,
+      resolvedTerminal: 1,
+    });
+    expect(reconciled.meetings).toEqual([]);
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row).toMatchObject({
+      status: "answered",
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+    });
+    expect((row?.result as any)?.summaryMarkdown).toContain("pending non-meeting interaction or approval");
+  });
+
+  it("auto-resolves stale first-class workflow meetings when a pending non-meeting interaction already owns next action", async () => {
+    const companyId = randomUUID();
+    const chairAgentId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const meetingId = randomUUID();
+    const staleUpdatedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Superseded first-class meeting",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: chairAgentId,
+      companyId,
+      name: "CTO",
+      role: "cto",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Blocked issue with explicit next action",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: chairAgentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "publish_path",
+          prompt: "Which publish path will you provide?",
+          selectionMode: "single",
+          options: [{
+            id: "scheduler",
+            label: "Connected scheduler",
+            description: "Board will provide scheduler access.",
+          }],
+        }],
+      },
+    });
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      sourceIssueId: issueId,
+      title: "Blocked work: covered by board question",
+      purpose: "Issue is blocked, but no first-class blocker edge exists.",
+      status: "pending",
+      chairAgentId,
+      idempotencyKey: `meeting-workflow:blocked_without_edge:${issueId}`,
+      agenda: ["Review the stale meeting."],
+      expectedOutputs: ["decisions"],
+      updatedAt: staleUpdatedAt,
+    });
+    await db.insert(meetingParticipants).values({
+      companyId,
+      meetingId,
+      agentId: chairAgentId,
+      role: "chair",
+      status: "pending",
+    });
+
+    const reconciled = await meetingService(db).reconcilePendingWorkflowWakeups(companyId);
+
+    expect(reconciled.meetings).toEqual([]);
+    const [meeting] = await db.select().from(meetings).where(eq(meetings.id, meetingId));
+    expect(meeting).toMatchObject({
+      status: "answered",
+    });
+    expect((meeting?.result as any)?.summaryMarkdown).toContain("pending non-meeting interaction or approval");
+    const [participant] = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, meetingId));
+    expect(participant).toMatchObject({ status: "answered" });
   });
 
   it("cancels stale pending meeting workflow interactions with no runnable participants", async () => {

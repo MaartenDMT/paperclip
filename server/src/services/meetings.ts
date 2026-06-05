@@ -2,7 +2,10 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   heartbeatRuns,
+  issueApprovals,
+  issueThreadInteractions,
   meetingIssueLinks,
   meetingParticipants,
   meetings,
@@ -86,6 +89,37 @@ export function meetingService(db: Db) {
       ));
     const runnableIds = new Set(rows.map((row) => row.id));
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
+  }
+
+  async function listIssueIdsWithPendingNextActionPath(companyId: string, issueIds: string[]) {
+    const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+    if (uniqueIssueIds.length === 0) return new Set<string>();
+
+    const [pendingInteractionRows, pendingApprovalRows] = await Promise.all([
+      db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          inArray(issueThreadInteractions.issueId, uniqueIssueIds),
+          eq(issueThreadInteractions.status, "pending"),
+          sql`${issueThreadInteractions.kind} <> 'agent_meeting'`,
+        )),
+      db
+        .select({ issueId: issueApprovals.issueId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(and(
+          eq(issueApprovals.companyId, companyId),
+          inArray(issueApprovals.issueId, uniqueIssueIds),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        )),
+    ]);
+
+    return new Set([
+      ...pendingInteractionRows.map((row) => row.issueId),
+      ...pendingApprovalRows.map((row) => row.issueId),
+    ]);
   }
 
   async function repairSingleDepartmentWorkflowMeetingParticipants(
@@ -380,15 +414,19 @@ export function meetingService(db: Db) {
     },
   ): Promise<MeetingWakeTarget | null> {
     if (recommendation.participantAgentIds.length === 0) return null;
-    const existing = await db
-      .select({ id: meetings.id })
+    const baseIdempotencyKey = `meeting-workflow:${recommendation.id}`;
+    const existingMeetings = await db
+      .select({ id: meetings.id, status: meetings.status, idempotencyKey: meetings.idempotencyKey })
       .from(meetings)
       .where(and(
         eq(meetings.companyId, companyId),
-        eq(meetings.idempotencyKey, `meeting-workflow:${recommendation.id}`),
+        sql`${meetings.idempotencyKey} like ${`${baseIdempotencyKey}%`}`,
       ))
-      .then((rows) => rows[0] ?? null);
-    if (existing) return null;
+      .orderBy(desc(meetings.createdAt));
+    if (existingMeetings.some((meeting) => meeting.status === "pending")) return null;
+    const idempotencyKey = existingMeetings.length === 0
+      ? baseIdempotencyKey
+      : `${baseIdempotencyKey}:repeat:${existingMeetings.length + 1}`;
 
     const sourceContext = recommendation.issueId
       ? await db
@@ -414,7 +452,7 @@ export function meetingService(db: Db) {
           purpose: recommendation.reason,
           status: "pending",
           chairAgentId: recommendation.suggestedHeadAgentId,
-          idempotencyKey: `meeting-workflow:${recommendation.id}`,
+          idempotencyKey,
           agenda: input.agenda,
           expectedOutputs: input.expectedOutputs,
           contextMarkdown: input.contextMarkdown,
@@ -767,7 +805,81 @@ export function meetingService(db: Db) {
     return resolved;
   }
 
+  async function resolveSupersededWorkflowMeetings(companyId: string) {
+    const rows = await db
+      .select()
+      .from(meetings)
+      .where(and(
+        eq(meetings.companyId, companyId),
+        eq(meetings.status, "pending"),
+        sql`${meetings.idempotencyKey} like 'meeting-workflow:%'`,
+        sql`${meetings.sourceIssueId} is not null`,
+      ))
+      .limit(200);
+
+    const supersededIssueIds = await listIssueIdsWithPendingNextActionPath(
+      companyId,
+      rows.map((row) => row.sourceIssueId).filter((issueId): issueId is string => Boolean(issueId)),
+    );
+
+    let resolved = 0;
+    for (const row of rows) {
+      if (!row.sourceIssueId || !supersededIssueIds.has(row.sourceIssueId)) continue;
+
+      const now = new Date();
+      const result = agentMeetingResultSchema.parse({
+        version: 1,
+        summaryMarkdown:
+          "Source issue already has a pending non-meeting interaction or approval that owns the next action; Paperclip closed this stale workflow meeting automatically.",
+        decisions: [
+          "Pending non-meeting interaction or approval already owns the next action for the source issue.",
+        ],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      });
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [meeting] = await txDb
+          .update(meetings)
+          .set({
+            status: "answered",
+            result,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(meetings.id, row.id), eq(meetings.status, "pending")))
+          .returning();
+        if (!meeting) return null;
+        await txDb
+          .update(meetingParticipants)
+          .set({ status: "answered", updatedAt: now })
+          .where(eq(meetingParticipants.meetingId, row.id));
+        return meeting;
+      });
+      if (!updated) continue;
+
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "meeting.auto_resolved",
+        entityType: "meeting",
+        entityId: row.id,
+        details: {
+          sourceIssueId: row.sourceIssueId,
+          reason: "pending_next_action_path",
+        },
+      });
+      resolved += 1;
+    }
+
+    return resolved;
+  }
+
   async function reconcilePendingWorkflowWakeups(companyId: string) {
+    await resolveSupersededWorkflowMeetings(companyId);
+
     const cutoff = new Date(Date.now() - PENDING_MEETING_REWAKE_MS);
     const rows = await db
       .select()
@@ -871,6 +983,7 @@ export function meetingService(db: Db) {
     linkOutcomeIssue,
     repairWorkflowMeetingLinks,
     resolveTerminalWorkflowMeetings,
+    resolveSupersededWorkflowMeetings,
     reconcilePendingWorkflowWakeups,
   };
 }

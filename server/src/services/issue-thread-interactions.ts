@@ -3,8 +3,10 @@ import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   documents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issueRelations,
@@ -112,6 +114,37 @@ const STALE_REVIEW_MS = 24 * 60 * 60 * 1000;
 const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
 const PENDING_MEETING_REWAKE_MS = 15 * 60 * 1000;
+
+async function listIssueIdsWithPendingNextActionPath(db: Db, companyId: string, issueIds: string[]) {
+  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+  if (uniqueIssueIds.length === 0) return new Set<string>();
+
+  const [pendingInteractionRows, pendingApprovalRows] = await Promise.all([
+    db
+      .select({ issueId: issueThreadInteractions.issueId })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        inArray(issueThreadInteractions.issueId, uniqueIssueIds),
+        eq(issueThreadInteractions.status, "pending"),
+        sql`${issueThreadInteractions.kind} <> 'agent_meeting'`,
+      )),
+    db
+      .select({ issueId: issueApprovals.issueId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(and(
+        eq(issueApprovals.companyId, companyId),
+        inArray(issueApprovals.issueId, uniqueIssueIds),
+        inArray(approvals.status, ["pending", "revision_requested"]),
+      )),
+  ]);
+
+  return new Set([
+    ...pendingInteractionRows.map((row) => row.issueId),
+    ...pendingApprovalRows.map((row) => row.issueId),
+  ]);
+}
 
 const BUSINESS_OPERATING_MEETING_OUTPUTS: AgentMeetingExpectedOutput[] = [
   "goals",
@@ -927,6 +960,78 @@ export function issueThreadInteractionService(db: Db) {
     return resolved;
   }
 
+  async function resolveSupersededMeetingWorkflowInteractions(companyId: string) {
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.kind, "agent_meeting"),
+        eq(issueThreadInteractions.status, "pending"),
+        sql`${issueThreadInteractions.idempotencyKey} like 'meeting-workflow:%'`,
+      ))
+      .limit(200);
+
+    const supersededIssueIds = await listIssueIdsWithPendingNextActionPath(
+      db,
+      companyId,
+      rows.map((row) => row.issueId),
+    );
+
+    let resolved = 0;
+    for (const row of rows) {
+      if (!supersededIssueIds.has(row.issueId)) continue;
+
+      const now = new Date();
+      const result = agentMeetingResultSchema.parse({
+        version: 1,
+        summaryMarkdown:
+          "Source issue already has a pending non-meeting interaction or approval that owns the next action; Paperclip closed this stale workflow meeting automatically.",
+        decisions: [
+          "Pending non-meeting interaction or approval already owns the next action for the source issue.",
+        ],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      });
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "answered",
+          result,
+          resolvedByAgentId: null,
+          resolvedByUserId: null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, row.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+      if (!updated) continue;
+
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "issue.thread_interaction_answered",
+        entityType: "issue",
+        entityId: row.issueId,
+        details: {
+          interactionId: row.id,
+          interactionKind: "agent_meeting",
+          interactionStatus: "answered",
+          source: "meeting_workflow",
+          reason: "pending_next_action_path",
+        },
+      });
+      resolved += 1;
+    }
+
+    return resolved;
+  }
+
   async function listRunnableMeetingParticipantIds(companyId: string, participantAgentIds: string[]) {
     const uniqueIds = [...new Set(participantAgentIds)];
     if (uniqueIds.length === 0) return [];
@@ -1419,6 +1524,12 @@ export function issueThreadInteractionService(db: Db) {
         childAssigneesByParentId.set(child.parentId, current);
       }
 
+      const explicitWaitingPathIssueIds = await listIssueIdsWithPendingNextActionPath(
+        db,
+        companyId,
+        openIssueIds,
+      );
+
       const meetingsByIssueId = new Map<string, IssueThreadInteractionRow[]>();
       for (const meeting of meetingRows) {
         const group = meetingsByIssueId.get(meeting.issueId) ?? [];
@@ -1531,7 +1642,11 @@ export function issueThreadInteractionService(db: Db) {
       for (const issue of openIssueRows) {
         if (hasMeetingCoverage(issue.id)) continue;
         const ageMs = now - issue.updatedAt.getTime();
-        if (issue.status === "blocked" && !blockerEdgeIssueIds.has(issue.id)) {
+        if (
+          issue.status === "blocked" &&
+          !blockerEdgeIssueIds.has(issue.id) &&
+          !explicitWaitingPathIssueIds.has(issue.id)
+        ) {
           recommendations.push(buildRecommendation(
             "blocked_without_edge",
             issue,
@@ -1539,7 +1654,11 @@ export function issueThreadInteractionService(db: Db) {
           ));
           continue;
         }
-        if (issue.status === "in_review" && ageMs >= STALE_REVIEW_MS) {
+        if (
+          issue.status === "in_review" &&
+          ageMs >= STALE_REVIEW_MS &&
+          !explicitWaitingPathIssueIds.has(issue.id)
+        ) {
           recommendations.push(buildRecommendation(
             "stale_review",
             issue,
@@ -1603,7 +1722,9 @@ export function issueThreadInteractionService(db: Db) {
       const meetingsSvc = meetingService(db);
       await meetingsSvc.repairWorkflowMeetingLinks(companyId);
       const resolvedTerminal =
+        await resolveSupersededMeetingWorkflowInteractions(companyId) +
         await resolveTerminalMeetingWorkflowInteractions(companyId) +
+        await meetingsSvc.resolveSupersededWorkflowMeetings(companyId) +
         await meetingsSvc.resolveTerminalWorkflowMeetings(companyId);
       const legacyPendingWakeups = await reconcilePendingMeetingWorkflowWakeups(companyId);
       const firstClassPendingWakeups = await meetingsSvc.reconcilePendingWorkflowWakeups(companyId);
