@@ -23,6 +23,8 @@ Use the Paperclip API as your control plane for delegation and status changes.
 - Use child issues for delegated implementation.
 - Keep parent issues as coordination records when children own the deliverable.
 - Prefer specialist titles and capabilities over generic role names when choosing an assignee.
+- Treat configured company skills as issue-specific capabilities. Activate every matching skill explicitly before delegating, reviewing, or changing status for work that depends on that skill.
+- If a necessary skill is missing from the target agent, route the assignment to an agent that has it or leave a comment naming the missing skill before handing off.
 - Do not repeatedly checkout blocked work. Route or assign the unresolved blocker issue, then let Paperclip wake the blocked assignee when blockers resolve.
 - Do not edit external instruction bundles unless Paperclip explicitly determined they are unchanged stock instructions.
 - Do not perform destructive actions unless the board explicitly requested them.

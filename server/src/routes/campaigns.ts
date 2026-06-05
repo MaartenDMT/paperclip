@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCampaignPhaseSchema,
   createCampaignSchema,
+  completeCampaignPhaseSchema,
   linkCampaignPhaseExecutionIssueSchema,
   replaceCampaignProjectsSchema,
   submitCampaignPhasePlanForReviewSchema,
@@ -205,6 +206,37 @@ export function campaignRoutes(db: Db) {
         details: {
           campaignId: existing.campaignId,
           issueId: req.body.issueId,
+        },
+      });
+      res.json(phase);
+    },
+  );
+
+  router.post(
+    "/campaign-phases/:phaseId/complete",
+    validate(completeCampaignPhaseSchema),
+    async (req, res) => {
+      const phaseId = req.params.phaseId as string;
+      const existing = await svc.getPhase(phaseId);
+      if (!existing) {
+        res.status(404).json({ error: "Campaign phase not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      const phase = await svc.completePhase(existing.companyId, phaseId, req.body, actorFromReq(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "campaign_phase.completed",
+        entityType: "campaign_phase",
+        entityId: phaseId,
+        details: {
+          campaignId: existing.campaignId,
+          resultDocumentId: phase.resultDocumentId,
         },
       });
       res.json(phase);

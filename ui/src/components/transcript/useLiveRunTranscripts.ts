@@ -63,6 +63,10 @@ function runKnownLogBytes(run: RunTranscriptSource): number | null {
   return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
 }
 
+function shouldReadPersistedRunLog(run: RunTranscriptSource): boolean {
+  return run.hasStoredOutput === true || runKnownLogBytes(run) !== null;
+}
+
 export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
   const knownBytes = runKnownLogBytes(run);
   if (knownBytes === null) return 0;
@@ -232,6 +236,15 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (!shouldReadPersistedRunLog(run)) {
+        setHydratedRunIds((prev) => {
+          if (prev.has(run.id)) return prev;
+          const next = new Set(prev);
+          next.add(run.id);
+          return next;
+        });
+        return;
+      }
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }

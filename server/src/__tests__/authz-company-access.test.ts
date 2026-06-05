@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
 
@@ -103,6 +104,22 @@ describe("assertCompanyAccess", () => {
     });
 
     expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+  });
+
+  it("rejects company ids that include whitespace before route handlers query the database", () => {
+    const req = makeReq({
+      method: "GET",
+      actor: {
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, `${randomUUID()} ${randomUUID()}`)).toThrow(
+      "Company id must be a single route parameter",
+    );
   });
 });
 

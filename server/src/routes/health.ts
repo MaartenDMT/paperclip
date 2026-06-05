@@ -34,6 +34,21 @@ function withHealthProbeTimeout<T>(probe: string, promise: Promise<T>): Promise<
   });
 }
 
+async function runDatabaseHealthProbe(db: Db, databaseProbe?: () => Promise<void>) {
+  const appPoolProbe = () => db.execute(sql`SELECT 1`).then(() => undefined);
+  if (!databaseProbe) {
+    await withHealthProbeTimeout("database", appPoolProbe());
+    return;
+  }
+
+  try {
+    await withHealthProbeTimeout("database", databaseProbe());
+  } catch (error) {
+    logger.warn({ err: error }, "Health check dedicated database probe failed; retrying through app pool");
+    await withHealthProbeTimeout("database_app_pool", appPoolProbe());
+  }
+}
+
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
   deploymentMode: DeploymentMode,
@@ -89,10 +104,7 @@ export function healthRoutes(
     }
 
     try {
-      const databaseProbe = opts.databaseProbe
-        ? opts.databaseProbe()
-        : db.execute(sql`SELECT 1`).then(() => undefined);
-      await withHealthProbeTimeout("database", databaseProbe);
+      await runDatabaseHealthProbe(db, opts.databaseProbe);
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
       res.status(503).json({

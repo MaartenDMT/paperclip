@@ -3846,8 +3846,11 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 200) : 50;
+    const rawOffset = typeof req.query.offset === "string" ? Number(req.query.offset) : 0;
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
     const meetings = await issueThreadInteractionService(db).listMeetingsForCompany(companyId, {
       limit,
+      offset,
       status: typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : null,
       agentId: typeof req.query.agentId === "string" && req.query.agentId.trim() ? req.query.agentId.trim() : null,
       expectedOutput: typeof req.query.expectedOutput === "string" && req.query.expectedOutput.trim()
@@ -3863,6 +3866,79 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     const health = await issueThreadInteractionService(db).getMeetingWorkflowHealth(companyId);
     res.json(health);
+  });
+
+  router.post("/companies/:companyId/work-meetings/reconcile", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const result = await issueThreadInteractionService(db).reconcileMeetingWorkflow(companyId);
+    const heartbeat = heartbeatService(db);
+    let wakeupsRequested = 0;
+    let wakeupsFailed = 0;
+    for (const meeting of result.meetings) {
+      const agentIdsToWake = [
+        ...meeting.participantAgentIds,
+        ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
+      ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
+      for (const agentId of agentIdsToWake) {
+        wakeupsRequested += 1;
+        try {
+          await heartbeat.wakeup(agentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "agent_meeting_requested",
+            payload: {
+              issueId: meeting.issueId,
+              meetingId: meeting.id,
+              interactionId: meeting.id,
+              mutation: "meeting_workflow",
+              chairAgentId: meeting.chairAgentId,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: meeting.issueId,
+              taskId: meeting.issueId,
+              meetingId: meeting.id,
+              interactionId: meeting.id,
+              interactionKind: "agent_meeting",
+              wakeReason: "agent_meeting_requested",
+              source: "meeting_workflow.manual",
+            },
+          });
+        } catch (err) {
+          wakeupsFailed += 1;
+          logger.warn(
+            { err, companyId, meetingId: meeting.id, issueId: meeting.issueId, agentId },
+            "manual meeting workflow reconciliation failed to wake participant",
+          );
+        }
+      }
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "meeting.workflow_reconciled",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        checked: result.checked,
+        created: result.created,
+        requeuedPending: result.requeuedPending,
+        cancelledUnrunnable: result.cancelledUnrunnable,
+        resolvedTerminal: result.resolvedTerminal,
+        skipped: result.skipped,
+        wakeupsRequested,
+        wakeupsFailed,
+        meetingIds: result.meetings.map((meeting) => meeting.id),
+      },
+    });
+    res.json({ ...result, wakeupsRequested, wakeupsFailed });
   });
 
   router.post("/companies/:companyId/work-meetings/:meetingId/outcomes/link", validate(linkMeetingOutcomeIssueSchema), async (req, res) => {

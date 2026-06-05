@@ -168,7 +168,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { computeLocalActiveRunExecutionsMax } from "./heartbeat-capacity.ts";
+import { computeLocalActiveRunExecutionsMax } from "./heartbeat-capacity.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -8485,7 +8485,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const wakeCommentId = readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
       if (wakeCommentId) executionEnvironment.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
       executionEnvironment.PAPERCLIP_ISSUE_ID = issueRef.id;
-      executionEnvironment.PAPERCLIP_ISSUE_IDENTIFIER = issueRef.identifier;
+      executionEnvironment.PAPERCLIP_ISSUE_IDENTIFIER = issueRef.identifier ?? issueRef.id;
       executionEnvironment.PAPERCLIP_ISSUE_TITLE = issueRef.title;
 
       context.executionMetadata = {

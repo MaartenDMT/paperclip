@@ -1406,22 +1406,23 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
+    const adapter = findActiveServerAdapter(adapterType);
+    const adapterSupportsSkills = Boolean(adapter?.syncSkills || adapter?.listSkills);
     const requestedSkillRefs = requestedDesiredSkills
       ?? (await companySkills.listFull(companyId))
         .filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"))
         .filter((skill) => skill.compatibility !== "invalid")
         .map((skill) => skill.key);
 
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedSkillRefs,
-    );
+    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(companyId, requestedSkillRefs);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
+    const requiredSkills = adapterSupportsSkills
+      ? runtimeSkillEntries
+        .filter((entry) => entry.required)
+        .map((entry) => entry.key)
+      : [];
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
 
     return {
@@ -1646,11 +1647,7 @@ export function agentRoutes(
       const preference = readPaperclipSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, preference.desiredSkills));
       return;
     }
 

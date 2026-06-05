@@ -844,6 +844,7 @@ export interface MeetingWorkflowHealth {
     stalePendingMeetings: number;
     meetingsLast7Days: number;
     openMeetingGaps: number;
+    unlinkedOutcomeItems: number;
     lastMeetingAt: Date | string | null;
   };
   policy: {
@@ -854,6 +855,23 @@ export interface MeetingWorkflowHealth {
     doneDefinition: string;
   };
   recommendations: MeetingWorkflowRecommendation[];
+}
+
+export interface MeetingWorkflowReconcileResult {
+  checked: number;
+  created: number;
+  requeuedPending: number;
+  cancelledUnrunnable: number;
+  resolvedTerminal: number;
+  skipped: number;
+  wakeupsRequested: number;
+  wakeupsFailed: number;
+  meetings: Array<{
+    id: string;
+    issueId: string | null;
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+  }>;
 }
 
 export type IssueThreadInteraction =

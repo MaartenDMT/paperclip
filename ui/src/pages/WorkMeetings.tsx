@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { CheckCircle2, CircleAlert, ListFilter, MessagesSquare, Plus, X } from "lucide-react";
+import { CheckCircle2, CircleAlert, ListFilter, MessagesSquare, Plus, RefreshCw, X } from "lucide-react";
 import type { MeetingWorkflowHealth, WorkMeetingSummary } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { EmptyState } from "../components/EmptyState";
@@ -131,12 +131,35 @@ export function WorkMeetings() {
     return [...map.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [meetings]);
   const stalePendingCount = meetings?.filter(hasStalePendingMeeting).length ?? 0;
-  const unresolvedOutcomeCount = meetings?.reduce(
+  const visibleUnresolvedOutcomeCount = meetings?.reduce(
     (sum, meeting) => sum + meeting.unlinkedOutcomeItems,
     0,
   ) ?? 0;
+  const unresolvedOutcomeCount = meetingHealth?.metrics.unlinkedOutcomeItems ?? visibleUnresolvedOutcomeCount;
   const pendingCount = meetings?.filter((meeting) => meeting.status === "pending").length ?? 0;
   const resolvedCount = meetings?.filter((meeting) => meeting.status === "answered" || meeting.status === "accepted").length ?? 0;
+
+  const reconcileMeetings = useMutation({
+    mutationFn: async () => {
+      if (!selectedCompanyId) return null;
+      return issuesApi.reconcileWorkMeetings(selectedCompanyId);
+    },
+    onSuccess: async (result) => {
+      if (!result) return;
+      const changed = result.created + result.requeuedPending + result.cancelledUnrunnable + result.resolvedTerminal;
+      setActionMessage(
+        changed > 0
+          ? `Reconciled meetings: ${result.created} created, ${result.requeuedPending} requeued, ${result.cancelledUnrunnable} cancelled, ${result.resolvedTerminal} resolved, ${result.wakeupsRequested} wakeups requested.`
+          : "Meeting workflow is already reconciled.",
+      );
+      if (selectedCompanyId) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workMeetings(selectedCompanyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workMeetingHealth(selectedCompanyId) }),
+        ]);
+      }
+    },
+  });
 
   const createActionItemIssue = useMutation({
     mutationFn: async ({ meeting, index }: { meeting: WorkMeetingSummary; index: number }) => {
@@ -236,15 +259,32 @@ export function WorkMeetings() {
             {meetings?.length ?? 0} visible · {pendingCount} pending · {unresolvedOutcomeCount} unlinked outcomes
           </p>
         </div>
-        <div className="grid w-full grid-cols-4 border border-border text-center text-sm sm:min-w-[480px] lg:w-auto">
-          <OverviewCell label="visible" value={meetings?.length ?? 0} />
-          <OverviewCell label="pending" value={pendingCount} tone={pendingCount > 0 ? "warning" : "default"} />
-          <OverviewCell label="resolved" value={resolvedCount} />
-          <OverviewCell label="gaps" value={meetingHealth?.metrics.openMeetingGaps ?? 0} tone={(meetingHealth?.metrics.openMeetingGaps ?? 0) > 0 ? "warning" : "default"} />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+          <button
+            type="button"
+            onClick={() => reconcileMeetings.mutate()}
+            disabled={reconcileMeetings.isPending}
+            className="inline-flex items-center justify-center gap-2 border border-border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${reconcileMeetings.isPending ? "animate-spin" : ""}`} />
+            {reconcileMeetings.isPending ? "Reconciling" : "Reconcile"}
+          </button>
+          <div className="grid w-full grid-cols-5 border border-border text-center text-sm sm:min-w-[560px] lg:w-auto">
+            <OverviewCell label="visible" value={meetings?.length ?? 0} />
+            <OverviewCell label="pending" value={pendingCount} tone={pendingCount > 0 ? "warning" : "default"} />
+            <OverviewCell label="resolved" value={resolvedCount} />
+            <OverviewCell label="unlinked" value={unresolvedOutcomeCount} tone={unresolvedOutcomeCount > 0 ? "warning" : "default"} />
+            <OverviewCell label="gaps" value={meetingHealth?.metrics.openMeetingGaps ?? 0} tone={(meetingHealth?.metrics.openMeetingGaps ?? 0) > 0 ? "warning" : "default"} />
+          </div>
         </div>
       </div>
 
       {error ? <p className="text-sm text-destructive">{error.message}</p> : null}
+      {reconcileMeetings.error ? (
+        <p className="text-sm text-destructive">
+          {reconcileMeetings.error instanceof Error ? reconcileMeetings.error.message : "Failed to reconcile meeting workflow."}
+        </p>
+      ) : null}
       {actionMessage ? <p className="text-sm text-emerald-600 dark:text-emerald-300">{actionMessage}</p> : null}
 
       <div className="flex flex-col gap-3 border border-border p-3 lg:flex-row lg:items-center lg:justify-between">

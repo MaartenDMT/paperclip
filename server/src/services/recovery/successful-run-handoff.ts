@@ -325,6 +325,22 @@ export function hasExplicitNoRemainingWorkDisposition(body: string | null | unde
   return /\b(done|resolved|closed|false[- ]positive|no live blocker|no new action|nothing left)\b/.test(normalized);
 }
 
+export function hasExplicitBlockedDisposition(body: string | null | undefined) {
+  const normalized = (body ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+
+  const recordsBlockedState =
+    /\b(status|disposition|issue|gate|work|task)\s*:\s*blocked\b/.test(normalized) ||
+    /\b(set|setting|marked|moved|left|kept)\b.{0,80}\bblocked\b/.test(normalized) ||
+    /\bblocked\s+on\b/.test(normalized) ||
+    /\bblocking\b/.test(normalized);
+  if (!recordsBlockedState) return false;
+
+  return /\b(owner|accountable|waiting on|next (follow-up|followup|action)|unblock|blocker|defect|regression|gap|missing|blocked on)\b/.test(
+    normalized,
+  );
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -457,7 +473,7 @@ export function decideSuccessfulRunHandoff(input: {
 }
 
 export function decideSuccessfulRunHandoffCompletion(input: {
-  run: Pick<HeartbeatRunRow, "contextSnapshot">;
+  run: Pick<HeartbeatRunRow, "agentId" | "contextSnapshot">;
   issue: IssueRow | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
@@ -489,6 +505,16 @@ export function decideSuccessfulRunHandoffCompletion(input: {
   }
   if (issue.status === "blocked" && input.hasExplicitBlockerPath) {
     return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+  }
+  if (issue.status === "blocked" && hasExplicitBlockedDisposition(input.correctiveSummary)) {
+    return { kind: "accept", reason: "issue is blocked with a recorded blocker disposition" };
+  }
+  if (
+    issue.status === "todo" &&
+    issue.assigneeAgentId &&
+    issue.assigneeAgentId !== input.run.agentId
+  ) {
+    return { kind: "accept", reason: "issue was delegated to another agent" };
   }
   if (input.hasActiveExecutionPath || input.hasQueuedWake) {
     return { kind: "accept", reason: "issue has an explicit continuation path" };

@@ -28,6 +28,7 @@ import type {
   CampaignPhaseStatus,
   CampaignProjectSummary,
   CampaignStatus,
+  CompleteCampaignPhase,
   CreateCampaign,
   CreateCampaignPhase,
   LinkCampaignPhaseExecutionIssue,
@@ -298,7 +299,7 @@ export function campaignService(db: Db) {
       phaseRows.find((phase) =>
         ["in_review", "revision_requested", "approved", "executing"].includes(phase.status),
       ) ??
-      phaseRows[0] ??
+      phaseRows.find((phase) => !["completed", "cancelled"].includes(phase.status)) ??
       null;
 
     return {
@@ -571,6 +572,76 @@ export function campaignService(db: Db) {
       })
       .where(and(eq(campaignPhases.id, phaseId), eq(campaignPhases.companyId, companyId)))
       .returning();
+
+    if (!updated) throw notFound("Campaign phase not found");
+    return hydratePhase(updated);
+  }
+
+  async function completePhase(
+    companyId: string,
+    phaseId: string,
+    data: CompleteCampaignPhase,
+    actor: ActorInput = {},
+  ): Promise<CampaignPhaseDetail> {
+    const phase = await getPhaseRow(phaseId);
+    if (!phase || phase.companyId !== companyId) throw notFound("Campaign phase not found");
+    if (phase.status === "completed") throw conflict("Campaign phase is already completed");
+    if (phase.status === "cancelled") throw conflict("Cancelled campaign phases cannot be completed");
+
+    const campaign = await get(phase.campaignId);
+    if (!campaign) throw notFound("Campaign not found");
+
+    const executionIssue = phase.executionIssueId
+      ? await db
+          .select({ identifier: issues.identifier, title: issues.title, status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, phase.executionIssueId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (phase.executionIssueId && !executionIssue) throw notFound("Campaign phase execution issue not found");
+    if (executionIssue && !["done", "cancelled"].includes(executionIssue.status)) {
+      throw conflict("Campaign phase execution issue must be done or cancelled before completion");
+    }
+
+    const resultBody = data.resultBody?.trim() || [
+      `# ${phase.title} result`,
+      "",
+      executionIssue
+        ? `Execution issue ${executionIssue.identifier ?? phase.executionIssueId} is ${executionIssue.status}: ${executionIssue.title}`
+        : "Completed by board action.",
+    ].join("\n");
+    const resultTitle = data.resultTitle?.trim() || `${campaign.title}: ${phase.title} result`;
+    const now = new Date();
+
+    const updated = await db.transaction(async (tx) => {
+      const document = await documentsSvc.upsertStandaloneDocument(tx, {
+        companyId,
+        documentId: phase.resultDocumentId,
+        title: resultTitle,
+        body: resultBody,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        updatedByAgentId: actor.agentId ?? null,
+        updatedByUserId: actor.userId ?? null,
+        changeSummary: phase.resultDocumentId ? "Updated campaign phase result" : "Created campaign phase result",
+      });
+
+      const [row] = await tx
+        .update(campaignPhases)
+        .set({
+          status: "completed",
+          resultDocumentId: document.id,
+          startedAt: phase.startedAt ?? now,
+          completedAt: now,
+          updatedByAgentId: actor.agentId ?? null,
+          updatedByUserId: actor.userId ?? null,
+          updatedAt: now,
+        })
+        .where(and(eq(campaignPhases.id, phase.id), eq(campaignPhases.companyId, companyId)))
+        .returning();
+      return row ?? null;
+    });
 
     if (!updated) throw notFound("Campaign phase not found");
     return hydratePhase(updated);
@@ -932,6 +1003,7 @@ export function campaignService(db: Db) {
     createPhase,
     updatePhase,
     linkExecutionIssue,
+    completePhase,
     upsertPhasePlan,
     submitPlanForReview,
     handleApprovalApproved,

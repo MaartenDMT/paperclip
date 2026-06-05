@@ -56,6 +56,14 @@ describe("resolveEnvironmentExecutionTarget", () => {
       environmentId: "env-1",
       timeoutMs: 30_000,
     });
+    expect(mockResolveEnvironmentDriverConfigForRuntime).toHaveBeenCalledWith(
+      {} as never,
+      "company-1",
+      expect.objectContaining({
+        id: "env-1",
+        driver: "sandbox",
+      }),
+    );
   });
 
   it("keeps sandbox targets on bridge mode even when lease metadata includes a Paperclip API URL", async () => {
@@ -177,5 +185,13 @@ describe("resolveEnvironmentExecutionTarget", () => {
       },
     });
     expect(target).not.toHaveProperty("paperclipApiUrl");
+    expect(mockResolveEnvironmentDriverConfigForRuntime).toHaveBeenCalledWith(
+      {} as never,
+      "company-1",
+      expect.objectContaining({
+        id: "env-ssh-1",
+        driver: "ssh",
+      }),
+    );
   });
 });

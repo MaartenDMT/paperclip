@@ -11,6 +11,7 @@ import {
   decideSuccessfulRunHandoff,
   decideSuccessfulRunHandoffCompletion,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  hasExplicitBlockedDisposition,
   isSuccessfulRunHandoffRequiredNoticeBody,
 } from "./successful-run-handoff.js";
 
@@ -359,6 +360,63 @@ describe("successful run handoff decision", () => {
       kind: "accept",
       reason: "corrective handoff recorded an explicit no-remaining-work disposition",
       autoCompleteIssue: true,
+    });
+  });
+
+  it("recognizes blocked handoff summaries with concrete blocker evidence", () => {
+    expect(hasExplicitBlockedDisposition("Issue disposition: blocked. Waiting on CTO to fix cover regression.")).toBe(true);
+    expect(hasExplicitBlockedDisposition("Gate is blocked on cover regression + metadata gaps.")).toBe(true);
+    expect(hasExplicitBlockedDisposition("Blocked.")).toBe(false);
+    expect(hasExplicitBlockedDisposition("I looked at the blocker list, no change.")).toBe(false);
+  });
+
+  it("accepts corrective handoff completion when the issue is blocked with blocker evidence", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue: { ...issue, status: "blocked" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: "Issue disposition: blocked. Gate is blocked on cover regression and missing metadata gaps.",
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "issue is blocked with a recorded blocker disposition",
+    });
+  });
+
+  it("accepts corrective handoff completion when the issue is delegated to another agent", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue: { ...issue, status: "todo", assigneeAgentId: "agent-2" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: "Reassigned to Short Fiction Writer for the next draft pass.",
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "issue was delegated to another agent",
     });
   });
 

@@ -451,6 +451,7 @@ export type {
   MeetingWorkflowLifecycleStep,
   MeetingWorkflowRecommendation,
   MeetingWorkflowHealth,
+  MeetingWorkflowReconcileResult,
   IssueThreadInteractionBase,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
