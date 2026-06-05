@@ -2,7 +2,10 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   heartbeatRuns,
+  issueApprovals,
+  issueThreadInteractions,
   meetingContributions,
   meetingIssueLinks,
   meetingParticipants,
@@ -85,10 +88,41 @@ export function meetingService(db: Db) {
       .where(and(
         eq(agents.companyId, companyId),
         inArray(agents.id, uniqueIds),
-        sql`${agents.status} <> 'terminated'`,
+        sql`${agents.status} not in ('paused', 'pending_approval', 'terminated')`,
       ));
     const runnableIds = new Set(rows.map((row) => row.id));
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
+  }
+
+  async function listIssueIdsWithPendingNextActionPath(companyId: string, issueIds: string[]) {
+    const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+    if (uniqueIssueIds.length === 0) return new Set<string>();
+
+    const [pendingInteractionRows, pendingApprovalRows] = await Promise.all([
+      db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          inArray(issueThreadInteractions.issueId, uniqueIssueIds),
+          eq(issueThreadInteractions.status, "pending"),
+          sql`${issueThreadInteractions.kind} <> 'agent_meeting'`,
+        )),
+      db
+        .select({ issueId: issueApprovals.issueId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(and(
+          eq(issueApprovals.companyId, companyId),
+          inArray(issueApprovals.issueId, uniqueIssueIds),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        )),
+    ]);
+
+    return new Set([
+      ...pendingInteractionRows.map((row) => row.issueId),
+      ...pendingApprovalRows.map((row) => row.issueId),
+    ]);
   }
 
   async function repairSingleDepartmentWorkflowMeetingParticipants(
@@ -220,6 +254,69 @@ export function meetingService(db: Db) {
       },
     });
     return { participantAgentIds: repairedParticipantIds, repaired: true, cancelledRunIds };
+  }
+
+  async function pruneUnrunnablePendingWorkflowMeetingParticipants(input: {
+    companyId: string;
+    meeting: typeof meetings.$inferSelect;
+    participantAgentIds: string[];
+    runnableParticipantIds: string[];
+    chairAgentId: string | null;
+    activeRuns: ActiveMeetingRun[];
+  }) {
+    const runnableSet = new Set(input.runnableParticipantIds);
+    const unrunnableParticipantIds = input.participantAgentIds.filter((agentId) => !runnableSet.has(agentId));
+    const queuedRunIds = input.activeRuns
+      .filter((run) => run.status === "queued" && unrunnableParticipantIds.includes(run.agentId))
+      .map((run) => run.id);
+    if (unrunnableParticipantIds.length === 0 && input.chairAgentId === input.meeting.chairAgentId) {
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      if (unrunnableParticipantIds.length > 0) {
+        await txDb
+          .delete(meetingParticipants)
+          .where(and(
+            eq(meetingParticipants.meetingId, input.meeting.id),
+            inArray(meetingParticipants.agentId, unrunnableParticipantIds),
+          ));
+      }
+      if (queuedRunIds.length > 0) {
+        await txDb
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+            error: "Cancelled because meeting participant is no longer runnable",
+            errorCode: "meeting_participant_unrunnable",
+          })
+          .where(inArray(heartbeatRuns.id, queuedRunIds));
+      }
+      if (input.chairAgentId !== input.meeting.chairAgentId) {
+        await txDb
+          .update(meetings)
+          .set({ chairAgentId: input.chairAgentId, updatedAt: new Date() })
+          .where(eq(meetings.id, input.meeting.id));
+      }
+    });
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "meeting_workflow",
+      action: "meeting.participants_pruned",
+      entityType: "meeting",
+      entityId: input.meeting.id,
+      details: {
+        reason: "participant_not_runnable",
+        removedAgentIds: unrunnableParticipantIds,
+        cancelledRunIds: queuedRunIds,
+        chairAgentId: input.chairAgentId,
+      },
+    });
   }
 
   async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
@@ -435,16 +532,24 @@ export function meetingService(db: Db) {
       contextMarkdown: string;
     },
   ): Promise<MeetingWakeTarget | null> {
-    if (recommendation.participantAgentIds.length === 0) return null;
-    const existing = await db
-      .select({ id: meetings.id })
+    const participantAgentIds = await listRunnableParticipantIds(companyId, recommendation.participantAgentIds);
+    if (participantAgentIds.length === 0) return null;
+    const chairAgentId = participantAgentIds.includes(recommendation.suggestedHeadAgentId ?? "")
+      ? recommendation.suggestedHeadAgentId
+      : participantAgentIds[0] ?? null;
+    const baseIdempotencyKey = `meeting-workflow:${recommendation.id}`;
+    const existingMeetings = await db
+      .select({ id: meetings.id, status: meetings.status, idempotencyKey: meetings.idempotencyKey })
       .from(meetings)
       .where(and(
         eq(meetings.companyId, companyId),
-        eq(meetings.idempotencyKey, `meeting-workflow:${recommendation.id}`),
+        sql`${meetings.idempotencyKey} like ${`${baseIdempotencyKey}%`}`,
       ))
-      .then((rows) => rows[0] ?? null);
-    if (existing) return null;
+      .orderBy(desc(meetings.createdAt));
+    if (existingMeetings.some((meeting) => meeting.status === "pending")) return null;
+    const idempotencyKey = existingMeetings.length === 0
+      ? baseIdempotencyKey
+      : `${baseIdempotencyKey}:repeat:${existingMeetings.length + 1}`;
 
     const sourceContext = recommendation.issueId
       ? await db
@@ -469,8 +574,8 @@ export function meetingService(db: Db) {
           title: input.title,
           purpose: recommendation.reason,
           status: "pending",
-          chairAgentId: recommendation.suggestedHeadAgentId,
-          idempotencyKey: `meeting-workflow:${recommendation.id}`,
+          chairAgentId,
+          idempotencyKey,
           agenda: input.agenda,
           expectedOutputs: input.expectedOutputs,
           contextMarkdown: input.contextMarkdown,
@@ -478,11 +583,11 @@ export function meetingService(db: Db) {
           updatedAt: now,
         })
         .returning();
-      await txDb.insert(meetingParticipants).values(recommendation.participantAgentIds.map((agentId) => ({
+      await txDb.insert(meetingParticipants).values(participantAgentIds.map((agentId) => ({
         companyId,
         meetingId: meeting.id,
         agentId,
-        role: agentId === recommendation.suggestedHeadAgentId ? "chair" : "participant",
+        role: agentId === chairAgentId ? "chair" : "participant",
       }))).onConflictDoNothing();
       if (recommendation.issueId) {
         await txDb.insert(meetingIssueLinks).values({
@@ -508,15 +613,15 @@ export function meetingService(db: Db) {
       details: {
         sourceIssueId: recommendation.issueId ?? null,
         trigger: recommendation.trigger,
-        participantAgentIds: recommendation.participantAgentIds,
-        chairAgentId: recommendation.suggestedHeadAgentId,
+        participantAgentIds,
+        chairAgentId,
       },
     });
     return {
       id: created.id,
       issueId: recommendation.issueId ?? null,
-      participantAgentIds: recommendation.participantAgentIds,
-      chairAgentId: recommendation.suggestedHeadAgentId,
+      participantAgentIds,
+      chairAgentId,
     };
   }
 
@@ -605,12 +710,14 @@ export function meetingService(db: Db) {
 
   async function listForCompany(companyId: string, options: {
     limit?: number;
+    offset?: number;
     status?: string | null;
     agentId?: string | null;
     expectedOutput?: string | null;
     q?: string | null;
   } = {}): Promise<WorkMeetingSummary[]> {
     const limit = Math.min(Math.max(Math.floor(options.limit ?? 50), 1), 200);
+    const offset = Math.max(Math.floor(options.offset ?? 0), 0);
     const filters = [eq(meetings.companyId, companyId)];
     if (options.status) filters.push(eq(meetings.status, options.status));
     if (options.expectedOutput) {
@@ -636,7 +743,8 @@ export function meetingService(db: Db) {
       .from(meetings)
       .where(and(...filters))
       .orderBy(desc(meetings.createdAt), desc(meetings.id))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
 
     const meetingIds = rows.map((row) => row.id);
     const participantRows = meetingIds.length > 0
@@ -950,7 +1058,81 @@ export function meetingService(db: Db) {
     return resolved;
   }
 
+  async function resolveSupersededWorkflowMeetings(companyId: string) {
+    const rows = await db
+      .select()
+      .from(meetings)
+      .where(and(
+        eq(meetings.companyId, companyId),
+        eq(meetings.status, "pending"),
+        sql`${meetings.idempotencyKey} like 'meeting-workflow:%'`,
+        sql`${meetings.sourceIssueId} is not null`,
+      ))
+      .limit(200);
+
+    const supersededIssueIds = await listIssueIdsWithPendingNextActionPath(
+      companyId,
+      rows.map((row) => row.sourceIssueId).filter((issueId): issueId is string => Boolean(issueId)),
+    );
+
+    let resolved = 0;
+    for (const row of rows) {
+      if (!row.sourceIssueId || !supersededIssueIds.has(row.sourceIssueId)) continue;
+
+      const now = new Date();
+      const result = agentMeetingResultSchema.parse({
+        version: 1,
+        summaryMarkdown:
+          "Source issue already has a pending non-meeting interaction or approval that owns the next action; Paperclip closed this stale workflow meeting automatically.",
+        decisions: [
+          "Pending non-meeting interaction or approval already owns the next action for the source issue.",
+        ],
+        actionItems: [],
+        blockers: [],
+        openQuestions: [],
+      });
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [meeting] = await txDb
+          .update(meetings)
+          .set({
+            status: "answered",
+            result,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(meetings.id, row.id), eq(meetings.status, "pending")))
+          .returning();
+        if (!meeting) return null;
+        await txDb
+          .update(meetingParticipants)
+          .set({ status: "answered", updatedAt: now })
+          .where(eq(meetingParticipants.meetingId, row.id));
+        return meeting;
+      });
+      if (!updated) continue;
+
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "meeting.auto_resolved",
+        entityType: "meeting",
+        entityId: row.id,
+        details: {
+          sourceIssueId: row.sourceIssueId,
+          reason: "pending_next_action_path",
+        },
+      });
+      resolved += 1;
+    }
+
+    return resolved;
+  }
+
   async function reconcilePendingWorkflowWakeups(companyId: string) {
+    await resolveSupersededWorkflowMeetings(companyId);
+
     const cutoff = new Date(Date.now() - PENDING_MEETING_REWAKE_MS);
     const rows = await db
       .select()
@@ -1048,6 +1230,14 @@ export function meetingService(db: Db) {
       const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
         ? meeting.chairAgentId
         : runnableIds[0] ?? null;
+      await pruneUnrunnablePendingWorkflowMeetingParticipants({
+        companyId,
+        meeting,
+        participantAgentIds: repairResult.participantAgentIds,
+        runnableParticipantIds: runnableIds,
+        chairAgentId,
+        activeRuns,
+      });
       const contributionRowsForMeeting = contributionsByMeetingId.get(meeting.id) ?? [];
       const contributedIds = new Set(contributionRowsForMeeting.map((contribution) => contribution.agentId));
       const missingContributorIds = runnableIds.filter(
@@ -1090,6 +1280,7 @@ export function meetingService(db: Db) {
     linkOutcomeIssue,
     repairWorkflowMeetingLinks,
     resolveTerminalWorkflowMeetings,
+    resolveSupersededWorkflowMeetings,
     reconcilePendingWorkflowWakeups,
   };
 }

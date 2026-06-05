@@ -1,6 +1,17 @@
 import { and, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issueComments, issueRelations, issueThreadInteractions, issues } from "@paperclipai/db";
+import {
+  agents,
+  approvals,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issueComments,
+  issueRelations,
+  issues,
+  meetingParticipants,
+  meetings,
+} from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import type { ManagerOverviewAttention, ManagerOverviewIssueWorkloadKind } from "@paperclipai/shared";
@@ -327,26 +338,59 @@ export function dashboardService(db: Db) {
         : [];
       const activeRunsByAgentId = new Map(activeRunRows.map((row) => [row.agentId, Number(row.count)]));
 
-      const meetingRows = scopedAgentIds.length > 0
+      const meetingRowsRaw = scopedAgentIds.length > 0
         ? await db
             .select({
-              id: issueThreadInteractions.id,
-              issueId: issueThreadInteractions.issueId,
+              id: meetings.id,
+              issueId: meetings.sourceIssueId,
               issueIdentifier: issues.identifier,
-              title: issueThreadInteractions.title,
-              status: issueThreadInteractions.status,
-              payload: issueThreadInteractions.payload,
-              createdAt: issueThreadInteractions.createdAt,
+              title: meetings.title,
+              purpose: meetings.purpose,
+              status: meetings.status,
+              participantAgentId: meetingParticipants.agentId,
+              createdAt: meetings.createdAt,
             })
-            .from(issueThreadInteractions)
-            .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+            .from(meetings)
+            .innerJoin(meetingParticipants, eq(meetingParticipants.meetingId, meetings.id))
+            .leftJoin(issues, eq(issues.id, meetings.sourceIssueId))
             .where(and(
-              eq(issueThreadInteractions.companyId, companyId),
-              eq(issueThreadInteractions.kind, "agent_meeting"),
+              eq(meetings.companyId, companyId),
+              eq(meetingParticipants.companyId, companyId),
+              inArray(meetingParticipants.agentId, scopedAgentIds),
             ))
-            .orderBy(sql`${issueThreadInteractions.createdAt} desc`)
+            .orderBy(sql`${meetings.createdAt} desc`)
             .limit(100)
         : [];
+      const meetingRowsById = new Map<string, {
+        id: string;
+        issueId: string | null;
+        issueIdentifier: string | null;
+        title: string | null;
+        purpose: string;
+        status: string;
+        participantAgentIds: string[];
+        createdAt: Date;
+      }>();
+      for (const meeting of meetingRowsRaw) {
+        const existing = meetingRowsById.get(meeting.id);
+        if (existing) {
+          if (!existing.participantAgentIds.includes(meeting.participantAgentId)) {
+            existing.participantAgentIds.push(meeting.participantAgentId);
+          }
+          continue;
+        }
+        meetingRowsById.set(meeting.id, {
+          id: meeting.id,
+          issueId: meeting.issueId ?? null,
+          issueIdentifier: meeting.issueIdentifier ?? null,
+          title: meeting.title ?? null,
+          purpose: meeting.purpose,
+          status: meeting.status,
+          participantAgentIds: [meeting.participantAgentId],
+          createdAt: meeting.createdAt,
+        });
+      }
+      const meetingRows = [...meetingRowsById.values()];
 
       const issuesByAgentId = new Map<string, typeof issueRows>();
       for (const issue of issueRows) {
@@ -378,12 +422,7 @@ export function dashboardService(db: Db) {
         managerHeldExecutableIssues += workloadSummary.managerHeldExecutableIssues;
         delegatedExecutableIssues += workloadSummary.delegatedExecutableIssues;
         const reportMeetings = meetingRows
-          .filter((meeting) => {
-            const participantAgentIds = Array.isArray((meeting.payload as any)?.participantAgentIds)
-              ? ((meeting.payload as any).participantAgentIds as unknown[])
-              : [];
-            return participantAgentIds.some((agentId) => typeof agentId === "string" && subtreeAgentIdSet.has(agentId));
-          })
+          .filter((meeting) => meeting.participantAgentIds.some((agentId) => subtreeAgentIdSet.has(agentId)))
           .slice(0, 5)
           .map((meeting) => {
             const pendingAgeHours = meeting.status === "pending"
@@ -394,11 +433,9 @@ export function dashboardService(db: Db) {
               issueId: meeting.issueId,
               issueIdentifier: meeting.issueIdentifier,
               title: meeting.title,
-              purpose: String((meeting.payload as any)?.purpose ?? ""),
+              purpose: meeting.purpose,
               status: meeting.status,
-              participantAgentIds: Array.isArray((meeting.payload as any)?.participantAgentIds)
-                ? ((meeting.payload as any).participantAgentIds as string[])
-                : [],
+              participantAgentIds: meeting.participantAgentIds,
               pendingAgeHours,
               createdAt: meeting.createdAt,
             };
