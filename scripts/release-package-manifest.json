@@ -20,6 +20,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/copilot-local",
+    "name": "@paperclipai/adapter-copilot-local",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/cursor-cloud",
     "name": "@paperclipai/adapter-cursor-cloud",
     "publishFromCi": false
@@ -35,6 +40,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/kimi-local",
+    "name": "@paperclipai/adapter-kimi-local",
+    "publishFromCi": false
+  },
+  {
+    "dir": "packages/adapters/minimax-local",
+    "name": "@paperclipai/adapter-minimax-local",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -48,6 +63,11 @@
     "dir": "packages/adapters/openclaw-gateway",
     "name": "@paperclipai/adapter-openclaw-gateway",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/zai-local",
+    "name": "@paperclipai/adapter-zai-local",
+    "publishFromCi": false
   },
   {
     "dir": "packages/shared",
