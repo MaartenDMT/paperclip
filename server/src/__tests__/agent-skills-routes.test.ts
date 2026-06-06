@@ -692,7 +692,7 @@ describe.sequential("agent skill routes", () => {
     });
   });
 
-  it("defaults newly created agents to all compatible company skills when no selection is provided", async () => {
+  it("defaults newly created agents to required runtime skills when no selection is provided", async () => {
     mockCompanySkillService.listFull.mockResolvedValue([
       {
         key: "company/company-1/caveman",
@@ -736,8 +736,6 @@ describe.sequential("agent skill routes", () => {
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: [
               "paperclipai/paperclip/paperclip",
-              "company/company-1/caveman",
-              "company/company-1/research",
             ],
           }),
         }),

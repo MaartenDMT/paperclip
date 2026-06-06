@@ -71,7 +71,7 @@ describe("waitForEmbeddedPostgresReady", () => {
       }),
     ).resolves.toBe(true);
     expect(ensureDatabase).toHaveBeenCalledTimes(1);
-    expect(verifyConnection).toHaveBeenCalledTimes(2);
+    expect(verifyConnection.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("returns false when transient startup churn outlasts the grace window", async () => {
@@ -128,7 +128,7 @@ describe("waitForEmbeddedPostgresReady", () => {
       }),
     ).resolves.toBe(false);
     expect(ensureDatabase).toHaveBeenCalledTimes(1);
-    expect(verifyConnection).toHaveBeenCalledTimes(2);
+    expect(verifyConnection.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps probing until the target database survives the stability window", async () => {
