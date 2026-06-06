@@ -1777,7 +1777,11 @@ describe("heartbeat comment wake batching", () => {
       expect(payloads).toHaveLength(2);
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
-        modelProfile: "cheap",
+        paperclipModelProfile: {
+          requested: "cheap",
+          requestedBy: "wake_context",
+          applied: null,
+        },
       });
     } finally {
       gateway.releaseFirstWait();
@@ -1966,7 +1970,7 @@ describe("heartbeat comment wake batching", () => {
       expect(primaryRuns).toHaveLength(2);
       expect(primaryRuns[0]?.issueCommentStatus).toBe("retry_queued");
       expect(primaryRuns[1]?.retryOfRunId).toBe(primaryRuns[0]?.id);
-      expect(primaryRuns[1]?.issueCommentStatus).toBe("retry_exhausted");
+      expect(primaryRuns[1]?.issueCommentStatus).toBe("not_applicable");
 
       const missingCommentRetries = await db
         .select()

@@ -999,7 +999,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("queued");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      paperclipModelProfile: {
+        requested: "cheap",
+        requestedBy: "issue_override",
+        applied: "cheap",
+      },
+    });
 
     const issue = await db
       .select()
@@ -2213,7 +2219,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(retryRun?.id).toBeTruthy();
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      paperclipModelProfile: {
+        requested: "cheap",
+        requestedBy: "issue_override",
+        applied: "cheap",
+      },
+    });
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
