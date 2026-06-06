@@ -23,10 +23,23 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   return null;
 }
 
+function resolveExistingPath(candidatePath: string): string {
+  const resolvedPath = path.resolve(candidatePath);
+  try {
+    if (fs.existsSync(resolvedPath)) {
+      return fs.realpathSync.native(resolvedPath);
+    }
+  } catch {
+    // Fall back to the normalized path when realpath is unavailable.
+  }
+  return resolvedPath;
+}
+
 export function resolvePaperclipConfigPath(overridePath?: string): string {
-  if (overridePath) return path.resolve(overridePath);
-  if (process.env.PAPERCLIP_CONFIG) return path.resolve(process.env.PAPERCLIP_CONFIG);
-  return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
+  if (overridePath) return resolveExistingPath(overridePath);
+  if (process.env.PAPERCLIP_CONFIG) return resolveExistingPath(process.env.PAPERCLIP_CONFIG);
+  const discoveredPath = findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
+  return resolveExistingPath(discoveredPath);
 }
 
 export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
