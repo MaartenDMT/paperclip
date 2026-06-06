@@ -1,5 +1,5 @@
 import { memo, type ComponentType, type SVGProps } from "react";
-import { Bot, FileText, Hexagon, MessageSquare, Quote } from "lucide-react";
+import { Bot, FileText, Hexagon, MessageSquare, Quote, Sparkles } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -102,6 +102,29 @@ function SearchResultRowImpl({
               highlights={result.snippets[0]?.highlights}
               field="project"
               fallbackLabel={result.sourceLabel ?? "Project"}
+            />
+          ) : null}
+        </div>
+      </Link>
+    );
+  }
+
+  if (result.type === "campaign") {
+    return (
+      <Link
+        to={result.href}
+        className={cn(ROW_BASE, "py-3", isActive && "bg-muted/40", className)}
+        data-result-type="campaign"
+      >
+        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <span className="truncate text-sm font-medium">{result.title}</span>
+          {result.snippet ? (
+            <SnippetLine
+              text={result.snippets[0]?.text ?? result.snippet}
+              highlights={result.snippets[0]?.highlights}
+              field="campaign"
+              fallbackLabel={result.sourceLabel ?? "Campaign"}
             />
           ) : null}
         </div>
