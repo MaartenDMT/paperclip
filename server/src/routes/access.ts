@@ -151,6 +151,7 @@ function readSkillMarkdown(skillName: string): string | null {
   const candidates = [
     path.resolve(moduleDir, "../../skills", normalized, "SKILL.md"), // published: dist/routes/ -> <pkg>/skills/
     path.resolve(process.cwd(), "skills", normalized, "SKILL.md"), // cwd (e.g. monorepo root)
+    path.resolve(process.cwd(), "..", "..", "skills", normalized, "SKILL.md"), // git worktree -> repo root
     path.resolve(moduleDir, "../../../skills", normalized, "SKILL.md") // dev: src/routes/ -> repo root/skills/
   ];
   for (const skillPath of candidates) {

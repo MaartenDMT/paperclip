@@ -1406,11 +1406,7 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
-    const requestedSkillRefs = requestedDesiredSkills
-      ?? (await companySkills.listFull(companyId))
-        .filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"))
-        .filter((skill) => skill.compatibility !== "invalid")
-        .map((skill) => skill.key);
+    const requestedSkillRefs = requestedDesiredSkills ?? [];
 
     const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
       companyId,
