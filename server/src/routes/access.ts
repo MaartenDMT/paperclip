@@ -163,6 +163,18 @@ function readSkillMarkdown(skillName: string): string | null {
       // Continue to next candidate.
     }
   }
+  if (normalized === "paperclip") {
+    return [
+      "---",
+      'description: Paperclip managed skill stub used when repo checkout skills are unavailable.',
+      "---",
+      "",
+      "# Paperclip Skill",
+      "",
+      "This skill is served from the running application when the checkout does not include a bundled `skills/` tree.",
+      "",
+    ].join("\n");
+  }
   return null;
 }
 
