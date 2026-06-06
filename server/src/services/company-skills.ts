@@ -1556,7 +1556,7 @@ export function companySkillService(db: Db) {
   const projects = projectService(db);
 
   async function ensureBundledSkills(companyId: string, options: { missingOnly?: boolean } = {}) {
-    const imported: CompanySkillImportResult[] = [];
+    const imported: CompanySkill[] = [];
     const existingKeys = options.missingOnly
       ? new Set(
         await listFullFromStore(companyId).then((skills) => skills.map((skill) => skill.key)),
@@ -1583,7 +1583,7 @@ export function companySkillService(db: Db) {
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
       if (options.missingOnly) {
-        bundledSkills = bundledSkills.filter((skill) => !existingKeys.has(skill.key));
+        bundledSkills = bundledSkills.filter((skill) => !existingKeys?.has(skill.key));
       }
       if (bundledSkills.length === 0) continue;
       const result = await upsertImportedSkills(companyId, bundledSkills);
