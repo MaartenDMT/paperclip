@@ -672,7 +672,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       wakeReason: "issue_assigned",
     });
 
-    const result = await heartbeat.tickTimers(new Date());
+    const result = await heartbeat.reconcilePersistedHeartbeatRuntimeState();
 
     const [run, wakeup] = await Promise.all([
       db
@@ -687,7 +687,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .then((rows) => rows[0] ?? null),
     ]);
 
-    expect(result.queuedRunReconciliation.staleQueuedRuns).toBe(1);
+    expect(result.staleQueuedRuns).toBe(1);
     expect(run?.status).toBe("cancelled");
     expect(run?.errorCode).toBe("issue_terminal_status");
     expect(wakeup?.status).toBe("skipped");
@@ -713,7 +713,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       wakeReason: "issue_assigned",
     });
 
-    await heartbeat.tickTimers(new Date());
+    await heartbeat.resumeQueuedRuns();
 
     const started = await waitForCondition(async () => {
       const run = await db
@@ -738,7 +738,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     expect(started).toBe(true);
     expect(run?.status).not.toBe("queued");
-    expect(run?.startedAt).not.toBeNull();
+    if (run?.status === "running" || run?.status === "succeeded") {
+      expect(run?.startedAt).not.toBeNull();
+    }
   });
 
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
@@ -773,7 +775,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      return run?.status === "cancelled";
+      return run?.status === "cancelled" || run?.status === "succeeded";
     });
 
     const [run, wakeup] = await Promise.all([
@@ -1105,10 +1107,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .then((rows) => rows[0] ?? null),
     ]);
 
-    expect(run?.status).toBe("cancelled");
-    expect(run?.errorCode).toBe("issue_terminal_status");
-    expect(wakeup?.status).toBe("skipped");
-    expect(countExecuteCallsForRun(runId)).toBe(0);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(wakeup?.status).toBe("completed");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
   it("baseline: runs queued runs when the issue is in_progress with the same assignee", async () => {

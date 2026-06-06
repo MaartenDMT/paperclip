@@ -197,10 +197,9 @@ describe("cursor environment diagnostics", () => {
     );
     const homeDir = path.join(root, "home");
     const remoteCwd = `/tmp/${path.basename(root)}/workspace`;
-    const localRemoteCwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
-    await fs.mkdir(localRemoteCwd, { recursive: true });
+    await fs.mkdir(translateTestPosixPathToWindows(remoteCwd), { recursive: true });
     await writeFakeCursorAgentCommand(cursorAgentPath);
 
     const previousHome = process.env.HOME;

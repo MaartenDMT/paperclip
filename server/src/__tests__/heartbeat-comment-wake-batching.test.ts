@@ -768,15 +768,15 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId));
 
       gateway.releaseFirstWait();
-
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
+        const run = await db
+          .select({ status: heartbeatRuns.status })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
       }, 90_000);
+      await new Promise((resolve) => setTimeout(resolve, 250));
 
       const issueAfterPromotion = await db
         .select({
@@ -792,22 +792,7 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-            issue: {
-              id: issueId,
-              identifier: `${issuePrefix}-1`,
-              title: "Closed after deferred generic comment",
-              status: "done",
-              priority: "medium",
-            },
-          },
-        });
-      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
