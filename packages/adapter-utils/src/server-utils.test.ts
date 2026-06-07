@@ -9,10 +9,12 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   MAX_CAPTURE_BYTES,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolveCommandForLogs,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -176,6 +178,39 @@ describe("sanitizeSshRemoteEnv", () => {
         },
       ),
     ).toEqual({ PATH: "/explicit/remote/bin" });
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it("adds user-local CLI install directories so local adapters can resolve tool shims", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cli-path-"));
+    try {
+      const userLocalBin = path.join(root, ".local", "bin");
+      await fs.mkdir(userLocalBin, { recursive: true });
+      const commandPath =
+        process.platform === "win32"
+          ? path.join(userLocalBin, "kimi.cmd")
+          : path.join(userLocalBin, "kimi");
+      await fs.writeFile(commandPath, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", "utf8");
+      if (process.platform !== "win32") await fs.chmod(commandPath, 0o755);
+
+      const env = ensurePathInEnv({
+        PATH: process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin:/bin",
+        HOME: root,
+        USERPROFILE: root,
+        APPDATA: path.join(root, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(root, "AppData", "Local"),
+      });
+
+      const resolved = await resolveCommandForLogs("kimi", root, env);
+      if (process.platform === "win32") {
+        expect(resolved.toLowerCase()).toBe(commandPath.toLowerCase());
+      } else {
+        expect(resolved).toBe(commandPath);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 

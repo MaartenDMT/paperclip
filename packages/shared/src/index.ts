@@ -265,6 +265,7 @@ export type {
   CampaignListItem,
   CampaignPhase,
   CampaignPhaseDetail,
+  CampaignPhaseTaskProgress,
   CampaignPhasePlanApprovalPayload,
   CampaignPhasePlanSubmission,
   CampaignProjectSummary,

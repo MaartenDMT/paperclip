@@ -7,6 +7,8 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  reconcilePersistedHeartbeatRuntimeState: vi.fn(),
+  reapOrphanedRuns: vi.fn(),
   scanSilentActiveRuns: vi.fn(),
   reconcileStrandedAssignedIssues: vi.fn(),
   reconcileIssueGraphLiveness: vi.fn(),
@@ -52,6 +54,19 @@ describe("company recovery routes", () => {
       companyId: "company-1",
       role: "ceo",
       permissions: {},
+    });
+    mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState.mockResolvedValue({
+      terminalClaimedWakeups: 0,
+      terminalQueuedWakeups: 0,
+      stalePreSpawnRuns: 1,
+      orphanedQueuedWakeups: 0,
+      staleQueuedRuns: 2,
+      blockedQueuedRuns: 1,
+      staleRunningAgents: 0,
+    });
+    mockHeartbeatService.reapOrphanedRuns.mockResolvedValue({
+      reaped: 1,
+      runIds: ["run-stale"],
     });
     mockHeartbeatService.scanSilentActiveRuns.mockResolvedValue({
       scanned: 1,
@@ -109,6 +124,8 @@ describe("company recovery routes", () => {
       .send({ lookbackHours: 12 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState).toHaveBeenCalledWith({ companyId: "company-1" });
+    expect(mockHeartbeatService.reapOrphanedRuns).toHaveBeenCalledWith({ staleThresholdMs: 5 * 60 * 1000 });
     expect(mockHeartbeatService.scanSilentActiveRuns).toHaveBeenCalledWith({ companyId: "company-1" });
     expect(mockHeartbeatService.reconcileStrandedAssignedIssues).toHaveBeenCalledWith({ companyId: "company-1" });
     expect(mockHeartbeatService.reconcileIssueGraphLiveness).toHaveBeenCalledWith({
@@ -130,6 +147,8 @@ describe("company recovery routes", () => {
     expect(res.body).toMatchObject({
       companyId: "company-1",
       actor: { type: "agent", agentId: "ceo-1" },
+      persistedHeartbeatRuntimeState: { stalePreSpawnRuns: 1, staleQueuedRuns: 2, blockedQueuedRuns: 1 },
+      orphanedHeartbeatRuns: { reaped: 1, runIds: ["run-stale"] },
       silentActiveRuns: { closedHealthy: 1 },
       strandedAssignedIssues: { escalated: 1 },
       issueGraphLiveness: { obsoleteRecoveryBlockerRelationsRemoved: 1 },
@@ -155,6 +174,8 @@ describe("company recovery routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
+    expect(mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.reapOrphanedRuns).not.toHaveBeenCalled();
     expect(mockHeartbeatService.scanSilentActiveRuns).not.toHaveBeenCalled();
   });
 
@@ -171,6 +192,8 @@ describe("company recovery routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
+    expect(mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.reapOrphanedRuns).not.toHaveBeenCalled();
     expect(mockHeartbeatService.scanSilentActiveRuns).not.toHaveBeenCalled();
   });
 });

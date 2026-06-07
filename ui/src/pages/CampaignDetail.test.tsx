@@ -106,6 +106,7 @@ function makePhase(overrides: Partial<CampaignPhaseDetail> = {}): CampaignPhaseD
     resultDocument: null,
     approval: null,
     executionIssue: null,
+    taskProgress: null,
     ...overrides,
   };
 }
@@ -336,6 +337,40 @@ describe("CampaignDetail", () => {
             priority: "medium",
             updatedAt: new Date("2026-01-02T00:00:00Z"),
           },
+          taskProgress: {
+            source: "subtree",
+            totalCount: 4,
+            openCount: 3,
+            completedCount: 1,
+            cancelledCount: 0,
+            statusCounts: {
+              backlog: 0,
+              todo: 2,
+              in_progress: 1,
+              in_review: 0,
+              done: 1,
+              blocked: 0,
+              cancelled: 0,
+            },
+            nextIssues: [
+              {
+                id: "issue-2",
+                identifier: "PAP-124",
+                title: "Implement phase task rollup",
+                status: "in_progress",
+                priority: "high",
+                updatedAt: new Date("2026-01-03T00:00:00Z"),
+              },
+              {
+                id: "issue-3",
+                identifier: "PAP-125",
+                title: "Wire next todo visibility",
+                status: "todo",
+                priority: "medium",
+                updatedAt: new Date("2026-01-02T00:00:00Z"),
+              },
+            ],
+          },
         }),
       ],
     }));
@@ -343,10 +378,20 @@ describe("CampaignDetail", () => {
     await renderCampaignDetail();
 
     expect(container.textContent).toContain("Executing approved phase");
+    expect(container.textContent).toContain("Phase work map");
+    expect(container.textContent).toContain("Implementation status and next work per phase");
     expect(container.textContent).toContain("Approval approval-1");
     expect(container.textContent).toContain("approved");
+    expect(container.textContent).toContain("1/4 done");
+    expect(container.textContent).toContain("25%");
+    expect(container.textContent).toContain("Tracking mapped tasks; 3 still open.");
+    expect(container.textContent).toContain("3 open");
+    expect(container.textContent).toContain("Next: PAP-124 - Implement phase task rollup");
+    expect(container.textContent).toContain("Implement phase task rollup");
+    expect(container.textContent).toContain("Wire next todo visibility");
     expect(container.querySelector('a[href="/approvals/approval-1"]')?.textContent).toContain("Open approval");
     expect(container.querySelector('a[href="/issues/PAP-123"]')?.textContent).toContain("Open execution issue");
+    expect(container.querySelector('a[href="/issues/PAP-124"]')?.textContent).toContain("Implement phase task rollup");
   });
 
   it("creates a phase with title, objective, assignee, and initial plan", async () => {

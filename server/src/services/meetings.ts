@@ -38,6 +38,12 @@ type MeetingActor = {
   userId?: string | null;
 };
 
+type MeetingRespondInput = {
+  meetingResult?: AgentMeetingResult;
+  overrideMissingContributions?: boolean;
+  overrideReason?: string | null;
+};
+
 export type MeetingWakeTarget = {
   id: string;
   issueId: string | null;
@@ -620,7 +626,9 @@ export function meetingService(db: Db) {
     return {
       id: created.id,
       issueId: recommendation.issueId ?? null,
-      participantAgentIds,
+      participantAgentIds: recommendation.issueId && participantAgentIds.filter((agentId) => agentId !== chairAgentId).length > 0
+        ? participantAgentIds.filter((agentId) => agentId !== chairAgentId)
+        : participantAgentIds,
       chairAgentId,
     };
   }
@@ -887,7 +895,7 @@ export function meetingService(db: Db) {
     });
   }
 
-  async function respond(meetingId: string, input: { meetingResult?: AgentMeetingResult }, actor: MeetingActor) {
+  async function respond(meetingId: string, input: MeetingRespondInput, actor: MeetingActor) {
     const meeting = await getMeetingById(meetingId);
     if (!meeting) throw notFound("Meeting not found");
     if (meeting.status !== "pending") throw conflict("Meeting has already been resolved");
@@ -902,11 +910,42 @@ export function meetingService(db: Db) {
       expectedOutputs: meeting.expectedOutputs ?? [],
       participantAgentIds: participantRows.map((row) => row.agentId),
     });
-    const now = new Date();
     const linkedOutcomeIssueIds = readIssueIdsFromMeetingResult(result);
+    await validateCompanyIssueIds(db, meeting.companyId, linkedOutcomeIssueIds);
+    const nonChairParticipantIds = participantRows
+      .map((row) => row.agentId)
+      .filter((agentId) => agentId !== meeting.chairAgentId);
+    let missingContributorIds: string[] = [];
+    let contributionOverride: { boardUserId: string; reason: string } | null = null;
+    if (nonChairParticipantIds.length > 0) {
+      const contributionRows = await db
+        .select({ agentId: meetingContributions.agentId })
+        .from(meetingContributions)
+        .where(and(
+          eq(meetingContributions.companyId, meeting.companyId),
+          eq(meetingContributions.meetingId, meetingId),
+          inArray(meetingContributions.agentId, nonChairParticipantIds),
+        ));
+      const contributedIds = new Set(contributionRows.map((row) => row.agentId));
+      missingContributorIds = nonChairParticipantIds.filter((agentId) => !contributedIds.has(agentId));
+      if (missingContributorIds.length > 0) {
+        if (!input.overrideMissingContributions) {
+          throw conflict("Meeting is waiting on participant contributions", { missingContributorIds });
+        }
+        const boardUserId = actor.userId;
+        if (!boardUserId) {
+          throw forbidden("Only board users can override missing meeting contributions");
+        }
+        const overrideReason = input.overrideReason?.trim() ?? "";
+        if (!overrideReason) {
+          throw unprocessable("overrideReason is required when overriding missing meeting contributions");
+        }
+        contributionOverride = { boardUserId, reason: overrideReason };
+      }
+    }
+    const now = new Date();
     const updated = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await validateCompanyIssueIds(txDb, meeting.companyId, linkedOutcomeIssueIds);
       const [row] = await txDb
         .update(meetings)
         .set({
@@ -933,6 +972,21 @@ export function meetingService(db: Db) {
       return row;
     });
     if (!updated) throw conflict("Meeting has already been resolved");
+    if (contributionOverride) {
+      await logActivity(db, {
+        companyId: meeting.companyId,
+        actorType: "user",
+        actorId: contributionOverride.boardUserId,
+        action: "meeting.contribution_override",
+        entityType: "meeting",
+        entityId: meetingId,
+        details: {
+          sourceIssueId: meeting.sourceIssueId,
+          missingContributorIds,
+          overrideReason: contributionOverride.reason,
+        },
+      });
+    }
     await logActivity(db, {
       companyId: meeting.companyId,
       actorType: actor.agentId ? "agent" : "user",

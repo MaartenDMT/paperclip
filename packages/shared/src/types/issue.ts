@@ -803,6 +803,10 @@ export type MeetingWorkflowTrigger =
   | "blocked_without_edge"
   | "stale_review"
   | "stale_in_progress"
+  | "active_work_pressure"
+  | "failed_run_review"
+  | "campaign_phase_review"
+  | "productivity_review"
   | "no_recent_meetings";
 
 export interface MeetingWorkflowPolicyTrigger {

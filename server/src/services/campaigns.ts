@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, inArray, max } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -23,6 +24,7 @@ import type {
   CampaignListItem,
   CampaignPhase,
   CampaignPhaseDetail,
+  CampaignPhaseTaskProgress,
   CampaignPhasePlanApprovalPayload,
   CampaignPhasePlanSubmission,
   CampaignPhaseStatus,
@@ -52,6 +54,10 @@ type CampaignPhaseRow = typeof campaignPhases.$inferSelect;
 type ApprovalRow = typeof approvals.$inferSelect;
 type DocumentRow = typeof documents.$inferSelect;
 type DocumentRevisionRow = typeof documentRevisions.$inferSelect;
+type CampaignPhaseTaskRow = Pick<
+  typeof issues.$inferSelect,
+  "id" | "identifier" | "title" | "status" | "priority" | "updatedAt"
+>;
 
 const CAMPAIGN_PHASE_EXECUTION_ORIGIN_KIND = "campaign_phase_execution";
 const CAMPAIGN_PHASE_EXECUTION_UNIQUE_CONSTRAINT = "issues_campaign_phase_execution_uq";
@@ -124,8 +130,116 @@ function toCampaignDocumentRevision(row: DocumentRevisionRow): CampaignDocumentR
   };
 }
 
+function toCampaignIssueSummary(row: CampaignPhaseTaskRow): CampaignIssueSummary {
+  return {
+    id: row.id,
+    identifier: row.identifier,
+    title: row.title,
+    status: row.status as CampaignIssueSummary["status"],
+    priority: row.priority as CampaignIssueSummary["priority"],
+    updatedAt: row.updatedAt,
+  };
+}
+
+function priorityRank(priority: string): number {
+  if (priority === "critical") return 0;
+  if (priority === "high") return 1;
+  if (priority === "medium") return 2;
+  if (priority === "low") return 3;
+  return 4;
+}
+
+function buildTaskProgress(
+  rows: CampaignPhaseTaskRow[],
+  source: CampaignPhaseTaskProgress["source"],
+): CampaignPhaseTaskProgress {
+  const statusCounts: CampaignPhaseTaskProgress["statusCounts"] = {
+    backlog: 0,
+    todo: 0,
+    in_progress: 0,
+    in_review: 0,
+    done: 0,
+    blocked: 0,
+    cancelled: 0,
+  };
+
+  for (const row of rows) {
+    if (row.status in statusCounts) {
+      statusCounts[row.status as keyof typeof statusCounts] += 1;
+    }
+  }
+
+  const nextIssues = rows
+    .filter((row) => row.status !== "done" && row.status !== "cancelled")
+    .sort((left, right) => {
+      const leftStatusRank = left.status === "blocked" ? 0 : left.status === "in_progress" ? 1 : left.status === "in_review" ? 2 : 3;
+      const rightStatusRank = right.status === "blocked" ? 0 : right.status === "in_progress" ? 1 : right.status === "in_review" ? 2 : 3;
+      if (leftStatusRank !== rightStatusRank) return leftStatusRank - rightStatusRank;
+      const priorityDiff = priorityRank(left.priority) - priorityRank(right.priority);
+      if (priorityDiff !== 0) return priorityDiff;
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+    })
+    .slice(0, 5)
+    .map(toCampaignIssueSummary);
+
+  return {
+    source,
+    totalCount: rows.length,
+    openCount: rows.length - statusCounts.done - statusCounts.cancelled,
+    completedCount: statusCounts.done,
+    cancelledCount: statusCounts.cancelled,
+    statusCounts,
+    nextIssues,
+  };
+}
+
 export function campaignService(db: Db) {
   const documentsSvc = documentService(db);
+
+  async function getPhaseTaskProgress(
+    companyId: string,
+    executionIssue: CampaignPhaseTaskRow | null,
+  ): Promise<CampaignPhaseTaskProgress | null> {
+    if (!executionIssue) return null;
+
+    const childIssues = alias(issues, "campaign_phase_child_issues");
+    const subtreeCondition = sql<boolean>`
+      ${issues.id} IN (
+        WITH RECURSIVE issue_tree(id) AS (
+          SELECT ${issues.id}
+          FROM ${issues}
+          WHERE ${issues.companyId} = ${companyId}
+            AND ${issues.parentId} = ${executionIssue.id}
+            AND ${issues.hiddenAt} IS NULL
+          UNION ALL
+          SELECT ${childIssues.id}
+          FROM ${issues} ${childIssues}
+          JOIN issue_tree ON ${childIssues.parentId} = issue_tree.id
+          WHERE ${childIssues.companyId} = ${companyId}
+            AND ${childIssues.hiddenAt} IS NULL
+        )
+        SELECT id FROM issue_tree
+      )
+    `;
+
+    const descendants = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), subtreeCondition));
+
+    if (descendants.length > 0) {
+      return buildTaskProgress(descendants, "subtree");
+    }
+
+    return buildTaskProgress([executionIssue], "execution_issue");
+  }
 
   async function assertProjectOwnership(companyId: string, projectIds: string[]) {
     const ids = uniqueIds(projectIds);
@@ -252,13 +366,16 @@ export function campaignService(db: Db) {
       row.assigneeAgentId ? getAgentSummary(row.assigneeAgentId) : Promise.resolve(null),
     ]);
 
+    const executionIssueSummary = executionIssue ? toCampaignIssueSummary(executionIssue) : null;
+
     return {
       ...toCampaignPhase(row),
       assignee,
       planDocument: toDocumentSummary(planDocument),
       resultDocument: toDocumentSummary(resultDocument),
       approval: toApproval(approval),
-      executionIssue: executionIssue as CampaignIssueSummary | null,
+      executionIssue: executionIssueSummary,
+      taskProgress: await getPhaseTaskProgress(row.companyId, executionIssue),
     };
   }
 

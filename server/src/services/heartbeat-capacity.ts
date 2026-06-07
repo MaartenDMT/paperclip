@@ -1,6 +1,6 @@
 import { availableParallelism } from "node:os";
 
-const LOCAL_ACTIVE_RUN_EXECUTIONS_FALLBACK = 3;
+const LOCAL_ACTIVE_RUN_EXECUTIONS_FALLBACK = 6;
 
 function parsePositiveInteger(raw: string | undefined): number | null {
   const parsed = Math.floor(Number(raw));

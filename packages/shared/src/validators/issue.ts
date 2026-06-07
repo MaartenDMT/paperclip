@@ -758,6 +758,8 @@ export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20).optional().default([]),
   meetingResult: agentMeetingResultSchema.optional(),
   summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
+  overrideMissingContributions: z.boolean().optional(),
+  overrideReason: z.string().trim().min(1).max(1000).optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 

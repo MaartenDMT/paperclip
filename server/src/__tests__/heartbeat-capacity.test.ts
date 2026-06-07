@@ -12,8 +12,8 @@ describe("computeLocalActiveRunExecutionsMax", () => {
   });
 
   it("keeps a safe minimum when host parallelism is small or unknown", () => {
-    expect(computeLocalActiveRunExecutionsMax(undefined, 2, 20)).toBe(3);
-    expect(computeLocalActiveRunExecutionsMax(undefined, Number.NaN, 20)).toBe(3);
+    expect(computeLocalActiveRunExecutionsMax(undefined, 2, 20)).toBe(6);
+    expect(computeLocalActiveRunExecutionsMax(undefined, Number.NaN, 20)).toBe(6);
     expect(computeLocalActiveRunExecutionsMax("invalid", 32, 20)).toBe(20);
   });
 });

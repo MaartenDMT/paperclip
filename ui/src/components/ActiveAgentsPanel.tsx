@@ -30,6 +30,13 @@ function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
 }
 
+function runStatusLine(run: LiveRunForIssue, isActive: boolean) {
+  if (run.status === "queued" && run.queueDiagnostic) return run.queueDiagnostic.label;
+  if (isActive) return "Live now";
+  if (run.finishedAt) return `Finished ${relativeTime(run.finishedAt)}`;
+  return `Started ${relativeTime(run.createdAt)}`;
+}
+
 function transcriptTextForCopy(run: LiveRunForIssue, transcript: TranscriptEntry[]): string {
   const text = transcript
     .map((entry) => {
@@ -201,7 +208,9 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span title={run.status === "queued" ? run.queueDiagnostic?.detail : undefined}>
+                {runStatusLine(run, isActive)}
+              </span>
             </div>
           </div>
 

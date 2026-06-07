@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileCheck2, Send } from "lucide-react";
+import { FileCheck2, ListTodo, Send } from "lucide-react";
 import type { CampaignPhaseDetail } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,20 @@ type CampaignPhaseComposerProps = {
 
 const editableStatuses = new Set(["planning", "revision_requested"]);
 const reviewStatuses = new Set(["pending", "in_review"]);
+const visibleTaskStatuses = ["blocked", "in_progress", "in_review", "todo", "backlog", "done", "cancelled"] as const;
+
+function formatTaskProgress(phase: CampaignPhaseDetail) {
+  const progress = phase.taskProgress;
+  if (!progress || progress.totalCount === 0) return null;
+
+  const actionable = progress.source === "subtree" ? "mapped tasks" : "execution issue";
+  const percent = Math.round((progress.completedCount / progress.totalCount) * 100);
+  return {
+    actionable,
+    percent,
+    label: `${progress.completedCount}/${progress.totalCount} done`,
+  };
+}
 
 export function CampaignPhaseComposer({
   phase,
@@ -29,6 +43,7 @@ export function CampaignPhaseComposer({
   const [body, setBody] = useState(phase.planDocument?.latestBody ?? "");
   const canEditPlan = editableStatuses.has(phase.status);
   const approvalNeedsBoard = phase.approval && reviewStatuses.has(phase.approval.status);
+  const taskProgress = formatTaskProgress(phase);
 
   useEffect(() => {
     setBody(phase.planDocument?.latestBody ?? "");
@@ -112,7 +127,10 @@ export function CampaignPhaseComposer({
 
         <aside className="space-y-3 text-sm">
           <div className="rounded-md border border-border p-3">
-            <h3 className="text-xs font-medium uppercase text-muted-foreground">Execution</h3>
+            <div className="flex items-center gap-2">
+              <ListTodo className="h-4 w-4 text-muted-foreground" />
+              <h3 className="text-xs font-medium uppercase text-muted-foreground">Execution</h3>
+            </div>
             {phase.executionIssue ? (
               <div className="mt-2 space-y-1">
                 <Link
@@ -128,6 +146,63 @@ export function CampaignPhaseComposer({
             ) : (
               <p className="mt-2 text-xs text-muted-foreground">No execution issue yet.</p>
             )}
+            {phase.taskProgress ? (
+              <div className="mt-3 space-y-3 border-t border-border pt-3">
+                {taskProgress ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-medium">{taskProgress.label}</span>
+                      <span className="text-muted-foreground">{taskProgress.percent}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary"
+                        style={{ width: `${taskProgress.percent}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Tracking {taskProgress.actionable}; {phase.taskProgress.openCount} still open.
+                    </p>
+                  </div>
+                ) : null}
+                <div className="flex flex-wrap gap-1.5">
+                  {visibleTaskStatuses
+                    .filter((status) => (phase.taskProgress?.statusCounts[status] ?? 0) > 0)
+                    .map((status) => (
+                      <span
+                        key={status}
+                        className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs"
+                      >
+                        <StatusBadge status={status} />
+                        <span className="text-muted-foreground">{phase.taskProgress!.statusCounts[status]}</span>
+                      </span>
+                    ))}
+                </div>
+                <div className="space-y-2">
+                  <h4 className="text-xs font-medium uppercase text-muted-foreground">Next issues</h4>
+                  {phase.taskProgress.nextIssues.length > 0 ? (
+                    <div className="space-y-2">
+                      {phase.taskProgress.nextIssues.map((issue) => (
+                        <Link
+                          key={issue.id}
+                          to={`/issues/${issue.identifier ?? issue.id}`}
+                          className="block rounded-md border border-border px-2 py-1.5 hover:bg-accent/40"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-xs font-medium">
+                              {issue.identifier ?? "Issue"} · {issue.title}
+                            </span>
+                            <StatusBadge status={issue.status} />
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No open issues remain for this phase.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="rounded-md border border-border p-3">
             <h3 className="text-xs font-medium uppercase text-muted-foreground">Result</h3>

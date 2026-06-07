@@ -281,8 +281,121 @@ describeEmbeddedPostgres("campaignService", () => {
       identifier: "REA-9999",
       title: "Create World Vault",
       status: "todo",
-      priority: "high",
+      priority: "medium",
     });
+    expect(linked.taskProgress).toMatchObject({
+      source: "execution_issue",
+      totalCount: 1,
+      openCount: 1,
+      completedCount: 0,
+      nextIssues: [
+        expect.objectContaining({
+          id: issue!.id,
+          identifier: "REA-9999",
+          title: "Create World Vault",
+          status: "todo",
+        }),
+      ],
+    });
+  });
+
+  it("summarizes phase execution child issues as task progress", async () => {
+    const { actor, agentId, companyId, productionProjectId, svc } = await seedFixture();
+    const campaign = await svc.create(
+      companyId,
+      {
+        title: "Readerbase fantasy world",
+        objective: null,
+        leadAgentId: agentId,
+        goalId: null,
+        status: "draft",
+        projectIds: [productionProjectId],
+      },
+      actor,
+    );
+    const phase = await svc.createPhase(
+      companyId,
+      campaign.id,
+      {
+        title: "Live author setup",
+        assigneeAgentId: agentId,
+      },
+      actor,
+    );
+    const [executionIssue] = await db
+      .insert(issues)
+      .values({
+        companyId,
+        projectId: productionProjectId,
+        title: "Execute phase",
+        status: "in_progress",
+        priority: "high",
+        identifier: "REA-1000",
+        issueNumber: 1000,
+      })
+      .returning();
+    const [todoChild] = await db
+      .insert(issues)
+      .values({
+        companyId,
+        projectId: productionProjectId,
+        parentId: executionIssue!.id,
+        title: "Prepare launch checklist",
+        status: "todo",
+        priority: "high",
+        identifier: "REA-1001",
+        issueNumber: 1001,
+      })
+      .returning();
+    await db.insert(issues).values([
+      {
+        companyId,
+        projectId: productionProjectId,
+        parentId: executionIssue!.id,
+        title: "Implement launch page",
+        status: "in_progress",
+        priority: "critical",
+        identifier: "REA-1002",
+        issueNumber: 1002,
+      },
+      {
+        companyId,
+        projectId: productionProjectId,
+        parentId: todoChild!.id,
+        title: "Write copy",
+        status: "done",
+        priority: "medium",
+        identifier: "REA-1003",
+        issueNumber: 1003,
+      },
+      {
+        companyId,
+        projectId: productionProjectId,
+        parentId: executionIssue!.id,
+        title: "Abandoned draft",
+        status: "cancelled",
+        priority: "low",
+        identifier: "REA-1004",
+        issueNumber: 1004,
+      },
+    ]);
+
+    const linked = await svc.linkExecutionIssue(companyId, phase.id, { issueId: executionIssue!.id }, actor);
+
+    expect(linked.taskProgress).toMatchObject({
+      source: "subtree",
+      totalCount: 4,
+      openCount: 2,
+      completedCount: 1,
+      cancelledCount: 1,
+      statusCounts: expect.objectContaining({
+        todo: 1,
+        in_progress: 1,
+        done: 1,
+        cancelled: 1,
+      }),
+    });
+    expect(linked.taskProgress?.nextIssues.map((issue) => issue.identifier)).toEqual(["REA-1002", "REA-1001"]);
   });
 
   it("submits a phase plan for review with a campaign_phase_plan approval", async () => {
@@ -471,7 +584,7 @@ describeEmbeddedPostgres("campaignService", () => {
       goalId,
       assigneeAgentId: agentId,
       status: "todo",
-      priority: "medium",
+      priority: "high",
       originKind: "campaign_phase_execution",
       originId: phase.id,
       originFingerprint: submission.planRevision.id,

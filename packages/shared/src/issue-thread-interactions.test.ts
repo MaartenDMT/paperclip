@@ -88,6 +88,16 @@ describe("issue thread interaction schemas", () => {
     });
   });
 
+  it("parses board meeting contribution override controls", () => {
+    const parsed = respondIssueThreadInteractionSchema.parse({
+      overrideMissingContributions: true,
+      overrideReason: "Contributor timed out; board accepted the available evidence.",
+    });
+
+    expect(parsed.overrideMissingContributions).toBe(true);
+    expect(parsed.overrideReason).toBe("Contributor timed out; board accepted the available evidence.");
+  });
+
   it("parses rich agent meeting results with memory and workflow corrections", () => {
     const parsed = respondIssueThreadInteractionSchema.parse({
       meetingResult: {

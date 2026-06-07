@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  campaignPhases,
+  campaigns,
+  costEvents,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -115,6 +118,8 @@ const MEETING_RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const STALE_REVIEW_MS = 24 * 60 * 60 * 1000;
 const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
+const OPERATING_SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ACTIVE_WORK_PRESSURE_RUNS = 3;
 
 async function listIssueIdsWithPendingNextActionPath(db: Db, companyId: string, issueIds: string[]) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
@@ -173,6 +178,10 @@ const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpect
   blocked_without_edge: BUSINESS_OPERATING_MEETING_OUTPUTS,
   stale_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   stale_in_progress: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  active_work_pressure: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  failed_run_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  campaign_phase_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  productivity_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   no_recent_meetings: BUSINESS_OPERATING_MEETING_OUTPUTS,
 };
 
@@ -197,6 +206,34 @@ const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
     "Surface problems, spend or budget risk, workflow friction, memory errors, and missing inputs.",
     "Choose the optimization, plan update, workflow correction, memory correction, owner, and next measurable checkpoint.",
   ],
+  active_work_pressure: [
+    "What changed across active queued/running work since the last operating review?",
+    "What is blocked, overloaded, duplicated, or waiting on scheduler/agent capacity?",
+    "Who is underperforming or stuck based on active run pressure, handoff clarity, output quality, and churn?",
+    "What decision is needed now to protect goal, KPI, budget, or delivery path?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
+  failed_run_review: [
+    "What changed in the failed or stale runs, and what user-visible work is affected?",
+    "What is blocked by runtime errors, adapter failures, stale runs, or missing output?",
+    "Who is underperforming or stuck based on repeated failure, missing comments, unclear next action, or high churn?",
+    "What decision is needed: retry, reassign, pause, escalate, approve spend, or create recovery work?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
+  campaign_phase_review: [
+    "What changed in active campaign phases and linked execution issues?",
+    "What is blocked in planning, review, approval, execution, or result documentation?",
+    "Who is underperforming or stuck across lead, assignee, reviewer, and contributors?",
+    "What decision is needed to approve, revise, execute, pause, or complete the phase?",
+    "Name the exact issue, phase, document, or approval that must change next.",
+  ],
+  productivity_review: [
+    "What changed in productivity review evidence: no-comment streaks, long-active work, churn, cost, and next actions?",
+    "What is blocked by repeated planning, missing output, repeated failure, unclear ownership, or absent comments?",
+    "Who is underperforming or stuck, and what concrete coaching, reassignment, or workflow correction is needed?",
+    "What decision is needed: continue, stop, reassign, split work, create follow-up, or change process?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
   no_recent_meetings: [
     "Review company goals, near-term targets, KPIs, and open work health.",
     "Inspect finance signals: budget, spend trend, cost of delay, and expected return on the active work.",
@@ -210,6 +247,10 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
   blocked_without_edge: "Business review focus: goal alignment, business requirement, KPI and finance impact, employee ownership, blocker ownership, cost of delay, escalation path, and process prevention.",
   stale_review: "Business review focus: goal and target fit, KPI movement, financial or budget impact, customer value, employee decision quality, review workflow, and process latency.",
   stale_in_progress: "Business review focus: progress against target, KPI risk, budget burn, business requirement fit, employee performance, execution problems, workflow optimization, memory correctness, and plan correction.",
+  active_work_pressure: "Business review focus: minimal, precise operating review of what changed, what is blocked, who is underperforming or stuck, what decision is needed, and the exact issue operation to take.",
+  failed_run_review: "Business review focus: minimal, precise operating review of failed/stale run impact, blocked work, agent performance, retry/reassignment decisions, cost/churn, and exact recovery issue operations.",
+  campaign_phase_review: "Business review focus: minimal, precise operating review of campaign phase progress, plan/review/execution blockers, responsible agents, required decisions, and exact issue/document/approval operations.",
+  productivity_review: "Business review focus: minimal, precise operating review of productivity evidence, churn, cost, missing comments, agent performance, required decisions, and exact follow-up issue operations.",
   no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
@@ -217,6 +258,10 @@ const MEETING_TRIGGER_TITLE_PREFIX: Record<MeetingWorkflowTrigger, string> = {
   blocked_without_edge: "Blocked work",
   stale_review: "Review waiting",
   stale_in_progress: "Execution check-in",
+  active_work_pressure: "Operating pressure",
+  failed_run_review: "Run failure review",
+  campaign_phase_review: "Campaign phase review",
+  productivity_review: "Productivity review",
   no_recent_meetings: "Operating review",
 };
 
@@ -230,6 +275,12 @@ function meetingTitleForRecommendation(recommendation: MeetingWorkflowRecommenda
   const prefix = MEETING_TRIGGER_TITLE_PREFIX[recommendation.trigger];
   if (recommendation.trigger === "no_recent_meetings") {
     return `${prefix}: company work health`;
+  }
+  if (!recommendation.issueId) {
+    if (recommendation.trigger === "active_work_pressure") return `${prefix}: queued and running work`;
+    if (recommendation.trigger === "failed_run_review") return `${prefix}: failed and stale runs`;
+    if (recommendation.trigger === "campaign_phase_review") return `${prefix}: active campaign phases`;
+    if (recommendation.trigger === "productivity_review") return `${prefix}: stuck work evidence`;
   }
   const topic = [
     recommendation.issueIdentifier,
@@ -263,6 +314,34 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
         when: "An in-progress issue has not moved for more than 72 hours.",
         chair: "Nearest department/domain owner.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_in_progress,
+      },
+      {
+        id: "active_work_pressure",
+        label: "Active work pressure",
+        when: "Queued/running/scheduled work accumulates enough to require a short operating review.",
+        chair: "CEO with direct department/domain heads, or the nearest operating head when scoped.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.active_work_pressure,
+      },
+      {
+        id: "failed_run_review",
+        label: "Failed run review",
+        when: "Recent failed or timed-out runs indicate runtime, quality, ownership, or recovery risk.",
+        chair: "CEO with direct department/domain heads, or the nearest operating head when scoped.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.failed_run_review,
+      },
+      {
+        id: "campaign_phase_review",
+        label: "Campaign phase review",
+        when: "Campaign phases are waiting in review, revision, approval, or execution states.",
+        chair: "Campaign lead, CEO, or relevant department/domain heads.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.campaign_phase_review,
+      },
+      {
+        id: "productivity_review",
+        label: "Productivity review",
+        when: "Open productivity review issues show no-comment streaks, long-active work, churn, cost, or weak next actions.",
+        chair: "Responsible manager or direct operating head.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.productivity_review,
       },
       {
         id: "no_recent_meetings",
@@ -299,8 +378,14 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
 }
 
 function severityForMeetingTrigger(trigger: MeetingWorkflowTrigger): MeetingWorkflowRecommendation["severity"] {
-  if (trigger === "blocked_without_edge") return "urgent";
-  if (trigger === "stale_review" || trigger === "stale_in_progress") return "warning";
+  if (trigger === "blocked_without_edge" || trigger === "failed_run_review") return "urgent";
+  if (
+    trigger === "stale_review" ||
+    trigger === "stale_in_progress" ||
+    trigger === "active_work_pressure" ||
+    trigger === "campaign_phase_review" ||
+    trigger === "productivity_review"
+  ) return "warning";
   return "info";
 }
 
@@ -884,6 +969,7 @@ export function issueThreadInteractionService(db: Db) {
         recommendation.issueTitle ? `Title: ${recommendation.issueTitle}` : null,
         recommendation.issueStatus ? `Status: ${recommendation.issueStatus}` : null,
         recommendation.suggestedHeadName ? `Suggested chair: ${recommendation.suggestedHeadName}` : null,
+        `Signal: ${recommendation.reason}`,
         MEETING_TRIGGER_FOCUS[recommendation.trigger],
         "Record the outcome as a meeting result, including businessReview, agentPerformanceReviews, right-track checks, ideas, workflow corrections, and memory corrections when relevant.",
         "Convert action items/blockers into linked issues; agentPerformanceReviews can link follow-up issues for coaching or reassignment; memoryCorrections should name karpathy-memory, para-memory, or other and identify the file/path when known.",
@@ -1175,6 +1261,7 @@ export function issueThreadInteractionService(db: Db) {
           title: issues.title,
           status: issues.status,
           priority: issues.priority,
+          originKind: issues.originKind,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           executionState: issues.executionState,
@@ -1287,6 +1374,85 @@ export function issueThreadInteractionService(db: Db) {
         : [];
       const pendingApprovalIssueIds = new Set(pendingApprovalRows.map((row) => row.issueId));
 
+      const activeRunRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(200);
+      const failedRunRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          errorCode: heartbeatRuns.errorCode,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+          gte(heartbeatRuns.updatedAt, new Date(now - OPERATING_SIGNAL_WINDOW_MS)),
+        ))
+        .orderBy(desc(heartbeatRuns.updatedAt))
+        .limit(100);
+      const activeCampaignPhaseRows = await db
+        .select({
+          id: campaignPhases.id,
+          status: campaignPhases.status,
+          title: campaignPhases.title,
+          campaignTitle: campaigns.title,
+        })
+        .from(campaignPhases)
+        .innerJoin(campaigns, eq(campaignPhases.campaignId, campaigns.id))
+        .where(and(
+          eq(campaignPhases.companyId, companyId),
+          inArray(campaignPhases.status, ["in_review", "revision_requested", "approved", "executing"]),
+          sql`${campaigns.status} not in ('completed', 'cancelled', 'archived')`,
+        ))
+        .orderBy(desc(campaignPhases.updatedAt))
+        .limit(50);
+      const recentCostRow = await db
+        .select({
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          eventCount: sql<number>`count(*)::int`,
+        })
+        .from(costEvents)
+        .where(and(
+          eq(costEvents.companyId, companyId),
+          gte(costEvents.occurredAt, new Date(now - OPERATING_SIGNAL_WINDOW_MS)),
+        ))
+        .then((rows) => rows[0] ?? { costCents: 0, eventCount: 0 });
+      const issueIdFromRunContext = (context: Record<string, unknown> | null | undefined) => {
+        const issueId = typeof context?.issueId === "string" ? context.issueId : null;
+        const taskId = typeof context?.taskId === "string" ? context.taskId : null;
+        return issueId ?? taskId;
+      };
+      const openIssueIdSet = new Set(openIssueIds);
+      const activeIssueScopedRuns = activeRunRows.filter((run) => {
+        const issueId = issueIdFromRunContext(run.contextSnapshot);
+        return !issueId || openIssueIdSet.has(issueId);
+      });
+      const failedIssueScopedRuns = failedRunRows.filter((run) => {
+        const issueId = issueIdFromRunContext(run.contextSnapshot);
+        return !issueId || openIssueIdSet.has(issueId);
+      });
+      const openProductivityReviewIssues = openIssueRows.filter(
+        (issue) => issue.originKind === "issue_productivity_review",
+      );
+
       const meetingsByIssueId = new Map<string, IssueThreadInteractionRow[]>();
       for (const meeting of meetingRows) {
         const group = meetingsByIssueId.get(meeting.issueId) ?? [];
@@ -1332,6 +1498,36 @@ export function issueThreadInteractionService(db: Db) {
           ...headIds,
         ])].slice(0, 20);
       };
+      const ensureDiscussionParticipantIds = (participantIds: string[], chairCandidateId: string | null) => {
+        if (participantIds.length !== 1) return participantIds;
+        const [soleParticipantId] = participantIds;
+        const soleParticipant = agentById.get(soleParticipantId!);
+        const directReportIds = companyAgentRows
+          .filter((agent) => agent.reportsTo === soleParticipantId)
+          .map((agent) => agent.id);
+        const peerIds = soleParticipant?.reportsTo
+          ? companyAgentRows
+              .filter((agent) => agent.reportsTo === soleParticipant.reportsTo)
+              .map((agent) => agent.id)
+          : [];
+        const candidates = [
+          ...directReportIds,
+          ...peerIds,
+          chairCandidateId && chairCandidateId !== soleParticipantId ? chairCandidateId : null,
+        ].filter((agentId): agentId is string =>
+          Boolean(agentId) &&
+          agentId !== soleParticipantId &&
+          isMeetingRunnableAgentId(agentId),
+        );
+        const nextIds = [...participantIds];
+        for (const candidate of candidates) {
+          if (!nextIds.includes(candidate)) {
+            nextIds.push(candidate);
+            break;
+          }
+        }
+        return nextIds;
+      };
       const buildRecommendation = (
         trigger: MeetingWorkflowTrigger,
         issue: typeof openIssueRows[number] | null,
@@ -1376,10 +1572,13 @@ export function issueThreadInteractionService(db: Db) {
             ? [topLevelHead.id]
             : []),
         ])].slice(0, 20);
-        const rawParticipantIds = trigger === "no_recent_meetings"
+        const rawParticipantIds = trigger === "no_recent_meetings" || issue === null
           ? companyOperatingParticipantIds()
           : issueParticipantIds;
-        const participantIds = rawParticipantIds.filter((agentId) => isMeetingRunnableAgentId(agentId));
+        const participantIds = ensureDiscussionParticipantIds(
+          rawParticipantIds.filter((agentId) => isMeetingRunnableAgentId(agentId)),
+          headForMeeting?.id ?? null,
+        );
         const preferredHead = trigger === "no_recent_meetings" ? topLevelHead : headForMeeting;
         const suggestedHeadId = participantIds.includes(preferredHead?.id ?? "")
           ? preferredHead?.id ?? null
@@ -1437,6 +1636,62 @@ export function issueThreadInteractionService(db: Db) {
             "Issue has not moved for more than 72 hours while in progress.",
           ));
         }
+      }
+
+      if (recommendations.length === 0 && failedIssueScopedRuns.length > 0) {
+        const errorCodes = [...new Set(failedIssueScopedRuns.map((run) => run.errorCode).filter(Boolean))];
+        recommendations.push(buildRecommendation(
+          "failed_run_review",
+          null,
+          [
+            `${failedIssueScopedRuns.length} failed/timed-out runs in the last 24h require operating review.`,
+            errorCodes.length > 0 ? `Error codes: ${errorCodes.slice(0, 5).join(", ")}.` : null,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+          ].filter(Boolean).join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && activeIssueScopedRuns.length >= ACTIVE_WORK_PRESSURE_RUNS) {
+        const queuedCount = activeIssueScopedRuns.filter((run) => run.status === "queued").length;
+        const runningCount = activeIssueScopedRuns.filter((run) => run.status === "running").length;
+        const scheduledRetryCount = activeIssueScopedRuns.filter((run) => run.status === "scheduled_retry").length;
+        recommendations.push(buildRecommendation(
+          "active_work_pressure",
+          null,
+          [
+            `Active queued/running work: ${activeIssueScopedRuns.length} runs (${queuedCount} queued, ${runningCount} running, ${scheduledRetryCount} scheduled retry).`,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+            "Review scheduler pressure, stuck agents, blockers, decisions, and exact issue operations.",
+          ].join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && openProductivityReviewIssues.length > 0) {
+        recommendations.push(buildRecommendation(
+          "productivity_review",
+          null,
+          [
+            `${openProductivityReviewIssues.length} open productivity review issue(s) need management synthesis.`,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+            "Review no-comment streaks, long-active work, churn, agent performance, decisions, and exact follow-up issue operations.",
+          ].join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && activeCampaignPhaseRows.length > 0) {
+        const phaseSummary = activeCampaignPhaseRows
+          .slice(0, 5)
+          .map((phase) => `${phase.campaignTitle}: ${phase.title} (${phase.status})`)
+          .join("; ");
+        recommendations.push(buildRecommendation(
+          "campaign_phase_review",
+          null,
+          [
+            `${activeCampaignPhaseRows.length} campaign phase(s) are in review/revision/approval/execution.`,
+            phaseSummary ? `Phases: ${phaseSummary}.` : null,
+            "Review progress, blockers, responsible agents, decisions, and exact issue/document/approval operations.",
+          ].filter(Boolean).join(" "),
+        ));
       }
 
       const legacyMeetingsLast7Days = meetingRows.filter(

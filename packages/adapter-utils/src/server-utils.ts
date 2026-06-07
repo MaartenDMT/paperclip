@@ -1354,6 +1354,39 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function localCliPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const homeDir = env.HOME || env.USERPROFILE || os.homedir();
+  if (process.platform === "win32") {
+    const userProfile = env.USERPROFILE || homeDir;
+    const appData = env.APPDATA || (userProfile ? path.join(userProfile, "AppData", "Roaming") : "");
+    const localAppData = env.LOCALAPPDATA || (userProfile ? path.join(userProfile, "AppData", "Local") : "");
+    return [
+      userProfile ? path.join(userProfile, ".local", "bin") : "",
+      appData ? path.join(appData, "npm") : "",
+      appData ? path.join(appData, "Python", "Scripts") : "",
+      localAppData ? path.join(localAppData, "pnpm") : "",
+    ].filter(Boolean);
+  }
+  return [
+    homeDir ? path.join(homeDir, ".local", "bin") : "",
+    homeDir ? path.join(homeDir, "bin") : "",
+  ].filter(Boolean);
+}
+
+function appendPathEntries(pathValue: string, entries: string[]): string {
+  const existing = pathValue.split(path.delimiter).filter(Boolean);
+  const seen = new Set(existing.map((entry) =>
+    process.platform === "win32" ? entry.toLowerCase() : entry,
+  ));
+  for (const entry of entries) {
+    const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+    if (seen.has(key)) continue;
+    existing.push(entry);
+    seen.add(key);
+  }
+  return existing.join(path.delimiter);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1524,9 +1557,14 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const additions = localCliPathEntries(env);
+  if (typeof env.PATH === "string" && env.PATH.length > 0) {
+    return { ...env, PATH: appendPathEntries(env.PATH, additions) };
+  }
+  if (typeof env.Path === "string" && env.Path.length > 0) {
+    return { ...env, Path: appendPathEntries(env.Path, additions) };
+  }
+  return { ...env, PATH: appendPathEntries(defaultPathForPlatform(), additions) };
 }
 
 export async function ensureAbsoluteDirectory(
