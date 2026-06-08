@@ -1,5 +1,6 @@
 import {
   executeSimpleCliAdapter,
+  hasSimpleCliTerminalResult,
   testSimpleCliEnvironment,
   type SimpleCliAdapterDefinition,
 } from "@paperclipai/adapter-utils/simple-cli-server";
@@ -17,6 +18,10 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
   defaultGraceSec: 20,
   authEnvKeys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
   biller: "kimi",
+  terminalResultCleanup: {
+    graceMs: 5_000,
+    hasTerminalResult: hasSimpleCliTerminalResult,
+  },
   buildArgs({ prompt, model, extraArgs, config }) {
     const args = ["--print", "--output-format", "stream-json"];
     if (model && model !== DEFAULT_KIMI_LOCAL_MODEL) args.push("--model", model);

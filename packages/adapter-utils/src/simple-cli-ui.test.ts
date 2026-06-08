@@ -71,6 +71,31 @@ describe("parseSimpleCliStdoutLine", () => {
     ]);
   });
 
+  it("parses Kimi tool result content arrays as tool results", () => {
+    const entries = parseSimpleCliStdoutLine(
+      JSON.stringify({
+        role: "tool",
+        content: [
+          { type: "text", text: "<system>145 lines read from file.</system>" },
+          { type: "text", text: "file line 1\nfile line 2" },
+        ],
+        tool_call_id: "tool_123",
+      }),
+      "ts",
+    );
+
+    expect(entries).toEqual([
+      {
+        kind: "tool_result",
+        ts: "ts",
+        toolUseId: "tool_123",
+        toolName: undefined,
+        content: "<system>145 lines read from file.</system>\n\nfile line 1\nfile line 2",
+        isError: false,
+      },
+    ]);
+  });
+
   it("parses Copilot JSON events", () => {
     expect(parseSimpleCliStdoutLine(
       JSON.stringify({ type: "assistant.message_delta", data: { deltaContent: "Hi" } }),

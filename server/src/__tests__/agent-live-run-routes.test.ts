@@ -108,6 +108,7 @@ async function createApp(
 function createLiveRunsDbStub(
   rows: Array<Record<string, unknown>>,
   issueRows: Array<Record<string, unknown>> = [],
+  globalRunningRunCount = rows.filter((row) => row.status === "running").length,
 ) {
   const limit = vi.fn(async (value: number) => rows.slice(0, value));
   const orderedQuery = {
@@ -124,11 +125,17 @@ function createLiveRunsDbStub(
     from: vi.fn().mockReturnThis(),
     where: vi.fn(async () => issueRows),
   };
+  const globalRunningCountQuery = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => [{ activeRunCount: globalRunningRunCount }]),
+  };
 
   return {
     db: {
       select: vi.fn((columns?: Record<string, unknown>) => (
-        columns && "assigneeAgentId" in columns ? issueQuery : query
+        columns && "activeRunCount" in columns
+          ? globalRunningCountQuery
+          : columns && "assigneeAgentId" in columns ? issueQuery : query
       )),
     },
     limit,
@@ -590,6 +597,50 @@ describe("agent live run routes", () => {
       queueDiagnostic: {
         code: "waiting_for_agent_slot",
         label: "Agent busy",
+      },
+    });
+  });
+
+  it("explains queued company live runs blocked by global local capacity", async () => {
+    const rows = [
+      {
+        id: "run-queued",
+        companyId: "company-1",
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:31:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: null,
+      },
+    ];
+    const { db } = createLiveRunsDbStub(rows, [], 999);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.find((run: { id: string }) => run.id === "run-queued")).toMatchObject({
+      queueDiagnostic: {
+        code: "waiting_for_local_capacity",
+        label: "Local capacity full",
       },
     });
   });

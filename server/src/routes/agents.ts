@@ -3437,6 +3437,16 @@ export function agentRoutes(
     const liveRuns = await liveRunsQuery.limit(limit);
     const targetRunCount = Math.min(minCount, limit);
 
+    const readGlobalRunningRunCount = async () => {
+      const [row] = await db
+        .select({ activeRunCount: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      const value = row?.activeRunCount;
+      const parsed = typeof value === "number" ? value : Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
     type LiveRunEnrichmentRow = Parameters<typeof heartbeat.buildRunOutputSilence>[0] & {
       status: string;
       agentId: string;
@@ -3477,6 +3487,9 @@ export function agentRoutes(
       const maxLocalActiveRunExecutions = computeLocalActiveRunExecutionsMax(
         process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
       );
+      const globalRunningRunsTotal = rows.some((run) => run.status === "queued")
+        ? await readGlobalRunningRunCount()
+        : runningRunsTotal;
 
       return Promise.all(rows.map(async (run) => {
         const {
@@ -3499,7 +3512,7 @@ export function agentRoutes(
             runningRunsForAgent: runningRunsByAgent.get(run.agentId) ?? 0,
             queuedRunsForAgent: queuedRunsByAgent.get(run.agentId) ?? 0,
             maxConcurrentRunsForAgent,
-            runningRunsTotal,
+            runningRunsTotal: globalRunningRunsTotal,
             maxLocalActiveRunExecutions,
           }),
         };

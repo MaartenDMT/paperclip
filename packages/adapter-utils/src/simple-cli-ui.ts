@@ -25,6 +25,22 @@ function stringifyCompact(value: unknown): string {
   }
 }
 
+function textFromContentArray(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const item of content) {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) parts.push(text);
+      continue;
+    }
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const text = textFromRecord(item as Record<string, unknown>).trim();
+    if (text) parts.push(text);
+  }
+  return parts.join("\n\n");
+}
+
 function toolNameFromRecord(rec: Record<string, unknown>): string {
   const fn = typeof rec.function === "object" && rec.function !== null && !Array.isArray(rec.function)
     ? rec.function as Record<string, unknown>
@@ -144,6 +160,19 @@ export function parseSimpleCliStdoutLine(line: string, ts: string): TranscriptEn
           errors: [],
         }];
       }
+      if (rec.role === "tool" || type === "tool" || type === "tool_result" || typeof rec.tool_call_id === "string") {
+        const content = textFromContentArray(rec.content)
+          || textFromRecord(rec)
+          || stringifyCompact(rec.content ?? rec.output ?? rec.result ?? "");
+        return [{
+          kind: "tool_result",
+          ts,
+          toolUseId: typeof rec.tool_call_id === "string" ? rec.tool_call_id : typeof rec.id === "string" ? rec.id : "tool",
+          toolName: typeof rec.name === "string" ? rec.name : undefined,
+          content,
+          isError: rec.isError === true || rec.error === true,
+        }];
+      }
       const toolCallEntries = entriesFromToolCalls(rec.tool_calls ?? rec.toolCalls, ts);
       const nestedToolCallEntries = nestedData ? entriesFromToolCalls(nestedData.tool_calls ?? nestedData.toolCalls, ts) : [];
       const contentEntries = entriesFromContentArray(rec.content, ts);
@@ -155,16 +184,6 @@ export function parseSimpleCliStdoutLine(line: string, ts: string): TranscriptEn
         ...nestedToolCallEntries,
       ];
       if (structuredEntries.length > 0) return structuredEntries;
-      if (type === "tool" || type === "tool_result" || typeof rec.tool_call_id === "string") {
-        return [{
-          kind: "tool_result",
-          ts,
-          toolUseId: typeof rec.tool_call_id === "string" ? rec.tool_call_id : typeof rec.id === "string" ? rec.id : "tool",
-          toolName: typeof rec.name === "string" ? rec.name : undefined,
-          content: stringifyCompact(rec.content ?? rec.output ?? rec.result ?? ""),
-          isError: rec.isError === true || rec.error === true,
-        }];
-      }
       const content = textFromRecord(nestedData ?? rec);
       if (content) {
         if (/thinking|reasoning/i.test(type)) return [{ kind: "thinking", ts, text: content }];

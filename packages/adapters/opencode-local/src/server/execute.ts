@@ -517,7 +517,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
         notes.push(
-          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          `Prepended instructions + path directive to the OpenCode run message (relative references from ${instructionsDir}).`,
         );
         return notes;
       }
@@ -564,24 +564,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null) => {
+    const buildArgs = (resumeSessionId: string | null, message: string) => {
       const args = ["run", "--format", "json"];
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
+      if (message.length > 0) args.push(message);
       return args;
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
-      const args = buildArgs(resumeSessionId);
+      const args = buildArgs(resumeSessionId, prompt);
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
-          commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
+          commandArgs: buildArgs(resumeSessionId, `<message prompt ${prompt.length} chars>`),
           env: loggedEnv,
           prompt,
           promptMetrics,
@@ -592,7 +593,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: preparedRuntimeConfig.env,
-        stdin: prompt,
         timeoutSec,
         graceSec,
         onSpawn,
