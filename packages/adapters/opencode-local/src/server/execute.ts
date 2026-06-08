@@ -89,6 +89,27 @@ function resolveRunTimeoutSec(config: Record<string, unknown>): number {
   return timeoutSec > 0 ? timeoutSec : DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC;
 }
 
+const EMPTY_OPENCODE_RUN_MESSAGE =
+  "Continue the Paperclip agent run. Inspect the provided Paperclip environment variables, current working directory, and assigned issue context before deciding the next action.";
+
+export function buildOpenCodeRunArgs(input: {
+  resumeSessionId?: string | null;
+  model?: string | null;
+  variant?: string | null;
+  extraArgs?: string[];
+  message: string;
+}): string[] {
+  const args = ["run", "--format", "json"];
+  if (input.resumeSessionId) args.push("--session", input.resumeSessionId);
+  if (input.model) args.push("--model", input.model);
+  const variant = input.variant?.trim();
+  if (variant) args.push("--variant", variant);
+  if (input.extraArgs && input.extraArgs.length > 0) args.push(...input.extraArgs);
+  const message = input.message.trim().length > 0 ? input.message : EMPTY_OPENCODE_RUN_MESSAGE;
+  args.push(message);
+  return args;
+}
+
 async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
   executionTarget: NonNullable<AdapterExecutionContext["executionTarget"]>;
@@ -564,15 +585,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null, message: string) => {
-      const args = ["run", "--format", "json"];
-      if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
-      if (variant) args.push("--variant", variant);
-      if (extraArgs.length > 0) args.push(...extraArgs);
-      if (message.length > 0) args.push(message);
-      return args;
-    };
+    const buildArgs = (resumeSessionId: string | null, message: string) => buildOpenCodeRunArgs({
+      resumeSessionId,
+      model,
+      variant,
+      extraArgs,
+      message,
+    });
 
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId, prompt);

@@ -1262,11 +1262,12 @@ function readAgentRuntimeModelProfile(
   if (Object.keys(profile).length === 0) {
     return { enabled: true, adapterConfig: {}, configured: false };
   }
+  const adapterConfig = parseObject(profile.adapterConfig);
 
   return {
     enabled: profile.enabled !== false,
-    adapterConfig: parseObject(profile.adapterConfig),
-    configured: true,
+    adapterConfig,
+    configured: Object.keys(adapterConfig).length > 0,
   };
 }
 
