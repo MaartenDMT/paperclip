@@ -395,6 +395,63 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("accepts corrective handoff completion when the issue is already blocked", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue: { ...issue, status: "blocked" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: null,
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "issue status blocked is already a valid disposition",
+    });
+  });
+
+  it("accepts corrective handoff completion when the issue records an explicit continuation", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue: { ...issue, status: "in_progress" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: [
+        "Still open.",
+        "",
+        "`REA-4111` still `blocked`, and `A:\\Programming\\projects\\base\\.worktrees\\rea-4034` still exists.",
+        "",
+        "Current disposition: `in_progress`",
+        "Next trigger: `REA-4111` reaches `done`, then remove the worktree and close `REA-4208`.",
+      ].join("\n"),
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "corrective handoff recorded an explicit continuation disposition",
+    });
+  });
+
   it("accepts corrective handoff completion when the issue is delegated to another agent", () => {
     const decision = decideSuccessfulRunHandoffCompletion({
       run: {

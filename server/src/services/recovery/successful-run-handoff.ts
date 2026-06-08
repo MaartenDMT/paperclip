@@ -341,6 +341,23 @@ export function hasExplicitBlockedDisposition(body: string | null | undefined) {
   );
 }
 
+export function hasExplicitContinuationDisposition(body: string | null | undefined) {
+  const normalized = (body ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+
+  const recordsInProgressState =
+    /\b(current )?(status|disposition|issue|task|work)\s*:\s*`?in_progress`?\b/.test(normalized) ||
+    /\b(stays|stay|keeps|kept|left|remains|remain)\b.{0,80}\b`?in_progress`?\b/.test(normalized);
+  if (!recordsInProgressState) return false;
+
+  return (
+    /\bnext (trigger|step|action|follow-up|followup|check)\s*:\s*\S/.test(normalized) ||
+    /\bnext step remains\b/.test(normalized) ||
+    /\bresume\b.{0,80}\b(run|from|after|when)\b/.test(normalized) ||
+    /\b(recheck|check back|wake|continue)\b.{0,120}\b(then|after|when|until)\b/.test(normalized)
+  );
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -503,11 +520,17 @@ export function decideSuccessfulRunHandoffCompletion(input: {
   if (issue.status === "in_review" && (issue.executionState || input.hasPendingInteractionOrApproval)) {
     return { kind: "accept", reason: "issue is in review with an explicit review path" };
   }
-  if (issue.status === "blocked" && input.hasExplicitBlockerPath) {
-    return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+  if (issue.status === "in_progress" && hasExplicitContinuationDisposition(input.correctiveSummary)) {
+    return { kind: "accept", reason: "corrective handoff recorded an explicit continuation disposition" };
   }
-  if (issue.status === "blocked" && hasExplicitBlockedDisposition(input.correctiveSummary)) {
-    return { kind: "accept", reason: "issue is blocked with a recorded blocker disposition" };
+  if (issue.status === "blocked") {
+    if (input.hasExplicitBlockerPath) {
+      return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+    }
+    if (hasExplicitBlockedDisposition(input.correctiveSummary)) {
+      return { kind: "accept", reason: "issue is blocked with a recorded blocker disposition" };
+    }
+    return { kind: "accept", reason: "issue status blocked is already a valid disposition" };
   }
   if (
     issue.status === "todo" &&
