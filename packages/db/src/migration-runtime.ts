@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { checkPostgresConnection, ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
@@ -33,9 +34,15 @@ export type MigrationConnection = {
   stop: () => Promise<void>;
 };
 
+export type ResolveMigrationConnectionOptions = {
+  stopStartedEmbeddedPostgres?: boolean;
+};
+
 const EMBEDDED_POSTGRES_RUNNING_READY_GRACE_MS = 5_000;
 const EMBEDDED_POSTGRES_RUNNING_READY_POLL_MS = 250;
 const EMBEDDED_POSTGRES_STABILITY_GRACE_MS = 1_500;
+const EMBEDDED_POSTGRES_STOP_TIMEOUT_MS = 10_000;
+const EMBEDDED_POSTGRES_STOP_POLL_MS = 250;
 
 function isPostgresStartupNotReadyError(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error
@@ -145,6 +152,101 @@ async function findAvailablePort(startPort: number): Promise<number> {
   );
 }
 
+export function selectEmbeddedPostgresStartPort(input: {
+  clusterAlreadyInitialized: boolean;
+  preferredPort: number;
+  preferredAvailablePort: number;
+}): number {
+  return input.clusterAlreadyInitialized ? input.preferredPort : input.preferredAvailablePort;
+}
+
+function resolveEmbeddedPostgresStopTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_STOP_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : EMBEDDED_POSTGRES_STOP_TIMEOUT_MS;
+}
+
+async function forceTerminateEmbeddedPostgres(postmasterPidFile: string): Promise<void> {
+  const pid = readEmbeddedPostgresPostmasterPid(postmasterPidFile, { requireRunning: false });
+  if (!pid) return;
+
+  if (process.platform === "win32") {
+    const { execFile } = await import("node:child_process");
+    await new Promise<void>((resolve) => {
+      const killer = execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {
+        resolve();
+      });
+      killer.on("error", () => resolve());
+    });
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (!readEmbeddedPostgresPostmasterPid(postmasterPidFile)) return;
+    await delay(EMBEDDED_POSTGRES_STOP_POLL_MS);
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Ignore; the follow-up liveness check below reports persistent failures.
+  }
+}
+
+async function stopStartedEmbeddedPostgres(
+  instance: EmbeddedPostgresInstance,
+  postmasterPidFile: string,
+): Promise<void> {
+  if (process.platform === "win32") {
+    await forceTerminateEmbeddedPostgres(postmasterPidFile);
+    const deadline = Date.now() + resolveEmbeddedPostgresStopTimeoutMs();
+    while (Date.now() < deadline) {
+      if (!readEmbeddedPostgresPostmasterPid(postmasterPidFile)) return;
+      await delay(EMBEDDED_POSTGRES_STOP_POLL_MS);
+    }
+
+    throw new Error(`Timed out stopping embedded PostgreSQL process for ${path.dirname(postmasterPidFile)}`);
+  }
+
+  const timeoutMs = resolveEmbeddedPostgresStopTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
+  let stopSettled = false;
+  let stopError: unknown;
+  void instance.stop()
+    .catch((error) => {
+      stopError = error;
+    })
+    .finally(() => {
+      stopSettled = true;
+    });
+
+  while (Date.now() < deadline) {
+    if (!readEmbeddedPostgresPostmasterPid(postmasterPidFile)) return;
+    if (stopSettled) {
+      if (stopError) throw stopError;
+      return;
+    }
+    await delay(EMBEDDED_POSTGRES_STOP_POLL_MS);
+  }
+
+  if (stopError) throw stopError;
+  await forceTerminateEmbeddedPostgres(postmasterPidFile);
+
+  const forceDeadline = Date.now() + timeoutMs;
+  while (Date.now() < forceDeadline) {
+    if (!readEmbeddedPostgresPostmasterPid(postmasterPidFile)) return;
+    await delay(EMBEDDED_POSTGRES_STOP_POLL_MS);
+  }
+
+  throw new Error(`Timed out stopping embedded PostgreSQL process for ${path.dirname(postmasterPidFile)}`);
+}
+
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   try {
     const mod = await import("embedded-postgres");
@@ -159,18 +261,24 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
+  options: ResolveMigrationConnectionOptions = {},
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
+  const clusterAlreadyInitialized = existsSync(pgVersionFile);
   const preferredAvailablePort = await findAvailablePort(preferredPort);
-  const selectedPort = preferredAvailablePort;
+  const selectedPort = selectEmbeddedPostgresStartPort({
+    clusterAlreadyInitialized,
+    preferredPort,
+    preferredAvailablePort,
+  });
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readEmbeddedPostgresPostmasterPid(postmasterPidFile);
   const runningPort = readEmbeddedPostgresPostmasterPort(postmasterPidFile);
   const preferredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`;
   const logBuffer = createEmbeddedPostgresLogBuffer();
 
-  if (!runningPid && existsSync(pgVersionFile)) {
+  if (!runningPid && clusterAlreadyInitialized) {
     try {
       const actualDataDir = await getPostgresDataDirectory(preferredAdminConnectionString);
       const matchesDataDir =
@@ -231,7 +339,7 @@ async function ensureEmbeddedPostgresConnection(
     onError: logBuffer.append,
   });
 
-  if (!existsSync(path.resolve(dataDir, "PG_VERSION"))) {
+  if (!clusterAlreadyInitialized) {
     try {
       await instance.initialise();
     } catch (error) {
@@ -242,11 +350,18 @@ async function ensureEmbeddedPostgresConnection(
       });
     }
   }
+  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
+  const targetConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`;
   try {
     await startEmbeddedPostgresWithRecovery({
       instance,
       postmasterPidFile,
       getRecentLogs: () => logBuffer.getRecentLogs(),
+      verifyStarted: () => waitForEmbeddedPostgresReady({
+        adminConnectionString,
+        databaseName: "paperclip",
+        targetConnectionString,
+      }),
       onRecovered: (message) => process.emitWarning(message),
     });
   } catch (error) {
@@ -256,20 +371,20 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
   await ensurePostgresDatabase(adminConnectionString, "paperclip");
 
   return {
-    connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
+    connectionString: targetConnectionString,
     source: `embedded-postgres@${selectedPort}`,
-    // Embedded Postgres is a shared local runtime dependency for the Paperclip
-    // control plane. Helper commands like migration-status must not tear it
-    // down on exit, or they can drop a live API server's DB out from under it.
-    stop: async () => {},
+    stop: options.stopStartedEmbeddedPostgres
+      ? () => stopStartedEmbeddedPostgres(instance, postmasterPidFile)
+      : async () => {},
   };
 }
 
-export async function resolveMigrationConnection(): Promise<MigrationConnection> {
+export async function resolveMigrationConnection(
+  options: ResolveMigrationConnectionOptions = {},
+): Promise<MigrationConnection> {
   const target = resolveDatabaseTarget();
   if (target.mode === "postgres") {
     return {
@@ -279,5 +394,5 @@ export async function resolveMigrationConnection(): Promise<MigrationConnection>
     };
   }
 
-  return ensureEmbeddedPostgresConnection(target.dataDir, target.port);
+  return ensureEmbeddedPostgresConnection(target.dataDir, target.port, options);
 }

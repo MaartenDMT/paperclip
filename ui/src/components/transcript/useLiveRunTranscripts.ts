@@ -11,6 +11,25 @@ const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
+type RunLogReadResult = Awaited<ReturnType<typeof heartbeatsApi.log>>;
+
+const inflightLogReads = new Map<string, Promise<RunLogReadResult>>();
+
+function readPersistedRunLog(runId: string, offset: number, limitBytes: number): Promise<RunLogReadResult> {
+  const key = `${runId}:${offset}:${limitBytes}`;
+  const existing = inflightLogReads.get(key);
+  if (existing) return existing;
+
+  const request = heartbeatsApi.log(runId, offset, limitBytes)
+    .finally(() => {
+      if (inflightLogReads.get(key) === request) {
+        inflightLogReads.delete(key);
+      }
+    });
+  inflightLogReads.set(key, request);
+  return request;
+}
+
 export interface RunTranscriptSource {
   id: string;
   status: string;
@@ -42,6 +61,10 @@ function runKnownLogBytes(run: RunTranscriptSource): number | null {
     ? run.logBytes
     : run.lastOutputBytes ?? run.logBytes;
   return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+}
+
+function shouldReadPersistedRunLog(run: RunTranscriptSource): boolean {
+  return run.hasStoredOutput === true || runKnownLogBytes(run) !== null;
 }
 
 export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
@@ -213,12 +236,21 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (!shouldReadPersistedRunLog(run)) {
+        setHydratedRunIds((prev) => {
+          if (prev.has(run.id)) return prev;
+          const next = new Set(prev);
+          next.add(run.id);
+          return next;
+        });
+        return;
+      }
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readPersistedRunLog(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));

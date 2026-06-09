@@ -17,7 +17,10 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
   MeetingWorkflowHealth,
+  MeetingWorkflowReconcileResult,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueDocument,
@@ -164,6 +167,7 @@ export const issuesApi = {
     companyId: string,
     options?: {
       limit?: number;
+      offset?: number;
       status?: string;
       agentId?: string;
       expectedOutput?: string;
@@ -172,6 +176,7 @@ export const issuesApi = {
   ) => {
     const params = new URLSearchParams();
     if (options?.limit) params.set("limit", String(options.limit));
+    if (options?.offset) params.set("offset", String(options.offset));
     if (options?.status) params.set("status", options.status);
     if (options?.agentId) params.set("agentId", options.agentId);
     if (options?.expectedOutput) params.set("expectedOutput", options.expectedOutput);
@@ -181,6 +186,10 @@ export const issuesApi = {
   },
   getWorkMeetingHealth: (companyId: string) =>
     api.get<MeetingWorkflowHealth>(`/companies/${companyId}/work-meetings/health`),
+  reconcileWorkMeetings: (companyId: string) =>
+    api.post<MeetingWorkflowReconcileResult>(`/companies/${companyId}/work-meetings/reconcile`, {}),
+  contributeToMeeting: (meetingId: string, data: MeetingContributionPayload) =>
+    api.post<MeetingContributionSummary>(`/meetings/${meetingId}/contributions`, data),
   linkWorkMeetingOutcome: (
     companyId: string,
     meetingId: string,

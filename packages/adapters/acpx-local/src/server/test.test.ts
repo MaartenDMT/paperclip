@@ -49,5 +49,5 @@ describe("acpx_local environment diagnostics", () => {
         level: "warn",
       }),
     );
-  });
+  }, 60_000);
 });

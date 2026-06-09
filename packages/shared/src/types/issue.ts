@@ -688,6 +688,26 @@ export interface AgentMeetingResult {
   }>;
 }
 
+export interface MeetingContributionPayload {
+  summaryMarkdown: string;
+  progress: string[];
+  blockers: string[];
+  risks: string[];
+  nextActions: string[];
+  proposedDecisions: string[];
+  betterAlternatives: string[];
+}
+
+export interface MeetingContributionSummary extends MeetingContributionPayload {
+  id: string;
+  meetingId: string;
+  agentId: string;
+  agentName: string | null;
+  agentRole: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -761,6 +781,9 @@ export interface WorkMeetingSummary {
     title: string | null;
     status: string;
   }>;
+  contributions?: MeetingContributionSummary[];
+  contributedAgentIds?: string[];
+  pendingParticipantAgentIds?: string[];
   expectedOutputs: AgentMeetingExpectedOutput[];
   result: AgentMeetingResult | null;
   resultSummaryMarkdown: string | null;
@@ -780,6 +803,10 @@ export type MeetingWorkflowTrigger =
   | "blocked_without_edge"
   | "stale_review"
   | "stale_in_progress"
+  | "active_work_pressure"
+  | "failed_run_review"
+  | "campaign_phase_review"
+  | "productivity_review"
   | "no_recent_meetings";
 
 export interface MeetingWorkflowPolicyTrigger {
@@ -821,6 +848,7 @@ export interface MeetingWorkflowHealth {
     stalePendingMeetings: number;
     meetingsLast7Days: number;
     openMeetingGaps: number;
+    unlinkedOutcomeItems: number;
     lastMeetingAt: Date | string | null;
   };
   policy: {
@@ -831,6 +859,23 @@ export interface MeetingWorkflowHealth {
     doneDefinition: string;
   };
   recommendations: MeetingWorkflowRecommendation[];
+}
+
+export interface MeetingWorkflowReconcileResult {
+  checked: number;
+  created: number;
+  requeuedPending: number;
+  cancelledUnrunnable: number;
+  resolvedTerminal: number;
+  skipped: number;
+  wakeupsRequested: number;
+  wakeupsFailed: number;
+  meetings: Array<{
+    id: string;
+    issueId: string | null;
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+  }>;
 }
 
 export type IssueThreadInteraction =

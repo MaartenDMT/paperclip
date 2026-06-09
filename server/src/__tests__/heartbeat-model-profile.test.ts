@@ -91,6 +91,34 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it("treats empty runtime profile stubs as adapter defaults", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {},
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: "cheap",
+      configSource: "adapter_default",
+      fallbackReason: null,
+      adapterType: null,
+      adapterConfig: {
+        model: "adapter-cheap",
+        modelReasoningEffort: "low",
+      },
+    });
+  });
+
   it("falls back to the primary config when the adapter does not support the requested profile", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [],

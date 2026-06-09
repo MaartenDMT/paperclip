@@ -639,8 +639,11 @@ describe("claude execute", () => {
     const commandPath = path.join(binDir, "claude");
     const capturePath = path.join(remoteWorkspace, "capture.json");
     const claudeRoot = path.join(root, ".claude");
+    const paperclipHome = path.join(root, "paperclip-home");
     const previousHome = process.env.HOME;
     const previousPath = process.env.PATH;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
 
     await fs.mkdir(localWorkspace, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
@@ -650,6 +653,8 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     process.env.HOME = root;
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot;
+    process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 
     try {
@@ -705,6 +710,10 @@ describe("claude execute", () => {
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 10_000);

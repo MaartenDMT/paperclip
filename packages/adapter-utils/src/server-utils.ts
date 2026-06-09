@@ -136,6 +136,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Do not report product facts from stale memory when a fresh check failed. If an API/site fetch returns HTML, auth, login, permission, timeout, or non-parseable output, treat that as an access/runtime blocker and say the audit could not be verified from live data.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
@@ -736,7 +737,7 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves. If a fresh API/site check failed and returned HTML, auth, login, timeout, permission, or non-parseable output, treat that as an access/runtime blocker instead of restating stale product findings as current fact.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? (normalized.meetingId ? "none (company meeting)" : "unknown")}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -756,7 +757,7 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves. If a fresh API/site check failed and returned HTML, auth, login, timeout, permission, or non-parseable output, treat that as an access/runtime blocker instead of restating stale product findings as current fact.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? (normalized.meetingId ? "none (company meeting)" : "unknown")}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -815,6 +816,7 @@ export function renderPaperclipWakePrompt(
     if (normalized.meetingId) {
       lines.push(
         `- Respond with POST /api/meetings/${normalized.meetingId}/respond`,
+        `- If this wake is for your participant update rather than chair synthesis, submit POST /api/meetings/${normalized.meetingId}/contributions first and do not close the meeting.`,
         "- Meetings are first-class company coordination threads. They may link to issues, create issues, update workflows, correct memory, or capture ideas, but they are not issue comments.",
         "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
       );
@@ -1352,6 +1354,39 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function localCliPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const homeDir = env.HOME || env.USERPROFILE || os.homedir();
+  if (process.platform === "win32") {
+    const userProfile = env.USERPROFILE || homeDir;
+    const appData = env.APPDATA || (userProfile ? path.join(userProfile, "AppData", "Roaming") : "");
+    const localAppData = env.LOCALAPPDATA || (userProfile ? path.join(userProfile, "AppData", "Local") : "");
+    return [
+      userProfile ? path.join(userProfile, ".local", "bin") : "",
+      appData ? path.join(appData, "npm") : "",
+      appData ? path.join(appData, "Python", "Scripts") : "",
+      localAppData ? path.join(localAppData, "pnpm") : "",
+    ].filter(Boolean);
+  }
+  return [
+    homeDir ? path.join(homeDir, ".local", "bin") : "",
+    homeDir ? path.join(homeDir, "bin") : "",
+  ].filter(Boolean);
+}
+
+function appendPathEntries(pathValue: string, entries: string[]): string {
+  const existing = pathValue.split(path.delimiter).filter(Boolean);
+  const seen = new Set(existing.map((entry) =>
+    process.platform === "win32" ? entry.toLowerCase() : entry,
+  ));
+  for (const entry of entries) {
+    const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+    if (seen.has(key)) continue;
+    existing.push(entry);
+    seen.add(key);
+  }
+  return existing.join(path.delimiter);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1522,9 +1557,14 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const additions = localCliPathEntries(env);
+  if (typeof env.PATH === "string" && env.PATH.length > 0) {
+    return { ...env, PATH: appendPathEntries(env.PATH, additions) };
+  }
+  if (typeof env.Path === "string" && env.Path.length > 0) {
+    return { ...env, Path: appendPathEntries(env.Path, additions) };
+  }
+  return { ...env, PATH: appendPathEntries(defaultPathForPlatform(), additions) };
 }
 
 export async function ensureAbsoluteDirectory(

@@ -40,6 +40,9 @@ tmp/
 feedback-export-*
 diagnostics/
 .codex-logs/
+.codex-temp/
+.playwright-mcp/
+server/ui-dist/
 
 # Editor / tool temp files
 *.tmp

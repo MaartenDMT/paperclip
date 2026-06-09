@@ -1,9 +1,13 @@
 import {
   executeSimpleCliAdapter,
+  hasSimpleCliTerminalResult,
   testSimpleCliEnvironment,
   type SimpleCliAdapterDefinition,
 } from "@paperclipai/adapter-utils/simple-cli-server";
-import { detectSimpleCliModel } from "@paperclipai/adapter-utils/simple-cli-model-detection";
+import {
+  detectSimpleCliModel,
+  type SimpleCliModelDetectionOptions,
+} from "@paperclipai/adapter-utils/simple-cli-model-detection";
 import type { AdapterExecutionContext, AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import { DEFAULT_KIMI_LOCAL_MODEL, label, SANDBOX_INSTALL_COMMAND, type } from "../index.js";
 
@@ -17,10 +21,20 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
   defaultGraceSec: 20,
   authEnvKeys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
   biller: "kimi",
-  buildArgs({ prompt, model, extraArgs, config }) {
-    const args = ["--print", "--output-format", "stream-json"];
+  terminalResultCleanup: {
+    graceMs: 5_000,
+    hasTerminalResult: hasSimpleCliTerminalResult,
+  },
+  buildArgs({ prompt, model, extraArgs }) {
+    // Kimi's non-interactive `--prompt` mode is mutually exclusive with every
+    // permission flag (`--yolo`, `--auto`, `--plan`) — passing one fails with
+    // "Cannot combine --prompt with --yolo." and aborts the run (adapter_failed).
+    // Prompt mode already runs fully non-interactively and auto-approves tool
+    // actions, so `dangerouslySkipPermissions` needs no flag here. To force a
+    // different posture, set `default_permission_mode` in the user's kimi
+    // config.toml rather than on the command line.
+    const args = ["--output-format", "stream-json"];
     if (model && model !== DEFAULT_KIMI_LOCAL_MODEL) args.push("--model", model);
-    if (config.dangerouslySkipPermissions === true) args.push("--yolo");
     args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;
@@ -35,7 +49,7 @@ export function testEnvironment(ctx: AdapterEnvironmentTestContext) {
   return testSimpleCliEnvironment(ctx, kimiDefinition);
 }
 
-export function detectModel() {
+export function detectModel(opts: SimpleCliModelDetectionOptions = {}) {
   return detectSimpleCliModel({
     provider: "kimi",
     defaultModel: DEFAULT_KIMI_LOCAL_MODEL,
@@ -49,5 +63,5 @@ export function detectModel() {
       "{APPDATA}/kimi/config.toml",
     ],
     modelKeys: ["default_model", "model", "modelName", "model_name"],
-  });
+  }, opts);
 }

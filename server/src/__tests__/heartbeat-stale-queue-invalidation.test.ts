@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -180,7 +180,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function seedCompanyAndAgent(opts: SeedOptions = {}): Promise<SeedResult> {
     const companyId = randomUUID();
@@ -289,6 +289,51 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it("checks the management queue cap inside the issue wake transaction", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      agentName: "Manager",
+      agentRole: "manager",
+      maxConcurrentRuns: 20,
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Management follow-up",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId: randomUUID(),
+        wakeReason: `management_queue_${i}`,
+      });
+    }
+
+    const result = await Promise.race([
+      heartbeat.wakeup(agentId, {
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: { issueId },
+      }),
+      new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 1_000)),
+    ]);
+
+    expect(result).not.toBe("timed_out");
+    expect(result).toBeNull();
+
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "management_queue_cap_reached"))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({ status: "skipped", reason: "management_queue_cap_reached" });
+  });
 
   it("cancels queued runs when the issue assignee changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
@@ -1448,6 +1493,191 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
+
+  it("reconciles queued wakeups after their linked run is already terminal", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued wakeup linked to cancelled run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    const finishedAt = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt,
+        error: "Cancelled by queue hygiene test",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeat.reconcilePersistedHeartbeatRuntimeState();
+
+    const wakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(wakeup).toMatchObject({
+      status: "cancelled",
+      error: "Cancelled by queue hygiene test",
+    });
+    expect(wakeup?.finishedAt).toEqual(finishedAt);
+  });
+
+  it("reaps dead in-memory local executions and frees local launch capacity", async () => {
+    const { companyId, agentId: firstAgentId } = await seedCompanyAndAgent({
+      agentName: "HungLocalAgent1",
+    });
+    const additionalAgentIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(agents).values(
+      additionalAgentIds.map((agentId, index) => ({
+        id: agentId,
+        companyId,
+        name: `HungLocalAgent${index + 2}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      })),
+    );
+    const agentIds = [firstAgentId, ...additionalAgentIds];
+
+    const runIssueIds = new Map<string, string>();
+    const hungRunIds = new Set<string>();
+    const runIds: string[] = [];
+    const releaseHungRuns: Array<() => void> = [];
+    for (const agentId of agentIds) {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: `Execution slot test ${agentId}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      const { runId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_assigned",
+      });
+      runIds.push(runId);
+      runIssueIds.set(runId, issueId);
+    }
+    for (const runId of runIds.slice(0, 3)) {
+      hungRunIds.add(runId);
+    }
+
+    mockAdapterExecute.mockImplementation(async (context) => {
+      const runId = context?.runId;
+      if (typeof runId !== "string") throw new Error("missing run id");
+      if (hungRunIds.has(runId)) {
+        const releasedResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Released stale launch-capacity test run.",
+          provider: "test",
+          model: "test-model",
+        };
+        return new Promise<typeof releasedResult>((resolve) => {
+          releaseHungRuns.push(() =>
+            resolve(releasedResult),
+          );
+        });
+      }
+
+      const issueId = runIssueIds.get(runId);
+      if (issueId) {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date(), executionRunId: null })
+          .where(eq(issues.id, issueId));
+      }
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Recovered launch capacity test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await expect(waitForCondition(async () => {
+      const rows = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, runIds.slice(0, 3)));
+      return rows.length === 3 && rows.every((row) => row.status === "running") && releaseHungRuns.length === 3;
+    }, 20_000)).resolves.toBe(true);
+
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: staleAt,
+        processStartedAt: staleAt,
+        lastOutputAt: null,
+        processPid: null,
+        processGroupId: null,
+        updatedAt: staleAt,
+      })
+      .where(inArray(heartbeatRuns.id, runIds.slice(0, 3)));
+
+    const beforeReapFourth = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runIds[3]!))
+      .then((rows) => rows[0] ?? null);
+    expect(beforeReapFourth?.status).toBe("queued");
+
+    const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1 });
+    expect(reaped.runIds.sort()).toEqual(runIds.slice(0, 3).sort());
+    for (const release of releaseHungRuns) release();
+
+    await heartbeat.resumeQueuedRuns();
+
+    await expect(waitForCondition(async () => {
+      const row = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runIds[3]!))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "succeeded";
+    }, 20_000)).resolves.toBe(true);
+
+    const fourthRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runIds[3]!))
+      .then((rows) => rows[0] ?? null);
+    expect(fourthRun?.status).toBe("succeeded");
+  }, 30_000);
 
   it("cancels queued continuation recovery when the continuation summary parks executor work for review", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

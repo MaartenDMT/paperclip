@@ -14,6 +14,12 @@ export interface RunLivenessFields {
   nextAction: string | null;
 }
 
+export interface LiveRunQueueDiagnostic {
+  code: string;
+  label: string;
+  detail: string;
+}
+
 export interface ActiveRunForIssue {
   id: string;
   status: string;
@@ -36,6 +42,7 @@ export interface ActiveRunForIssue {
   lastUsefulActionAt?: string | Date | null;
   nextAction?: string | null;
   outputSilence?: HeartbeatRun["outputSilence"];
+  queueDiagnostic?: LiveRunQueueDiagnostic | null;
 }
 
 export interface LiveRunForIssue {
@@ -60,6 +67,7 @@ export interface LiveRunForIssue {
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   outputSilence?: HeartbeatRun["outputSilence"];
+  queueDiagnostic?: LiveRunQueueDiagnostic | null;
 }
 
 export interface WatchdogDecisionInput {

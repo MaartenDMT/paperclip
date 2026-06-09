@@ -6,28 +6,58 @@
  * Paperclip companies in the same instance.
  */
 import postgres from "postgres";
+import { pathToFileURL } from "node:url";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 const APPLY = process.argv.includes("--apply");
 const FIX_UNSTABLE = process.argv.includes("--fix-unstable-runtime");
+const FICTION_PRIORITY_ONLY = process.argv.includes("--fiction-priority-only");
 const COMPANY_ARG = readArg("--company");
 
 const SITE_QA_RE = /(qa|quality|ux|check|monitor|production|website|catalog qa|author experience|interaction design)/i;
-const FICTION_RE = /(fiction|storybook|story book|novel|writer|editor|narrative|creative|lore|world|manuscript|plot|character|graphic novel)/i;
+const FICTION_RE = /(fiction|storybook|story book|novel|novella|writer|editor|narrative|creative|lore|world|manuscript|plot|character|graphic novel|series|fantasy|sci-fi|science fiction|genre[- ]?mix)/i;
 const SITE_QA_AGENT_NAME_RE =
   /^(UXDesigner|QA Engineer|Catalog QA Analyst|UX Optimization Analyst|Interaction Design Optimizer|Admin Operations QA Analyst|Author Experience QA Analyst)$/i;
 const FICTION_AGENT_NAME_RE =
-  /^(Fiction Director|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer)$/i;
+  /^(Fiction Director|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer|Novella Writer|Series Architect|Genre-Mix Architect|Sci-Fi Architect|Fantasy Architect)$/i;
+const PAUSED_FICTION_AGENT_NAME_RE = /^(Short Fiction Writer|Novella Writer)$/i;
 
 const CODEX_MODEL = "gpt-5.3-codex";
 const STRATEGY_MODEL = "o3";
 const CREATIVE_MODEL = "gpt-5.3-codex";
+export const READERSBASE_CURRENT_FICTION_PRIORITY_NOTE =
+  "Current ReadersBase fiction priority: prioritize full-length novels and series development, especially fantasy, genre-mix, and sci-fi lanes. Standalone short-story and novella production is paused for now unless the board explicitly reactivates it.";
 const CREATIVE_SYSTEM_NOTE =
-  "Production fiction quality bar: storybook work is not children-only. Create normal or interactive novels across any genre with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Images are occasional supporting assets, not the product. Target length is story-driven: roughly 50 to 200000+ words as appropriate.";
+  `Production fiction quality bar: storybook work is not children-only. Create full-length normal or interactive novels and connected series with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Treat fantasy, genre-mix, and sci-fi as priority shelves. Images are occasional supporting assets, not the product. Target length is story-driven long-form fiction: do not initiate short stories or novellas under the current priority.\n\n${READERSBASE_CURRENT_FICTION_PRIORITY_NOTE}`;
 const SITE_QA_SYSTEM_NOTE =
   "Production ReadersBase QA bar: inspect the live site critically, reproduce issues, create or update concrete tasks for every defect, and do not mark work done until the site behavior is verified or a blocker/recovery issue owns the next action.";
 const UNSTABLE_RUNTIME_NOTE =
   "Runtime reliability bar: every run must leave a concrete issue disposition: done, blocked with cause, in_review with reviewer/next action, or delegated follow-up. Do not exit after analysis without updating the issue state/comment trail.";
+const PAUSED_FICTION_REASON =
+  "Paused by ReadersBase board direction: short stories and novellas are deprioritized while full-length novels, interactive novels, fantasy, genre-mix, sci-fi, and series development take priority.";
+
+export type ReadersbaseFictionAuditAgent = {
+  id: string;
+  name: string;
+  status: string;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  recentFailures: number;
+};
+
+export type ReadersbaseFictionAgentPlan = {
+  upgrades: Array<{
+    agent: ReadersbaseFictionAuditAgent;
+    nextConfig: Record<string, unknown>;
+  }>;
+  resumes: Array<{
+    agent: ReadersbaseFictionAuditAgent;
+  }>;
+  pauses: Array<{
+    agent: ReadersbaseFictionAuditAgent;
+    reason: string;
+  }>;
+};
 
 function readArg(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -82,11 +112,43 @@ function buildCodexConfig(
   return appendPromptNote(next, options.note);
 }
 
+export function buildReadersbaseFictionAgentPlan(
+  agents: ReadersbaseFictionAuditAgent[],
+): ReadersbaseFictionAgentPlan {
+  const pauses = agents
+    .filter((agent) => PAUSED_FICTION_AGENT_NAME_RE.test(agent.name) && agent.status !== "terminated")
+    .map((agent) => ({ agent, reason: PAUSED_FICTION_REASON }));
+
+  const upgrades = agents
+    .filter((agent) => {
+      if (agent.status === "terminated") return false;
+      if (!FICTION_AGENT_NAME_RE.test(agent.name)) return false;
+      return !PAUSED_FICTION_AGENT_NAME_RE.test(agent.name);
+    })
+    .map((agent) => ({
+      agent,
+      nextConfig: buildCodexConfig(agent.adapterConfig, {
+        model: CREATIVE_MODEL,
+        effort: "xhigh",
+        note: CREATIVE_SYSTEM_NOTE,
+      }),
+    }));
+
+  const resumes = upgrades
+    .map((upgrade) => upgrade.agent)
+    .filter((agent) => agent.status === "paused")
+    .map((agent) => ({ agent }));
+
+  return { upgrades, resumes, pauses };
+}
+
 async function main() {
   const r = await resolveMigrationConnection();
   const sql = postgres(r.connectionString, { max: 1 });
   try {
-    console.log(`mode: ${APPLY ? "APPLY" : "DRY-RUN"}${COMPANY_ARG ? `, company=${COMPANY_ARG}` : ""}\n`);
+    console.log(
+      `mode: ${APPLY ? "APPLY" : "DRY-RUN"}${COMPANY_ARG ? `, company=${COMPANY_ARG}` : ""}${FICTION_PRIORITY_ONLY ? ", fiction-priority-only" : ""}\n`,
+    );
 
     const companies = await sql<Array<{ id: string; name: string; description: string | null }>>`
       SELECT id, name, description
@@ -118,6 +180,7 @@ async function main() {
       title: string | null;
       capabilities: string | null;
       status: string;
+      pause_reason: string | null;
       adapter_type: string;
       adapter_config: Record<string, unknown>;
       runtime_config: Record<string, unknown>;
@@ -128,7 +191,7 @@ async function main() {
       adapter_failures: number;
     }>>`
       SELECT
-        a.id, a.name, a.role, a.title, a.capabilities, a.status, a.adapter_type, a.adapter_config, a.runtime_config,
+        a.id, a.name, a.role, a.title, a.capabilities, a.status, a.pause_reason, a.adapter_type, a.adapter_config, a.runtime_config,
         count(hr.id)::int AS recent_runs,
         count(hr.id) FILTER (WHERE hr.status IN ('failed','timed_out','cancelled'))::int AS recent_failures,
         count(hr.id) FILTER (WHERE hr.error_code = 'missing_issue_disposition')::int AS missing_disposition,
@@ -191,14 +254,27 @@ async function main() {
       console.log(`  ${issue.fails.toString().padStart(3)} fails | ${issue.identifier ?? issue.id.slice(0, 8)} | [${issue.status}] ${issue.title}`);
     }
 
-    const upgrades = relevant.filter((agent) => {
-      if (agent.status === "terminated") return false;
-      return SITE_QA_AGENT_NAME_RE.test(agent.name) || FICTION_AGENT_NAME_RE.test(agent.name);
-    });
+    const siteQaUpgrades = FICTION_PRIORITY_ONLY
+      ? []
+      : relevant.filter((agent) => {
+          if (agent.status === "terminated") return false;
+          return SITE_QA_AGENT_NAME_RE.test(agent.name);
+        });
+    const fictionPlan = buildReadersbaseFictionAgentPlan(
+      relevant.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        status: agent.status,
+        adapterType: agent.adapter_type,
+        adapterConfig: asRecord(agent.adapter_config),
+        recentFailures: agent.recent_failures,
+      })),
+    );
 
-    const unstableRuntime = FIX_UNSTABLE
+    const unstableRuntime = FIX_UNSTABLE && !FICTION_PRIORITY_ONLY
       ? agents.filter((agent) => {
           if (agent.status === "terminated") return false;
+          if (PAUSED_FICTION_AGENT_NAME_RE.test(agent.name)) return false;
           const model = asRecord(agent.adapter_config).model;
           return agent.recent_failures >= 4 ||
             model === "gpt-5.5" ||
@@ -207,13 +283,12 @@ async function main() {
         })
       : [];
 
-    console.log(`\nPlanned agent upgrades: ${upgrades.length}`);
-    for (const agent of upgrades) {
-      const creative = FICTION_AGENT_NAME_RE.test(agent.name);
+    console.log(`\nPlanned site QA upgrades: ${siteQaUpgrades.length}`);
+    for (const agent of siteQaUpgrades) {
       const next = buildCodexConfig(asRecord(agent.adapter_config), {
-        model: creative ? CREATIVE_MODEL : CODEX_MODEL,
-        effort: creative ? "xhigh" : "high",
-        note: creative ? CREATIVE_SYSTEM_NOTE : SITE_QA_SYSTEM_NOTE,
+        model: CODEX_MODEL,
+        effort: "high",
+        note: SITE_QA_SYSTEM_NOTE,
       });
       if (!configNeedsUpdate({ adapterType: agent.adapter_type, adapterConfig: asRecord(agent.adapter_config) }, next)) {
         console.log(`  ${agent.name}: already codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
@@ -242,6 +317,77 @@ async function main() {
             status = CASE WHEN status = 'error' THEN 'idle' ELSE status END,
             pause_reason = NULL,
             paused_at = NULL,
+            updated_at = now()
+        WHERE id = ${agent.id}`;
+    }
+
+    console.log(`\nPlanned fiction priority upgrades: ${fictionPlan.upgrades.length}`);
+    for (const upgrade of fictionPlan.upgrades) {
+      const agent = agents.find((candidate) => candidate.id === upgrade.agent.id);
+      if (!agent) continue;
+      const next = upgrade.nextConfig;
+      if (!configNeedsUpdate({ adapterType: agent.adapter_type, adapterConfig: asRecord(agent.adapter_config) }, next)) {
+        console.log(`  ${agent.name}: already codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
+        continue;
+      }
+      console.log(`  ${agent.name}: ${agent.adapter_type} -> codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
+      if (!APPLY) continue;
+      await sql`
+        INSERT INTO agent_config_revisions (
+          id, company_id, agent_id, source, changed_keys, before_config, after_config, created_at
+        )
+        VALUES (
+          gen_random_uuid(),
+          ${company.id},
+          ${agent.id},
+          'readersbase-fiction-runtime-audit',
+          ${["adapter_type", "adapter_config"] as unknown as string},
+          ${{ adapterType: agent.adapter_type, adapterConfig: agent.adapter_config } as unknown as string},
+          ${{ adapterType: "codex_local", adapterConfig: next } as unknown as string},
+          now()
+        )`;
+      await sql`
+        UPDATE agents
+        SET adapter_type = 'codex_local',
+            adapter_config = ${next as unknown as string},
+            status = CASE WHEN status = 'error' THEN 'idle' ELSE status END,
+            pause_reason = NULL,
+            paused_at = NULL,
+            updated_at = now()
+        WHERE id = ${agent.id}`;
+    }
+
+    console.log(`\nPlanned fiction resumes: ${fictionPlan.resumes.length}`);
+    for (const resume of fictionPlan.resumes) {
+      const agent = agents.find((candidate) => candidate.id === resume.agent.id);
+      if (!agent) continue;
+      console.log(`  ${agent.name}: ${agent.status} -> idle`);
+      if (!APPLY) continue;
+      await sql`
+        UPDATE agents
+        SET status = 'idle',
+            pause_reason = NULL,
+            paused_at = NULL,
+            updated_at = now()
+        WHERE id = ${agent.id}
+          AND status = 'paused'`;
+    }
+
+    console.log(`\nPlanned fiction pauses: ${fictionPlan.pauses.length}`);
+    for (const pause of fictionPlan.pauses) {
+      const agent = agents.find((candidate) => candidate.id === pause.agent.id);
+      if (!agent) continue;
+      if (agent.status === "paused" && agent.pause_reason === pause.reason) {
+        console.log(`  ${agent.name}: already paused`);
+        continue;
+      }
+      console.log(`  ${agent.name}: ${agent.status} -> paused`);
+      if (!APPLY) continue;
+      await sql`
+        UPDATE agents
+        SET status = 'paused',
+            pause_reason = ${pause.reason},
+            paused_at = COALESCE(paused_at, now()),
             updated_at = now()
         WHERE id = ${agent.id}`;
     }
@@ -305,7 +451,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

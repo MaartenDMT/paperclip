@@ -4,6 +4,7 @@ import type {
   CampaignListItem,
   CampaignPhaseDetail,
   CampaignPhasePlanSubmission,
+  completeCampaignPhaseSchema,
   createCampaignPhaseSchema,
   createCampaignSchema,
   linkCampaignPhaseExecutionIssueSchema,
@@ -22,6 +23,7 @@ type ReplaceCampaignProjectsRequest = z.input<typeof replaceCampaignProjectsSche
 type CreateCampaignPhaseRequest = z.input<typeof createCampaignPhaseSchema>;
 type UpdateCampaignPhaseRequest = z.input<typeof updateCampaignPhaseSchema>;
 type LinkCampaignPhaseExecutionIssueRequest = z.input<typeof linkCampaignPhaseExecutionIssueSchema>;
+type CompleteCampaignPhaseRequest = z.input<typeof completeCampaignPhaseSchema>;
 type UpsertCampaignPhasePlanRequest = z.input<typeof upsertCampaignPhasePlanSchema>;
 type SubmitCampaignPhasePlanForReviewRequest = z.input<
   typeof submitCampaignPhasePlanForReviewSchema
@@ -45,6 +47,8 @@ export const campaignsApi = {
     api.patch<CampaignPhaseDetail>(`/campaign-phases/${phaseId}`, data),
   linkExecutionIssue: (phaseId: string, data: LinkCampaignPhaseExecutionIssueRequest) =>
     api.put<CampaignPhaseDetail>(`/campaign-phases/${phaseId}/execution-issue`, data),
+  completePhase: (phaseId: string, data: CompleteCampaignPhaseRequest = {}) =>
+    api.post<CampaignPhaseDetail>(`/campaign-phases/${phaseId}/complete`, data),
   upsertPlan: (phaseId: string, data: UpsertCampaignPhasePlanRequest) =>
     api.put<CampaignDocumentSummary>(`/campaign-phases/${phaseId}/plan`, data),
   submitPlan: (phaseId: string, data: SubmitCampaignPhasePlanForReviewRequest = {}) =>

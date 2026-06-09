@@ -27,11 +27,13 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   joinPromptSections,
+  parseJson,
   parseObject,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   renderTemplate,
   stringifyPaperclipWakePayload,
+  type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { parseSimpleCliStdoutLine } from "./simple-cli-ui.js";
 
@@ -51,6 +53,50 @@ export interface SimpleCliAdapterDefinition {
   }) => string[];
   authEnvKeys?: string[];
   biller?: string;
+  terminalResultCleanup?: TerminalResultCleanupOptions;
+}
+
+function hasTextContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (!Array.isArray(value)) return false;
+  return value.some((item) => {
+    if (typeof item === "string") return item.trim().length > 0;
+    const rec = parseObject(item);
+    const type = asString(rec.type, "");
+    if (/think|reason|tool_(?:use|call|result|output)|function/i.test(type)) return false;
+    return Boolean(
+      asString(rec.text, "").trim() ||
+      asString(rec.content, "").trim() ||
+      asString(rec.message, "").trim() ||
+      asString(rec.deltaContent, "").trim()
+    );
+  });
+}
+
+function hasToolCalls(rec: Record<string, unknown>): boolean {
+  return (Array.isArray(rec.tool_calls) && rec.tool_calls.length > 0) ||
+    (Array.isArray(rec.toolCalls) && rec.toolCalls.length > 0);
+}
+
+export function hasSimpleCliTerminalResult(output: { stdout: string; stderr?: string }): boolean {
+  for (const rawLine of output.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    const type = asString(event.type, "").trim().toLowerCase();
+    if (type === "result") return true;
+    if (type === "message_stop" || type === "done" || type === "completed") return true;
+
+    const data = parseObject(event.data);
+    const payload = Object.keys(data).length > 0 ? data : event;
+    const role = asString(payload.role, "").trim().toLowerCase();
+    const payloadType = asString(payload.type, type).trim().toLowerCase();
+    if ((role === "assistant" || payloadType === "message") && hasTextContent(payload.content) && !hasToolCalls(payload)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -324,6 +370,7 @@ export async function executeSimpleCliAdapter(
     graceSec,
     onSpawn,
     onLog,
+    terminalResultCleanup: def.terminalResultCleanup,
   });
   const stdoutSummary = summarizeSimpleCliOutput(proc.stdout);
   const stderrSummary = summarizeSimpleCliOutput(proc.stderr);

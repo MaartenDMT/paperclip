@@ -9,6 +9,7 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUN
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
+const ORIGINAL_PAPERCLIP_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 
 const {
   createAppMock,
@@ -241,6 +242,7 @@ const INITIAL_SIGTERM_LISTENERS = new Set(process.rawListeners("SIGTERM"));
 
 beforeEach(async () => {
   process.env.PAPERCLIP_HOME = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-test-"));
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
 });
 
 afterEach(() => {
@@ -254,6 +256,10 @@ afterEach(() => {
       process.removeListener("SIGTERM", listener);
     }
   }
+  if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+  else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+  if (ORIGINAL_PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+  else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_PAPERCLIP_INSTANCE_ID;
 });
 
 describe("startServer feedback export wiring", () => {
@@ -401,6 +407,9 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+
+    if (ORIGINAL_PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_PAPERCLIP_INSTANCE_ID;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {

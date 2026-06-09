@@ -2527,7 +2527,14 @@ export function issueService(db: Db) {
       }
       conditions.push(isNull(issues.hiddenAt));
 
-      const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
+      const priorityOrder = sql`CASE
+        WHEN ${issues.priority} = 'critical' THEN 0
+        WHEN ${issues.originKind} = 'campaign_phase_execution' THEN 1
+        WHEN ${issues.priority} = 'high' THEN 2
+        WHEN ${issues.priority} = 'medium' THEN 3
+        WHEN ${issues.priority} = 'low' THEN 4
+        ELSE 5
+      END`;
       const searchOrder = sql<number>`
         CASE
           WHEN ${titleStartsWithMatch} THEN 0

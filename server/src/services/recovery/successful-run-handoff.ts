@@ -6,7 +6,7 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
-export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 3;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -80,6 +80,7 @@ export type SuccessfulRunHandoffCompletionDecision =
   | {
       kind: "accept";
       reason: string;
+      autoCompleteIssue?: true;
     }
   | {
       kind: "reject";
@@ -311,6 +312,76 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+// Corrective-handoff summaries are free-form agent prose. Normalize away the
+// markdown noise agents routinely add (inline code, bold/italic markers) and
+// collapse whitespace so the disposition matchers below can stay general
+// instead of being patched one phrasing at a time.
+function normalizeDispositionText(body: string | null | undefined) {
+  return (body ?? "")
+    .toLowerCase()
+    .replace(/[`*~]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// `in_progress`, `in-progress`, and `in progress` are the same disposition;
+// match any separator (including none) so summaries are not rejected on
+// cosmetic spacing.
+const IN_PROGRESS_TOKEN = String.raw`in[\s_-]*progress`;
+const IN_PROGRESS_LABELLED = new RegExp(
+  String.raw`\b(current\s+)?(status|disposition|issue|task|work|state)\s*[:=-]?\s*${IN_PROGRESS_TOKEN}\b`,
+);
+const IN_PROGRESS_NARRATED = new RegExp(
+  String.raw`\b(stays|stay|keeps|keep|kept|leaving|left|remains|remain|still)\b.{0,80}\b${IN_PROGRESS_TOKEN}\b`,
+);
+
+export function hasExplicitNoRemainingWorkDisposition(body: string | null | undefined) {
+  const normalized = normalizeDispositionText(body);
+  if (!normalized) return false;
+
+  const recordsNoRemainingWork =
+    /\bremaining work\s*[:=-]?\s*(none|nothing|no\b)/.test(normalized) ||
+    /\bnext (follow-?up|action|step)\s*[:=-]?\s*(none|no action required|nothing)\b/.test(normalized) ||
+    /\bno (new )?action (is )?required\b/.test(normalized);
+  if (!recordsNoRemainingWork) return false;
+
+  return /\b(done|resolved|closed|complete|completed|false[- ]positive|no live blocker|no new action|nothing left)\b/.test(
+    normalized,
+  );
+}
+
+export function hasExplicitBlockedDisposition(body: string | null | undefined) {
+  const normalized = normalizeDispositionText(body);
+  if (!normalized) return false;
+
+  const recordsBlockedState =
+    /\b(status|disposition|issue|gate|work|task)\s*[:=-]?\s*blocked\b/.test(normalized) ||
+    /\b(set|setting|marked|marking|moved|moving|left|leaving|keeping|kept)\b.{0,80}\bblocked\b/.test(normalized) ||
+    /\bblocked\s+on\b/.test(normalized) ||
+    /\bblocking\b/.test(normalized);
+  if (!recordsBlockedState) return false;
+
+  return /\b(owner|accountable|waiting on|next (follow-?up|action|step)|unblock|blocker|defect|regression|gap|missing|blocked on)\b/.test(
+    normalized,
+  );
+}
+
+export function hasExplicitContinuationDisposition(body: string | null | undefined) {
+  const normalized = normalizeDispositionText(body);
+  if (!normalized) return false;
+
+  const recordsInProgressState =
+    IN_PROGRESS_LABELLED.test(normalized) || IN_PROGRESS_NARRATED.test(normalized);
+  if (!recordsInProgressState) return false;
+
+  return (
+    /\bnext (trigger|step|action|follow-?up|check|wake|run)\s*[:=-]?\s*\S/.test(normalized) ||
+    /\bnext step remains\b/.test(normalized) ||
+    /\bresume\b.{0,80}\b(run|from|after|when)\b/.test(normalized) ||
+    /\b(recheck|check back|wake|continue|pick (this|it) up)\b.{0,120}\b(then|after|when|until|once)\b/.test(normalized)
+  );
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -443,12 +514,13 @@ export function decideSuccessfulRunHandoff(input: {
 }
 
 export function decideSuccessfulRunHandoffCompletion(input: {
-  run: Pick<HeartbeatRunRow, "contextSnapshot">;
+  run: Pick<HeartbeatRunRow, "agentId" | "contextSnapshot">;
   issue: IssueRow | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
+  correctiveSummary?: string | null;
 }): SuccessfulRunHandoffCompletionDecision {
   if (!isSuccessfulRunHandoffRun(input.run)) {
     return { kind: "not_applicable", reason: "run is not a successful-run handoff" };
@@ -472,11 +544,34 @@ export function decideSuccessfulRunHandoffCompletion(input: {
   if (issue.status === "in_review" && (issue.executionState || input.hasPendingInteractionOrApproval)) {
     return { kind: "accept", reason: "issue is in review with an explicit review path" };
   }
-  if (issue.status === "blocked" && input.hasExplicitBlockerPath) {
-    return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+  if (issue.status === "in_progress" && hasExplicitContinuationDisposition(input.correctiveSummary)) {
+    return { kind: "accept", reason: "corrective handoff recorded an explicit continuation disposition" };
+  }
+  if (issue.status === "blocked") {
+    if (input.hasExplicitBlockerPath) {
+      return { kind: "accept", reason: "issue is blocked by a first-class blocker path" };
+    }
+    if (hasExplicitBlockedDisposition(input.correctiveSummary)) {
+      return { kind: "accept", reason: "issue is blocked with a recorded blocker disposition" };
+    }
+    return { kind: "accept", reason: "issue status blocked is already a valid disposition" };
+  }
+  if (
+    issue.status === "todo" &&
+    issue.assigneeAgentId &&
+    issue.assigneeAgentId !== input.run.agentId
+  ) {
+    return { kind: "accept", reason: "issue was delegated to another agent" };
   }
   if (input.hasActiveExecutionPath || input.hasQueuedWake) {
     return { kind: "accept", reason: "issue has an explicit continuation path" };
+  }
+  if (hasExplicitNoRemainingWorkDisposition(input.correctiveSummary)) {
+    return {
+      kind: "accept",
+      reason: "corrective handoff recorded an explicit no-remaining-work disposition",
+      autoCompleteIssue: true,
+    };
   }
 
   return {

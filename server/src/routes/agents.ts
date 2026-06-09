@@ -101,9 +101,17 @@ import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { logger } from "../middleware/logger.js";
+import { buildLiveRunQueueDiagnostic } from "./live-run-queue-diagnostics.js";
+import { computeLocalActiveRunExecutionsMax } from "../services/heartbeat-capacity.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+function asPlainRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 
 function startRouteTiming(route: string, base: Record<string, unknown> = {}) {
   const startedAt = Date.now();
@@ -1406,22 +1414,23 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
+    const adapter = findActiveServerAdapter(adapterType);
+    const adapterSupportsSkills = Boolean(adapter?.syncSkills || adapter?.listSkills);
     const requestedSkillRefs = requestedDesiredSkills
       ?? (await companySkills.listFull(companyId))
         .filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"))
         .filter((skill) => skill.compatibility !== "invalid")
         .map((skill) => skill.key);
 
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedSkillRefs,
-    );
+    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(companyId, requestedSkillRefs);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
+    const requiredSkills = adapterSupportsSkills
+      ? runtimeSkillEntries
+        .filter((entry) => entry.required)
+        .map((entry) => entry.key)
+      : [];
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
 
     return {
@@ -1646,11 +1655,7 @@ export function agentRoutes(
       const preference = readPaperclipSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, preference.desiredSkills));
       return;
     }
 
@@ -3399,6 +3404,9 @@ export function agentRoutes(
       createdAt: heartbeatRuns.createdAt,
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
+      agentRole: agentsTable.role,
+      agentTitle: agentsTable.title,
+      agentRuntimeConfig: agentsTable.runtimeConfig,
       adapterType: agentsTable.adapterType,
       logBytes: heartbeatRuns.logBytes,
       livenessState: heartbeatRuns.livenessState,
@@ -3429,6 +3437,88 @@ export function agentRoutes(
     const liveRuns = await liveRunsQuery.limit(limit);
     const targetRunCount = Math.min(minCount, limit);
 
+    const readGlobalRunningRunCount = async () => {
+      const [row] = await db
+        .select({ activeRunCount: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      const value = row?.activeRunCount;
+      const parsed = typeof value === "number" ? value : Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    type LiveRunEnrichmentRow = Parameters<typeof heartbeat.buildRunOutputSilence>[0] & {
+      status: string;
+      agentId: string;
+      issueId: string | null;
+      agentRole?: string | null;
+      agentTitle?: string | null;
+      agentName?: string | null;
+      agentRuntimeConfig?: unknown;
+    };
+    const enrichLiveRunRows = async <T extends LiveRunEnrichmentRow>(rows: T[]) => {
+      const issueIds = [...new Set(rows
+        .filter((run) => run.status === "queued")
+        .map((run) => run.issueId)
+        .filter((issueId): issueId is string => Boolean(issueId)))];
+      const issueRows = issueIds.length > 0
+        ? await db
+          .select({
+            id: issuesTable.id,
+            status: issuesTable.status,
+            assigneeAgentId: issuesTable.assigneeAgentId,
+          })
+          .from(issuesTable)
+          .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+        : [];
+      const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
+      const runningRunsByAgent = new Map<string, number>();
+      const queuedRunsByAgent = new Map<string, number>();
+      let runningRunsTotal = 0;
+      for (const run of rows) {
+        if (run.status === "running") {
+          runningRunsTotal += 1;
+          runningRunsByAgent.set(run.agentId, (runningRunsByAgent.get(run.agentId) ?? 0) + 1);
+        }
+        if (run.status === "queued") {
+          queuedRunsByAgent.set(run.agentId, (queuedRunsByAgent.get(run.agentId) ?? 0) + 1);
+        }
+      }
+      const maxLocalActiveRunExecutions = computeLocalActiveRunExecutionsMax(
+        process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+      );
+      const globalRunningRunsTotal = rows.some((run) => run.status === "queued")
+        ? await readGlobalRunningRunCount()
+        : runningRunsTotal;
+
+      return Promise.all(rows.map(async (run) => {
+        const {
+          agentRuntimeConfig,
+          agentRole,
+          agentTitle,
+          ...publicRun
+        } = run;
+        const runtimeConfig = asPlainRecord(agentRuntimeConfig);
+        const heartbeatConfig = asPlainRecord(runtimeConfig.heartbeat);
+        const configuredMaxConcurrentRuns = Number(heartbeatConfig.maxConcurrentRuns);
+        const maxConcurrentRunsForAgent = Number.isFinite(configuredMaxConcurrentRuns)
+          ? configuredMaxConcurrentRuns
+          : defaultAgentMaxConcurrentRuns({ role: agentRole, title: agentTitle, name: run.agentName });
+        return {
+          ...publicRun,
+          outputSilence: await heartbeat.buildRunOutputSilence(run),
+          queueDiagnostic: buildLiveRunQueueDiagnostic(run, {
+            issue: run.issueId ? issueById.get(run.issueId) ?? null : null,
+            runningRunsForAgent: runningRunsByAgent.get(run.agentId) ?? 0,
+            queuedRunsForAgent: queuedRunsByAgent.get(run.agentId) ?? 0,
+            maxConcurrentRunsForAgent,
+            runningRunsTotal: globalRunningRunsTotal,
+            maxLocalActiveRunExecutions,
+          }),
+        };
+      }));
+    };
+
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);
       const recentRuns = await db
@@ -3446,19 +3536,13 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      const result = await Promise.all(rows.map(async (run) => ({
-        ...run,
-        outputSilence: await heartbeat.buildRunOutputSilence(run),
-      })));
+      const result = await enrichLiveRunRows(rows);
       finishTiming({ liveCount: liveRuns.length, rowCount: result.length, paddedCount: recentRuns.length });
       res.json(result);
       return;
     }
 
-    const result = await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    })));
+    const result = await enrichLiveRunRows(liveRuns);
     finishTiming({ liveCount: liveRuns.length, rowCount: result.length, paddedCount: 0 });
     res.json(result);
   });

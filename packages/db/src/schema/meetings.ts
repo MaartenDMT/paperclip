@@ -35,6 +35,7 @@ export const meetings = pgTable(
   },
   (table) => ({
     companyStatusCreatedIdx: index("meetings_company_status_created_idx").on(table.companyId, table.status, table.createdAt),
+    companyStatusUpdatedIdx: index("meetings_company_status_updated_idx").on(table.companyId, table.status, table.updatedAt),
     companySourceIssueIdx: index("meetings_company_source_issue_idx").on(table.companyId, table.sourceIssueId),
     companyIdempotencyUq: uniqueIndex("meetings_company_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)
@@ -77,5 +78,29 @@ export const meetingIssueLinks = pgTable(
       table.linkKind,
     ),
     companyIssueIdx: index("meeting_issue_links_company_issue_idx").on(table.companyId, table.issueId),
+  }),
+);
+
+export const meetingContributions = pgTable(
+  "meeting_contributions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    meetingId: uuid("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    summaryMarkdown: text("summary_markdown").notNull(),
+    progress: jsonb("progress").$type<string[]>().notNull().default([]),
+    blockers: jsonb("blockers").$type<string[]>().notNull().default([]),
+    risks: jsonb("risks").$type<string[]>().notNull().default([]),
+    nextActions: jsonb("next_actions").$type<string[]>().notNull().default([]),
+    proposedDecisions: jsonb("proposed_decisions").$type<string[]>().notNull().default([]),
+    betterAlternatives: jsonb("better_alternatives").$type<string[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    meetingAgentUq: uniqueIndex("meeting_contributions_meeting_agent_uq").on(table.meetingId, table.agentId),
+    companyMeetingIdx: index("meeting_contributions_company_meeting_idx").on(table.companyId, table.meetingId),
+    companyAgentIdx: index("meeting_contributions_company_agent_idx").on(table.companyId, table.agentId),
   }),
 );

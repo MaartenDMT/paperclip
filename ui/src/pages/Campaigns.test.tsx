@@ -171,6 +171,7 @@ function makeCampaign(overrides: Partial<CampaignListItem> = {}): CampaignListIt
       resultDocument: null,
       approval: null,
       executionIssue: null,
+      taskProgress: null,
     },
     pendingReviewCount: 3,
     ...overrides,

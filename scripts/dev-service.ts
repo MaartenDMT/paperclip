@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import {
+  isLocalServiceRecordAlive,
   pruneStaleLocalServiceRegistryRecords,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
@@ -42,12 +43,19 @@ if (command === "stop") {
     console.log("No Paperclip dev services registered for this repo.");
     process.exit(0);
   }
+  let failedStops = 0;
   for (const record of records) {
     await terminateLocalService(record);
+    if (isLocalServiceRecordAlive(record)) {
+      const childPid = typeof record.metadata?.childPid === "number" ? `, child ${record.metadata.childPid}` : "";
+      console.error(`Failed to stop ${record.serviceName} (pid ${record.pid}${childPid})`);
+      failedStops += 1;
+      continue;
+    }
     await removeLocalServiceRegistryRecord(record.serviceKey);
     console.log(`Stopped ${record.serviceName} (pid ${record.pid})`);
   }
-  process.exit(0);
+  process.exit(failedStops > 0 ? 1 : 0);
 }
 
 console.error(`Unknown dev-service command: ${command}`);

@@ -1,4 +1,5 @@
 import type { CampaignPhaseStatus, CampaignStatus } from "../constants.js";
+import type { IssuePriority, IssueStatus } from "../constants.js";
 import type { Approval } from "./approval.js";
 
 export interface CampaignProjectSummary {
@@ -22,9 +23,19 @@ export interface CampaignIssueSummary {
   id: string;
   identifier: string | null;
   title: string;
-  status: string;
-  priority: string;
+  status: IssueStatus;
+  priority: IssuePriority;
   updatedAt: Date;
+}
+
+export interface CampaignPhaseTaskProgress {
+  source: "execution_issue" | "subtree";
+  totalCount: number;
+  openCount: number;
+  completedCount: number;
+  cancelledCount: number;
+  statusCounts: Record<IssueStatus, number>;
+  nextIssues: CampaignIssueSummary[];
 }
 
 export interface CampaignDocumentSummary {
@@ -98,6 +109,7 @@ export interface CampaignPhaseDetail extends CampaignPhase {
   resultDocument: CampaignDocumentSummary | null;
   approval: Approval | null;
   executionIssue: CampaignIssueSummary | null;
+  taskProgress: CampaignPhaseTaskProgress | null;
 }
 
 export interface CampaignListItem extends Campaign {

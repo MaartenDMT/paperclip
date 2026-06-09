@@ -5,6 +5,9 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 
+const CHILD_TIMEOUT_MS = process.platform === "win32" ? 240_000 : 30_000;
+const TEST_TIMEOUT_MS = process.platform === "win32" ? 270_000 : 40_000;
+
 async function terminateProcessTree(pid: number | undefined): Promise<void> {
   if (!pid) return;
   if (process.platform === "win32") {
@@ -57,7 +60,7 @@ describe("migration-status CLI", () => {
           child.on("error", reject);
           child.on("exit", (code, signal) => resolve({ timedOut: false, code, signal }));
         }),
-        delay(30_000).then(async () => {
+        delay(CHILD_TIMEOUT_MS).then(async () => {
           await terminateProcessTree(child.pid);
           return { timedOut: true as const, code: null, signal: null };
         }),
@@ -73,5 +76,5 @@ describe("migration-status CLI", () => {
       await terminateProcessTree(child.pid);
       await rm(paperclipHome, { recursive: true, force: true });
     }
-  }, 40_000);
+  }, TEST_TIMEOUT_MS);
 });

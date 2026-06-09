@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
+import { buildOpenCodeRunArgs, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local/ui";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 
@@ -89,6 +89,44 @@ describe("opencode_local stale session detection", () => {
       "NotFoundError: Resource not found: /Users/test/.local/share/opencode/storage/session/project/ses_missing.json";
 
     expect(isOpenCodeUnknownSessionError("", stderr)).toBe(true);
+  });
+});
+
+describe("opencode_local run args", () => {
+  it("always passes a message so opencode does not exit in help mode", () => {
+    const args = buildOpenCodeRunArgs({
+      resumeSessionId: null,
+      model: "minimax/MiniMax-M2.1",
+      message: "   ",
+    });
+
+    expect(args.slice(0, 4)).toEqual(["run", "--format", "json", "--model"]);
+    expect(args).toContain("minimax/MiniMax-M2.1");
+    expect(args.at(-1)).toContain("Continue the Paperclip agent run");
+  });
+
+  it("preserves non-empty rendered prompts as the final message argument", () => {
+    const args = buildOpenCodeRunArgs({
+      resumeSessionId: "ses_123",
+      model: "zai/glm-4.7",
+      variant: "plan",
+      extraArgs: ["--some-flag"],
+      message: "work on REA-4533",
+    });
+
+    expect(args).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--session",
+      "ses_123",
+      "--model",
+      "zai/glm-4.7",
+      "--variant",
+      "plan",
+      "--some-flag",
+      "work on REA-4533",
+    ]);
   });
 });
 

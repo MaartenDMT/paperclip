@@ -44,6 +44,27 @@ export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
 export {
+  ADAPTER_LEVEL_FAILURE_ERROR_CODES,
+  DEAD_ADAPTER_PARK_NOTICE_BODY,
+  DEFAULT_DEAD_ADAPTER_FAILURE_THRESHOLD,
+  countConsecutiveAdapterFailures,
+  decideDeadAdapterCircuitBreaker,
+  isAdapterLevelFailureRun,
+} from "./dead-adapter-circuit-breaker.js";
+export type {
+  CircuitBreakerRun,
+  DeadAdapterCircuitBreakerDecision,
+} from "./dead-adapter-circuit-breaker.js";
+export {
+  DEFAULT_MAX_RECOVERY_RESUME_CYCLES,
+  RECOVERY_BUDGET_PARK_NOTICE_BODY,
+  RECOVERY_RESUME_BOUNCE_SOURCE,
+  decideRecoveryCycleBudget,
+} from "./recovery-cycle-budget.js";
+export type {
+  RecoveryCycleBudgetDecision,
+} from "./recovery-cycle-budget.js";
+export {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,
