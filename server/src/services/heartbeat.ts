@@ -7591,6 +7591,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    errorCode?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7607,7 +7608,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
-          : "error";
+          : errorCode === "missing_issue_disposition"
+            ? "idle"
+            : "error";
 
     const updated = await db
       .update(agents)
@@ -9757,7 +9760,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, runErrorCode);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

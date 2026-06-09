@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -12,6 +13,8 @@ import {
   decideSuccessfulRunHandoffCompletion,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   hasExplicitBlockedDisposition,
+  hasExplicitContinuationDisposition,
+  hasExplicitNoRemainingWorkDisposition,
   isSuccessfulRunHandoffRequiredNoticeBody,
 } from "./successful-run-handoff.js";
 
@@ -74,7 +77,7 @@ describe("successful run handoff decision", () => {
       handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       missingDisposition: "clear_next_step",
       handoffAttempt: 1,
-      maxHandoffAttempts: 1,
+      maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
       resumeIntent: true,
       resumeFromRunId: "run-1",
       modelProfile: "cheap",
@@ -452,6 +455,34 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("accepts explicit continuation text using `in progress` spacing", () => {
+    const decision = decideSuccessfulRunHandoffCompletion({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      } as any,
+      issue: { ...issue, status: "in_progress" } as any,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      correctiveSummary: [
+        "Current disposition: in progress",
+        "Next action: close the worktree at the end of this run once REA-4034 is removed.",
+      ].join("\n"),
+    });
+
+    expect(decision).toEqual({
+      kind: "accept",
+      reason: "corrective handoff recorded an explicit continuation disposition",
+    });
+  });
+
   it("accepts corrective handoff completion when the issue is delegated to another agent", () => {
     const decision = decideSuccessfulRunHandoffCompletion({
       run: {
@@ -493,5 +524,40 @@ describe("successful run handoff decision", () => {
       hasPendingInteractionOrApproval: false,
       hasExplicitBlockerPath: false,
     })).toEqual({ kind: "accept", reason: "issue status done is terminal" });
+  });
+});
+
+describe("disposition text matchers tolerate cosmetic phrasing", () => {
+  it("recognizes continuation regardless of in-progress separator or markdown", () => {
+    for (const summary of [
+      "Current disposition: `in_progress`\nNext trigger: REA-1 reaches done.",
+      "Current disposition: in progress\nNext action: close the worktree.",
+      "Disposition: **in-progress**\nNext step: rerun once CI is green.",
+      "Status = in_progress\nNext check: wake after the deploy completes.",
+      "Issue stays in progress until the migration lands; will continue then.",
+    ]) {
+      expect(hasExplicitContinuationDisposition(summary)).toBe(true);
+    }
+  });
+
+  it("does not treat a finished or vague summary as a continuation", () => {
+    expect(hasExplicitContinuationDisposition("Marked the issue done, nothing left.")).toBe(false);
+    expect(hasExplicitContinuationDisposition("Still working on it.")).toBe(false);
+    expect(hasExplicitContinuationDisposition(null)).toBe(false);
+  });
+
+  it("recognizes blocked dispositions across markdown and separators", () => {
+    expect(hasExplicitBlockedDisposition("Disposition = **blocked**. Waiting on CTO to fix the regression.")).toBe(true);
+    expect(hasExplicitBlockedDisposition("Marking this `blocked` on the cover defect.")).toBe(true);
+    expect(hasExplicitBlockedDisposition("Blocked.")).toBe(false);
+    expect(hasExplicitBlockedDisposition("I reviewed the blocker list, no change needed.")).toBe(false);
+  });
+
+  it("recognizes no-remaining-work dispositions with markdown and 'completed'", () => {
+    expect(
+      hasExplicitNoRemainingWorkDisposition("**Remaining work:** none. The scope is completed."),
+    ).toBe(true);
+    expect(hasExplicitNoRemainingWorkDisposition("No new action required — issue resolved.")).toBe(true);
+    expect(hasExplicitNoRemainingWorkDisposition("Did some work, more to follow.")).toBe(false);
   });
 });
