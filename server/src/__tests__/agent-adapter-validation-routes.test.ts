@@ -6,6 +6,7 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  getChainOfCommand: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -201,6 +202,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
