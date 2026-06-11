@@ -646,6 +646,59 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(healthAfterLink.metrics.unlinkedOutcomeItems).toBe(5);
   });
 
+  it("repairs meeting workflow links when a stored meeting result no longer matches the current schema", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const meetingId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Recover meeting workflow",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(meetings).values({
+      id: meetingId,
+      companyId,
+      sourceIssueId: issueId,
+      purpose: "Historical operating review.",
+      status: "answered",
+      agenda: ["Review stale work."],
+      expectedOutputs: ["decisions"],
+      result: {
+        version: 2,
+        decisions: [{ summary: "Legacy object-shaped decision." }],
+      } as never,
+    });
+
+    await expect(meetingService(db).repairWorkflowMeetingLinks(companyId)).resolves.toMatchObject({
+      checked: 1,
+      sourceLinksInserted: 1,
+      outcomeLinksInserted: 0,
+    });
+    await expect(interactionsSvc.getMeetingWorkflowHealth(companyId)).resolves.toMatchObject({
+      metrics: expect.objectContaining({
+        totalMeetings: 1,
+        unlinkedOutcomeItems: 0,
+      }),
+    });
+    await expect(meetingService(db).listForCompany(companyId)).resolves.toEqual([
+      expect.objectContaining({
+        id: meetingId,
+        result: null,
+        resultSummaryMarkdown: null,
+        unlinkedOutcomeItems: 0,
+      }),
+    ]);
+  });
+
   it("persists cancelled ask_user_questions interactions without answer data", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

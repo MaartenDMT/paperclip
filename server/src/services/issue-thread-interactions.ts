@@ -59,6 +59,7 @@ import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
 import {
   countUnlinkedMeetingOutcomes,
+  parseStoredMeetingResult,
   readIssueIdsFromMeetingResult,
   setMeetingOutcomeIssueId,
   type MeetingOutcomeLinkType,
@@ -1714,12 +1715,12 @@ export function issueThreadInteractionService(db: Db) {
       const unlinkedOutcomeItems = [
         ...meetingRows.map((meeting) =>
           countUnlinkedMeetingOutcomes(
-            meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null,
+            parseStoredMeetingResult(meeting.result),
           ).unlinkedOutcomeItems,
         ),
         ...firstClassMeetingRows.map((meeting) =>
           countUnlinkedMeetingOutcomes(
-            meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null,
+            parseStoredMeetingResult(meeting.result),
           ).unlinkedOutcomeItems,
         ),
       ].reduce((sum, count) => sum + count, 0);

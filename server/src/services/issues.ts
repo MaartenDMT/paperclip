@@ -2598,9 +2598,15 @@ export function issueService(db: Db) {
             activity?.latestCommentAt ?? null,
             activity?.latestLogAt ?? null,
           ) ?? row.updatedAt;
+          const blockedBy = includeBlockedBy ? blockedByMap.get(row.id) ?? [] : [];
           return {
             ...row,
-            ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
+            ...(includeBlockedBy
+              ? {
+                blockedBy,
+                blockedByIssueIds: blockedBy.map((relation) => relation.id),
+              }
+              : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
             ...(productivityReviewByIssueId.has(row.id)
@@ -2619,9 +2625,15 @@ export function issueService(db: Db) {
           activity?.latestCommentAt ?? null,
           activity?.latestLogAt ?? null,
         ) ?? row.updatedAt;
+          const blockedBy = includeBlockedBy ? blockedByMap.get(row.id) ?? [] : [];
         return {
           ...row,
-          ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
+          ...(includeBlockedBy
+            ? {
+              blockedBy,
+              blockedByIssueIds: blockedBy.map((relation) => relation.id),
+            }
+            : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
           ...(productivityReviewByIssueId.has(row.id)

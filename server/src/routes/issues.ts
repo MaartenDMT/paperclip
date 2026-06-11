@@ -3975,6 +3975,23 @@ export function issueRoutes(
     res.json(contribution);
   });
 
+  router.get("/meetings/:meetingId", async (req, res) => {
+    const meetingId = req.params.meetingId as string;
+    const meetingsSvc = meetingService(db);
+    const meeting = await meetingsSvc.getById(meetingId);
+    if (!meeting) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    assertCompanyAccess(req, meeting.companyId);
+    const summary = await meetingsSvc.getSummaryById(meeting.companyId, meetingId);
+    if (!summary) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    res.json(summary);
+  });
+
   router.post("/meetings/:meetingId/respond", validate(respondIssueThreadInteractionSchema), async (req, res) => {
     const meetingId = req.params.meetingId as string;
     const meetingsSvc = meetingService(db);

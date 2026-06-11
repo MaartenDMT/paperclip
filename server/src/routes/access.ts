@@ -200,6 +200,30 @@ function parseSkillFrontmatter(markdown: string): { description: string } {
   };
 }
 
+const INVITE_METADATA_SKILLS = [
+  "paperclip",
+  "paperclip-create-agent",
+  "paperclip-create-plugin",
+  "paperclip-converting-plans-to-tasks",
+  "para-memory-files",
+  "karpathy-obsidian-memory",
+] as const;
+
+const INVITE_METADATA_SKILL_SET = new Set<string>(INVITE_METADATA_SKILLS);
+
+function buildInviteSkillIndexEntries(token: string) {
+  return INVITE_METADATA_SKILLS
+    .map((skillName) => ({
+      name: skillName,
+      path: `/api/invites/${token}/skills/${skillName}`,
+    }))
+    .filter((skill) => readSkillMarkdown(skill.name) !== null);
+}
+
+function isInviteMetadataSkillName(skillName: string) {
+  return INVITE_METADATA_SKILL_SET.has(skillName);
+}
+
 interface AvailableSkill {
   name: string;
   description: string;
@@ -1523,7 +1547,8 @@ function buildInviteOnboardingManifest(
   }
 ) {
   const baseUrl = requestBaseUrl(req);
-  const skillPath = `/api/invites/${token}/skills/paperclip`;
+  const inviteSkills = buildInviteSkillIndexEntries(token);
+  const skillPath = inviteSkills[0]?.path ?? `/api/invites/${token}/skills/paperclip`;
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl
@@ -1598,10 +1623,10 @@ function buildInviteOnboardingManifest(
         contentType: "text/plain"
       },
       skill: {
-        name: "paperclip",
+        name: inviteSkills[0]?.name ?? "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: `~/.openclaw/skills/${(inviteSkills[0]?.name ?? "paperclip")}/SKILL.md`
       }
     }
   };
@@ -3141,12 +3166,7 @@ export function accessRoutes(
     }
 
     res.json({
-      skills: [
-        {
-          name: "paperclip",
-          path: `/api/invites/${token}/skills/paperclip`,
-        },
-      ],
+      skills: buildInviteSkillIndexEntries(token),
     });
   });
 
@@ -3163,7 +3183,7 @@ export function accessRoutes(
     }
 
     const skillName = (req.params.skillName as string).trim().toLowerCase();
-    if (skillName !== "paperclip") throw notFound("Skill not found");
+    if (!isInviteMetadataSkillName(skillName)) throw notFound("Skill not found");
     const markdown = readSkillMarkdown(skillName);
     if (!markdown) throw notFound("Skill not found");
     res.type("text/markdown").send(markdown);

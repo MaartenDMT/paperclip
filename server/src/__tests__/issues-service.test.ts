@@ -1435,8 +1435,11 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         priority: "high",
       }),
     ]);
+    expect(byId.get(blockedId)?.blockedByIssueIds).toEqual([blockerId]);
     expect(byId.get(blockerId)?.blockedBy).toEqual([]);
+    expect(byId.get(blockerId)?.blockedByIssueIds).toEqual([]);
     expect(byId.get(unblockedId)?.blockedBy).toEqual([]);
+    expect(byId.get(unblockedId)?.blockedByIssueIds).toEqual([]);
   });
 
   it("trims list payload fields that can grow large on issue index routes", async () => {

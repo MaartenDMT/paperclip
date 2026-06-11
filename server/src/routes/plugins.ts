@@ -695,7 +695,6 @@ export function pluginRoutes(
    * Response: PluginUiContribution[]
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
-    assertBoardOrgAccess(req);
     const plugins = await registry.listByStatus("ready");
 
     const contributions: PluginUiContribution[] = plugins

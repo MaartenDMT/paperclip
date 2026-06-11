@@ -4,6 +4,7 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
+import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
@@ -216,6 +217,7 @@ export function InviteLandingPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { setSelectedCompanyId } = useCompany();
+  const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams();
   const token = (params.token ?? "").trim();
   const [authMode, setAuthMode] = useState<AuthMode>("sign_up");
@@ -284,7 +286,7 @@ export function InviteLandingPage() {
       companiesQuery.data?.some((company) => company.id === invite?.companyId),
     );
   const companyName = invite?.companyName?.trim() || null;
-  const companyDisplayName = companyName || "this Paperclip company";
+  const companyDisplayName = companyName || "this company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
   const companyBrandColor = invite?.companyBrandColor?.trim() || null;
   const invitedByUserName = invite?.invitedByUserName?.trim() || null;
@@ -310,6 +312,20 @@ export function InviteLandingPage() {
     sessionQuery.data?.user.name?.trim() ||
     sessionQuery.data?.user.email?.trim() ||
     "this account";
+
+  const invitePageBreadcrumb = useMemo(() => {
+    if (!token) return "Invite";
+    if (invite?.inviteType === "bootstrap_ceo") return "Set up Paperclip";
+    if (invite?.inviteType === "company_join" && invite?.allowedJoinTypes === "agent") {
+      return "Submit agent invite";
+    }
+    if (companyName) return `Join ${companyName}`;
+    return "Join company invite";
+  }, [companyName, invite?.allowedJoinTypes, invite?.inviteType, token]);
+
+  useEffect(() => {
+    setBreadcrumbs([{ label: invitePageBreadcrumb }]);
+  }, [invitePageBreadcrumb, setBreadcrumbs]);
 
   const authCanSubmit =
     email.trim().length > 0 &&

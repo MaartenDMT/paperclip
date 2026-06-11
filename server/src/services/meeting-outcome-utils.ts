@@ -1,4 +1,4 @@
-import type { AgentMeetingExpectedOutput, AgentMeetingResult } from "@paperclipai/shared";
+import { agentMeetingResultSchema, type AgentMeetingExpectedOutput, type AgentMeetingResult } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 export type MeetingOutcomeLinkType =
@@ -8,6 +8,12 @@ export type MeetingOutcomeLinkType =
   | "memory_correction"
   | "idea"
   | "agent_performance_review";
+
+export function parseStoredMeetingResult(result: unknown): AgentMeetingResult | null {
+  if (!result) return null;
+  const parsed = agentMeetingResultSchema.safeParse(result);
+  return parsed.success ? parsed.data : null;
+}
 
 export function readIssueIdsFromMeetingResult(result: AgentMeetingResult | null) {
   if (!result) return [];

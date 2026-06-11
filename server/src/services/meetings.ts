@@ -27,6 +27,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import {
   countUnlinkedMeetingOutcomes,
+  parseStoredMeetingResult,
   readIssueIdsFromMeetingResult,
   setMeetingOutcomeIssueId,
   type MeetingOutcomeLinkType,
@@ -445,7 +446,7 @@ export function meetingService(db: Db) {
     let defaultCompanyGoalId: string | null | undefined;
 
     for (const meeting of rows) {
-      const result = meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null;
+      const result = parseStoredMeetingResult(meeting.result);
       const outcomeIssueIds = readIssueIdsFromMeetingResult(result);
       const candidateIssueIds = [
         meeting.sourceIssueId,
@@ -843,7 +844,7 @@ export function meetingService(db: Db) {
 
     const now = Date.now();
     return rows.map((row) => {
-      const result = row.result ? agentMeetingResultSchema.parse(row.result) : null;
+      const result = parseStoredMeetingResult(row.result);
       const unlinked = countUnlinkedMeetingOutcomes(result);
       const linkedIssues = linkedIssuesByMeetingId.get(row.id) ?? [];
       const participants = participantsByMeetingId.get(row.id) ?? [];
@@ -893,6 +894,11 @@ export function meetingService(db: Db) {
         resolvedAt: row.resolvedAt ?? null,
       };
     });
+  }
+
+  async function getSummaryById(companyId: string, meetingId: string) {
+    const rows = await listForCompany(companyId, { limit: 200 });
+    return rows.find((row) => row.id === meetingId) ?? null;
   }
 
   async function respond(meetingId: string, input: MeetingRespondInput, actor: MeetingActor) {
@@ -1326,6 +1332,7 @@ export function meetingService(db: Db) {
 
   return {
     getById: getMeetingById,
+    getSummaryById,
     isParticipant,
     createFromRecommendation,
     contribute,
