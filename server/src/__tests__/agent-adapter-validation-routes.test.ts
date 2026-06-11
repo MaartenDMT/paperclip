@@ -12,6 +12,8 @@ const mockAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  getMembership: vi.fn(),
+  listPrincipalGrants: vi.fn(),
   ensureMembership: vi.fn(),
   setPrincipalPermission: vi.fn(),
 }));
@@ -194,6 +196,8 @@ describe("agent routes adapter validation", () => {
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.getMembership.mockResolvedValue(null);
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);

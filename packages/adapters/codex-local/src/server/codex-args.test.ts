@@ -67,7 +67,7 @@ describe("buildCodexExecArgs", () => {
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex",
+      model: "gpt-5.4-mini",
       fastMode: true,
     });
 
@@ -81,7 +81,7 @@ describe("buildCodexExecArgs", () => {
       "--json",
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.4-mini",
       "-",
     ]);
   });

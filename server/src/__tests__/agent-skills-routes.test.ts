@@ -777,6 +777,8 @@ describe.sequential("agent skill routes", () => {
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: [
               "paperclipai/paperclip/paperclip",
+              "company/company-1/caveman",
+              "company/company-1/research",
             ],
           }),
         }),
