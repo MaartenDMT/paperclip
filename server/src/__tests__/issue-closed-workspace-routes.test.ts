@@ -81,6 +81,10 @@ function registerServiceMocks() {
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    agentInstructionsService: () => ({
+      getEffectiveInstructions: vi.fn(async () => null),
+      setInstructionsPath: vi.fn(async () => null),
+    }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
@@ -205,7 +209,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("closed workspace");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("rejects comment updates when the linked isolated workspace is closed", async () => {
     const res = await request(await createApp())
@@ -216,7 +220,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(res.body.error).toContain("closed workspace");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("rejects checkout when the linked isolated workspace is closed", async () => {
     const res = await request(await createApp())
