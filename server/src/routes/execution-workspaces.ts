@@ -32,6 +32,14 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+const MAX_EXECUTION_WORKSPACES_LIST_LIMIT = 500;
+
+function parseExecutionWorkspaceListLimit(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.min(parsed, MAX_EXECUTION_WORKSPACES_LIST_LIMIT);
+}
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -47,6 +55,7 @@ export function executionWorkspaceRoutes(db: Db) {
       issueId: req.query.issueId as string | undefined,
       status: req.query.status as string | undefined,
       reuseEligible: req.query.reuseEligible === "true",
+      limit: parseExecutionWorkspaceListLimit(req.query.limit),
     };
     const workspaces = req.query.summary === "true"
       ? await svc.listSummaries(companyId, filters)

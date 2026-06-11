@@ -14,8 +14,8 @@ describe("codexModelDefaultsForRole", () => {
       fallbackAdapterType: "codex_local",
       fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
-      fallbackModel: "gpt-5.3-codex",
-      fallbackReasoningEffort: "high",
+      fallbackModel: "gpt-5.4",
+      fallbackReasoningEffort: "medium",
     });
     expect(codexModelDefaultsForRole("security").useCase).toBe("strong");
     expect(codexModelDefaultsForRole("devops").useCase).toBe("strong");
@@ -24,11 +24,11 @@ describe("codexModelDefaultsForRole", () => {
   it("uses middle Codex defaults for build and research roles", () => {
     expect(codexModelDefaultsForRole("engineer")).toEqual({
       useCase: "middle",
-      primaryModel: "gpt-5.3-codex",
+      primaryModel: "gpt-5.4",
       fallbackAdapterType: "codex_local",
       fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
-      fallbackModel: "gpt-5.2",
+      fallbackModel: "gpt-5.4",
       fallbackReasoningEffort: "medium",
     });
     expect(codexModelDefaultsForRole("researcher").useCase).toBe("middle");
@@ -38,12 +38,12 @@ describe("codexModelDefaultsForRole", () => {
   it("uses weaker Codex defaults for broad operational roles", () => {
     expect(codexModelDefaultsForRole("general")).toEqual({
       useCase: "weaker",
-      primaryModel: "gpt-5.2",
+      primaryModel: "gpt-5.4",
       fallbackAdapterType: "codex_local",
       fallbackCommand: "codex",
       fallbackProvider: CODEX_LOCAL_FALLBACK_PROVIDER,
-      fallbackModel: "gpt-5.4-mini",
-      fallbackReasoningEffort: "low",
+      fallbackModel: "gpt-5.4",
+      fallbackReasoningEffort: "medium",
     });
     expect(codexModelDefaultsForRole("qa").useCase).toBe("weaker");
     expect(codexModelDefaultsForRole("designer").useCase).toBe("weaker");
@@ -54,8 +54,8 @@ describe("codexModelDefaultsForUseCase", () => {
   it("falls back to middle defaults for unknown use cases", () => {
     expect(codexModelDefaultsForUseCase("")).toMatchObject({
       useCase: "middle",
-      primaryModel: "gpt-5.3-codex",
-      fallbackModel: "gpt-5.2",
+      primaryModel: "gpt-5.4",
+      fallbackModel: "gpt-5.4",
     });
   });
 });

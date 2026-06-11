@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
+  checkPostgresConnection,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -494,7 +495,9 @@ export async function startServer(): Promise<StartedServer> {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    db = createDb(config.databaseUrl);
+    db = createDb(config.databaseUrl, {
+      max: Math.max(1, Math.floor(Number(process.env.PAPERCLIP_DB_POOL_MAX ?? 20))),
+    });
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
@@ -568,12 +571,14 @@ export async function startServer(): Promise<StartedServer> {
           targetConnectionString: candidateConnectionString,
         });
         if (!ready) {
-          throw new Error(
-            `embedded postgres pid ${runningPid} exists but port ${candidatePort} did not become ready within the grace window`,
+          logger.warn(
+            `Embedded PostgreSQL pid ${runningPid} exists but port ${candidatePort} did not become ready within the grace window; attempting managed restart instead.`,
           );
+          shouldStartManagedEmbeddedPostgres = true;
+        } else {
+          port = candidatePort;
+          logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
         }
-        port = candidatePort;
-        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
       } catch (err) {
         if (!isEmbeddedPostgresStartupTransientError(err)) {
           throw err;
@@ -643,6 +648,11 @@ export async function startServer(): Promise<StartedServer> {
           instance: embeddedPostgres,
           postmasterPidFile,
           getRecentLogs: () => logBuffer.getRecentLogs(),
+          verifyStarted: () => waitForEmbeddedPostgresReady({
+            adminConnectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`,
+            databaseName: "paperclip",
+            targetConnectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+          }),
           onRecovered: (message) => logger.warn(message),
         });
       } catch (err) {
@@ -670,7 +680,9 @@ export async function startServer(): Promise<StartedServer> {
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, {
+      max: Math.max(1, Math.floor(Number(process.env.PAPERCLIP_EMBEDDED_POSTGRES_POOL_MAX ?? 3))),
+    });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     startupDebug("startServer: embedded postgres ready");
@@ -855,6 +867,9 @@ export async function startServer(): Promise<StartedServer> {
     uiMode,
     serverPort: listenPort,
     storageService,
+    databaseProbe: async () => {
+      await checkPostgresConnection(activeDatabaseConnectionString);
+    },
     feedbackExportService: feedback,
     databaseBackupService: {
       runManualBackup: async () => {
@@ -944,6 +959,9 @@ export async function startServer(): Promise<StartedServer> {
     const issueThreadInteractions = issueThreadInteractionService(db as any);
     const memoryMaintenance = memoryMaintenanceRoutineService(db as any);
     const executionWorkspaces = executionWorkspaceService(db as any);
+    type ProductivityReviewReconcileResult = Awaited<ReturnType<typeof heartbeat.reconcileProductivityReviews>>;
+    let productivityReviewReconcileInFlight: Promise<ProductivityReviewReconcileResult> | null = null;
+    let periodicHeartbeatRecoveryInFlight = false;
     let lastMemoryMaintenanceRoutineReconcileAt = 0;
     const reconcileMeetings = async (source: "startup" | "periodic") => {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
@@ -952,9 +970,10 @@ export async function startServer(): Promise<StartedServer> {
         const result = await issueThreadInteractions.reconcileMeetingWorkflow(companyId);
         created += result.created;
         for (const meeting of result.meetings) {
-          const agentIdsToWake = [meeting.chairAgentId ?? meeting.participantAgentIds[0]].filter(
-            (agentId): agentId is string => Boolean(agentId),
-          );
+          const agentIdsToWake = [
+            ...meeting.participantAgentIds,
+            ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
+          ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
           for (const agentId of agentIdsToWake) {
             try {
               await heartbeat.wakeup(agentId, {
@@ -1004,6 +1023,35 @@ export async function startServer(): Promise<StartedServer> {
     const reconcileStaleSharedExecutionWorkspaces = async () => {
       return executionWorkspaces.reconcileStaleSharedWorkspaces();
     };
+    const reconcileProductivityReviews = async (): Promise<ProductivityReviewReconcileResult & { coalesced?: boolean }> => {
+      if (productivityReviewReconcileInFlight) {
+        return {
+          scanned: 0,
+          created: 0,
+          updated: 0,
+          existing: 0,
+          snoozed: 0,
+          creationCapped: 0,
+          skipped: 0,
+          failed: 0,
+          reassigned: 0,
+          reviewIssueIds: [],
+          failedIssueIds: [],
+          reassignedReviewIssueIds: [],
+          coalesced: true,
+        };
+      }
+
+      const task = heartbeat.reconcileProductivityReviews();
+      productivityReviewReconcileInFlight = task;
+      try {
+        return await task;
+      } finally {
+        if (productivityReviewReconcileInFlight === task) {
+          productivityReviewReconcileInFlight = null;
+        }
+      }
+    };
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -1047,7 +1095,7 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
+        const reviewed = await reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
@@ -1128,48 +1176,62 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
-      void heartbeat
-        .reconcilePersistedHeartbeatRuntimeState()
-        .then(() => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }))
-        .then(() => heartbeat.promoteDueScheduledRetries())
-        .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-          if (
-            promotion.promoted > 0 ||
-            reconciled.assignmentDispatched > 0 ||
-            reconciled.dispatchRequeued > 0 ||
-            reconciled.continuationRequeued > 0 ||
-            reconciled.successfulRunHandoffEscalated > 0 ||
-            reconciled.escalated > 0
-          ) {
-            logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-              "periodic heartbeat recovery changed assigned issue state",
-            );
-          }
-        })
-        .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
-          }
-        })
-        .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
-          if (scanned.created > 0 || scanned.escalated > 0) {
-            logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-          }
-        })
-        .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
-          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
-        });
+      //
+      // Guard against overlapping passes: this chain runs ~8 reconciliation
+      // queries and on a busy instance can take longer than the scheduler
+      // interval. Without this guard, ticks pile up and contend on the DB
+      // connection pool, which itself triggers Postgres timeouts and a recovery
+      // feedback loop. Skip a tick whenever the previous pass is still running.
+      if (periodicHeartbeatRecoveryInFlight) {
+        logger.warn("periodic heartbeat recovery still running; skipping this tick");
+      } else {
+        periodicHeartbeatRecoveryInFlight = true;
+        void heartbeat
+          .reconcilePersistedHeartbeatRuntimeState()
+          .then(() => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }))
+          .then(() => heartbeat.promoteDueScheduledRetries())
+          .then(async (promotion) => {
+            await heartbeat.resumeQueuedRuns();
+            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            if (
+              promotion.promoted > 0 ||
+              reconciled.assignmentDispatched > 0 ||
+              reconciled.dispatchRequeued > 0 ||
+              reconciled.continuationRequeued > 0 ||
+              reconciled.successfulRunHandoffEscalated > 0 ||
+              reconciled.escalated > 0
+            ) {
+              logger.warn(
+                { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                "periodic heartbeat recovery changed assigned issue state",
+              );
+            }
+          })
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+            if (reconciled.escalationsCreated > 0) {
+              logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+            }
+          })
+          .then(async () => {
+            const scanned = await heartbeat.scanSilentActiveRuns();
+            if (scanned.created > 0 || scanned.escalated > 0) {
+              logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+            }
+          })
+          .then(async () => {
+            const reviewed = await reconcileProductivityReviews();
+            if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+              logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic heartbeat recovery failed");
+          })
+          .finally(() => {
+            periodicHeartbeatRecoveryInFlight = false;
+          });
+      }
     }, config.heartbeatSchedulerIntervalMs);
   } else if (config.heartbeatSchedulerEnabled) {
     logger.warn(

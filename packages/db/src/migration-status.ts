@@ -2,6 +2,7 @@ import { inspectMigrations } from "./client.js";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 const jsonMode = process.argv.includes("--json");
+const keepEmbeddedPostgres = process.argv.includes("--keep-embedded-postgres");
 
 function toError(error: unknown, context = "Migration status check failed"): Error {
   if (error instanceof Error) return error;
@@ -16,7 +17,7 @@ function toError(error: unknown, context = "Migration status check failed"): Err
 }
 
 async function main(): Promise<void> {
-  const connection = await resolveMigrationConnection();
+  const connection = await resolveMigrationConnection({ stopStartedEmbeddedPostgres: !keepEmbeddedPostgres });
 
   try {
     const state = await inspectMigrations(connection.connectionString);

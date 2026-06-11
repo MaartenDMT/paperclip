@@ -242,7 +242,7 @@ const INITIAL_SIGTERM_LISTENERS = new Set(process.rawListeners("SIGTERM"));
 
 beforeEach(async () => {
   process.env.PAPERCLIP_HOME = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-test-"));
-  delete process.env.PAPERCLIP_INSTANCE_ID;
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
 });
 
 afterEach(() => {
@@ -256,6 +256,10 @@ afterEach(() => {
       process.removeListener("SIGTERM", listener);
     }
   }
+  if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+  else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+  if (ORIGINAL_PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+  else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_PAPERCLIP_INSTANCE_ID;
 });
 
 describe("startServer feedback export wiring", () => {

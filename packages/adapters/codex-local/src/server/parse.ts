@@ -34,10 +34,33 @@ function parseToolInput(value: unknown): Record<string, unknown> {
 }
 
 function extractCodexSkillActivation(item: Record<string, unknown>): ParsedSkillActivation | null {
-  const toolName = asString(item.name, "") || asString(item.tool_name, "");
+  const call = parseObject(item.call);
+  const state = parseObject(item.state);
+  const toolName =
+    asString(item.name, "") ||
+    asString(item.tool_name, "") ||
+    asString(item.tool, "") ||
+    asString(call.name, "") ||
+    asString(call.tool_name, "") ||
+    asString(call.tool, "");
   if (!/^skill$/i.test(toolName.trim())) return null;
-  const input = parseToolInput(item.input ?? item.arguments ?? item.args);
-  const skillName = readSkillName(input.skill ?? input.skill_name ?? input.name);
+  const inputCandidates = [
+    item.input,
+    item.arguments,
+    item.args,
+    state.input,
+    state.arguments,
+    state.args,
+    call.input,
+    call.arguments,
+    call.args,
+  ];
+  for (const candidate of inputCandidates) {
+    const input = parseToolInput(candidate);
+    const skillName = readSkillName(input.skill ?? input.skill_name ?? input.name);
+    if (skillName) return { skillKey: skillName, skillName, source: "codex" };
+  }
+  const skillName = readSkillName(item.skill ?? item.skill_name ?? call.skill ?? call.skill_name);
   if (!skillName) return null;
   return { skillKey: skillName, skillName, source: "codex" };
 }

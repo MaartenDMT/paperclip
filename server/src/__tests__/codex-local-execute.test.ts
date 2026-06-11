@@ -63,6 +63,26 @@ type LogEntry = {
   chunk: string;
 };
 
+async function createRuntimeSkill(root: string, input: {
+  key?: string;
+  runtimeName?: string;
+  body?: string;
+  requiredReason?: string | null;
+}) {
+  const runtimeName = input.runtimeName ?? "paperclip-test-skill";
+  const key = input.key ?? `company/${runtimeName}`;
+  const source = path.join(root, "skills", runtimeName);
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\nrequired: false\n---\nUse the test skill.\n", "utf8");
+  return {
+    key,
+    runtimeName,
+    source,
+    required: false,
+    requiredReason: input.requiredReason ?? null,
+  };
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -250,6 +270,74 @@ describe("codex execute", () => {
       expect(commandNotes).toContain(
         "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.",
       );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("summarizes configured company skills in the prompt so Codex can activate relevant skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-skills-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    const skill = await createRuntimeSkill(root, {
+      key: "company/trading-campaign",
+      runtimeName: "trading-campaign",
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-skills",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+        context: {
+          paperclipWake: {
+            issue: {
+              identifier: "TRADE-9",
+              title: "Implement trading campaign workflow",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("## Configured Company Skills");
+      expect(capture.prompt).toContain("trading-campaign");
+      expect(capture.prompt).toContain("company/trading-campaign");
+      expect(capture.prompt).toContain("Activate every matching skill explicitly");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

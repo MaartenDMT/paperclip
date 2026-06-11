@@ -20,10 +20,11 @@ describe("executionWorkspacesApi.listSummaries", () => {
     await executionWorkspacesApi.listSummaries("company-1", {
       projectId: "project-1",
       reuseEligible: true,
+      limit: 25,
     });
 
     expect(mockApi.get).toHaveBeenCalledWith(
-      "/companies/company-1/execution-workspaces?projectId=project-1&reuseEligible=true&summary=true",
+      "/companies/company-1/execution-workspaces?projectId=project-1&reuseEligible=true&limit=25&summary=true",
     );
   });
 });

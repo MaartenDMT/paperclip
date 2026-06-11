@@ -47,6 +47,7 @@ type LedgerRun = RunForIssue & {
   isLive?: boolean;
   agentName?: string;
   outputSilence?: ActiveRunForIssue["outputSilence"];
+  queueDiagnostic?: ActiveRunForIssue["queueDiagnostic"];
 };
 
 type LedgerFeedItem =
@@ -262,6 +263,7 @@ function liveRunToLedgerRun(run: LiveRunForIssue | ActiveRunForIssue): LedgerRun
     resultJson: null,
     isLive: run.status === "queued" || run.status === "running",
     outputSilence: run.outputSilence,
+    queueDiagnostic: run.queueDiagnostic,
   };
 }
 
@@ -277,7 +279,13 @@ function mergeRuns(
     byId.set(
       run.id,
       existing
-        ? { ...existing, isLive: true, agentName: run.agentName, outputSilence: run.outputSilence }
+        ? {
+            ...existing,
+            isLive: true,
+            agentName: run.agentName,
+            outputSilence: run.outputSilence,
+            queueDiagnostic: run.queueDiagnostic,
+          }
         : liveRunToLedgerRun(run),
     );
   }
@@ -289,6 +297,7 @@ function mergeRuns(
         isLive: isActiveRun(existing) || isActiveRun(activeRun),
         agentName: activeRun.agentName,
         outputSilence: activeRun.outputSilence,
+        queueDiagnostic: activeRun.queueDiagnostic,
       });
     } else {
       byId.set(activeRun.id, liveRunToLedgerRun(activeRun));
@@ -314,7 +323,11 @@ function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
 function runSummary(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Agent, "name">>) {
   const agentName = compactAgentName(run, agentMap);
   if (run.status === "running") return `Running now by ${agentName}`;
-  if (run.status === "queued") return `Queued for ${agentName}`;
+  if (run.status === "queued") {
+    return run.queueDiagnostic
+      ? `${run.queueDiagnostic.label} for ${agentName}: ${run.queueDiagnostic.detail}`
+      : `Queued for ${agentName}`;
+  }
   if (run.status === "scheduled_retry") return `Automatic retry scheduled for ${agentName}`;
   return `${statusLabel(run.status)} by ${agentName}`;
 }

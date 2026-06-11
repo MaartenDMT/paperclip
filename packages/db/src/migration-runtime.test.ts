@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   isEmbeddedPostgresStartupTransientError,
+  selectEmbeddedPostgresStartPort,
   waitForEmbeddedPostgresReady,
 } from "./migration-runtime.js";
 
@@ -21,6 +22,28 @@ describe("isEmbeddedPostgresStartupTransientError", () => {
 
   it("does not hide non-startup database errors", () => {
     expect(isEmbeddedPostgresStartupTransientError(new Error("password authentication failed"))).toBe(false);
+  });
+});
+
+describe("selectEmbeddedPostgresStartPort", () => {
+  it("keeps initialized embedded clusters on the configured port", () => {
+    expect(
+      selectEmbeddedPostgresStartPort({
+        clusterAlreadyInitialized: true,
+        preferredPort: 54421,
+        preferredAvailablePort: 54422,
+      }),
+    ).toBe(54421);
+  });
+
+  it("uses the available port for a fresh embedded cluster", () => {
+    expect(
+      selectEmbeddedPostgresStartPort({
+        clusterAlreadyInitialized: false,
+        preferredPort: 54421,
+        preferredAvailablePort: 54422,
+      }),
+    ).toBe(54422);
   });
 });
 

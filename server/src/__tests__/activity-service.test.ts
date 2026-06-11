@@ -372,6 +372,95 @@ describeEmbeddedPostgres("activity service", () => {
     ]);
   });
 
+  it("reports OpenCode-derived adapters as skill-sync and activation-telemetry capable", async () => {
+    const companyId = randomUUID();
+    const minimaxAgentId = randomUUID();
+    const zaiAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: minimaxAgentId,
+        companyId,
+        name: "MiniMax Writer",
+        role: "writer",
+        status: "idle",
+        adapterType: "minimax_local",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: ["paperclip"] } },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: zaiAgentId,
+        companyId,
+        name: "Z.ai QA",
+        role: "qa",
+        status: "idle",
+        adapterType: "zai_local",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: ["paperclip"] } },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const coverage = await activityService(db).skillCoverageForCompany(companyId);
+
+    expect(coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentName: "MiniMax Writer",
+        adapterSupportsSkillSync: true,
+        adapterSupportsActivationTelemetry: true,
+        runtimeSynced: true,
+      }),
+      expect.objectContaining({
+        agentName: "Z.ai QA",
+        adapterSupportsSkillSync: true,
+        adapterSupportsActivationTelemetry: true,
+        runtimeSynced: true,
+      }),
+    ]));
+  });
+
+  it("does not flag unsupported adapters as missing desired skills", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Kimi Frontend",
+      role: "engineer",
+      status: "idle",
+      adapterType: "kimi_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const coverage = await activityService(db).skillCoverageForCompany(companyId);
+
+    expect(coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentName: "Kimi Frontend",
+        adapterSupportsSkillSync: false,
+        missingDesiredSkills: false,
+      }),
+    ]));
+  });
+
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

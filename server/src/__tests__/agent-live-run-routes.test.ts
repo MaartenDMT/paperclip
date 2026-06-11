@@ -105,7 +105,11 @@ async function createApp(
   return app;
 }
 
-function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
+function createLiveRunsDbStub(
+  rows: Array<Record<string, unknown>>,
+  issueRows: Array<Record<string, unknown>> = [],
+  globalRunningRunCount = rows.filter((row) => row.status === "running").length,
+) {
   const limit = vi.fn(async (value: number) => rows.slice(0, value));
   const orderedQuery = {
     limit,
@@ -117,10 +121,22 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnValue(orderedQuery),
   };
+  const issueQuery = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => issueRows),
+  };
+  const globalRunningCountQuery = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => [{ activeRunCount: globalRunningRunCount }]),
+  };
 
   return {
     db: {
-      select: vi.fn().mockReturnValue(query),
+      select: vi.fn((columns?: Record<string, unknown>) => (
+        columns && "activeRunCount" in columns
+          ? globalRunningCountQuery
+          : columns && "assigneeAgentId" in columns ? issueQuery : query
+      )),
     },
     limit,
   };
@@ -508,6 +524,125 @@ describe("agent live run routes", () => {
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
+  });
+
+  it("explains queued company live runs blocked by an active agent slot", async () => {
+    const rows = [
+      {
+        id: "run-active",
+        companyId: "company-1",
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: new Date("2026-04-10T09:30:00.000Z"),
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:30:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-active",
+      },
+      {
+        id: "run-queued",
+        companyId: "company-1",
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:31:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-queued",
+      },
+    ];
+    const { db } = createLiveRunsDbStub(rows, [
+      {
+        id: "issue-queued",
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+      },
+    ]);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.find((run: { id: string }) => run.id === "run-queued")).toMatchObject({
+      queueDiagnostic: {
+        code: "waiting_for_agent_slot",
+        label: "Agent busy",
+      },
+    });
+  });
+
+  it("explains queued company live runs blocked by global local capacity", async () => {
+    const rows = [
+      {
+        id: "run-queued",
+        companyId: "company-1",
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:31:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: null,
+      },
+    ];
+    const { db } = createLiveRunsDbStub(rows, [], 999);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.find((run: { id: string }) => run.id === "run-queued")).toMatchObject({
+      queueDiagnostic: {
+        code: "waiting_for_local_capacity",
+        label: "Local capacity full",
+      },
+    });
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {

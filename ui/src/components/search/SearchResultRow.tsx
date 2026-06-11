@@ -1,5 +1,5 @@
 import { memo, type ComponentType, type SVGProps } from "react";
-import { Bot, FileText, Hexagon, MessageSquare, Quote, Sparkles } from "lucide-react";
+import { Bot, FileText, Flag, Hexagon, MessageSquare, Quote } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -116,7 +116,7 @@ function SearchResultRowImpl({
         className={cn(ROW_BASE, "py-3", isActive && "bg-muted/40", className)}
         data-result-type="campaign"
       >
-        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+        <Flag className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <span className="truncate text-sm font-medium">{result.title}</span>
           {result.snippet ? (

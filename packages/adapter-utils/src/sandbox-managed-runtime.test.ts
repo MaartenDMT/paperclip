@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  listBrokenSymlinkTarExcludes,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
@@ -53,6 +54,32 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(targetDir, ".claude.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
     await expect(readFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("lists broken symlinks as tar excludes for dereferenced uploads", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-broken-links-"));
+    cleanupDirs.push(rootDir);
+    const assetsDir = path.join(rootDir, "assets");
+    const nestedDir = path.join(assetsDir, "nested");
+    const validTarget = path.join(rootDir, "valid.md");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(validTarget, "valid\n", "utf8");
+
+    try {
+      await symlink(validTarget, path.join(assetsDir, "valid.md"));
+      await symlink(path.join(rootDir, "missing.md"), path.join(nestedDir, "missing.md"));
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+      if (process.platform === "win32" && (code === "EPERM" || code === "EINVAL")) return;
+      throw error;
+    }
+
+    await expect(listBrokenSymlinkTarExcludes(assetsDir)).resolves.toEqual(
+      expect.arrayContaining(["nested/missing.md", "./nested/missing.md"]),
+    );
+    await expect(listBrokenSymlinkTarExcludes(assetsDir)).resolves.not.toContain("valid.md");
   });
 
   itLocalPosixSandbox("syncs workspace and assets through a provider-neutral sandbox client", async () => {

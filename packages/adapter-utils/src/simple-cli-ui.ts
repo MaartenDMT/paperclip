@@ -16,6 +16,74 @@ function textFromRecord(rec: Record<string, unknown>): string {
               : "";
 }
 
+function stringifyCompact(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function textFromContentArray(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const item of content) {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) parts.push(text);
+      continue;
+    }
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const text = textFromRecord(item as Record<string, unknown>).trim();
+    if (text) parts.push(text);
+  }
+  return parts.join("\n\n");
+}
+
+function toolNameFromRecord(rec: Record<string, unknown>): string {
+  const fn = typeof rec.function === "object" && rec.function !== null && !Array.isArray(rec.function)
+    ? rec.function as Record<string, unknown>
+    : null;
+  return typeof rec.name === "string" && rec.name.trim()
+    ? rec.name
+    : typeof fn?.name === "string" && fn.name.trim()
+      ? fn.name
+      : "tool";
+}
+
+function toolInputFromRecord(rec: Record<string, unknown>): unknown {
+  if (Object.prototype.hasOwnProperty.call(rec, "input")) return rec.input;
+  if (Object.prototype.hasOwnProperty.call(rec, "arguments")) return rec.arguments;
+  const fn = typeof rec.function === "object" && rec.function !== null && !Array.isArray(rec.function)
+    ? rec.function as Record<string, unknown>
+    : null;
+  if (fn && Object.prototype.hasOwnProperty.call(fn, "arguments")) return fn.arguments;
+  return {};
+}
+
+function entriesFromToolCalls(toolCalls: unknown, ts: string): TranscriptEntry[] {
+  if (!Array.isArray(toolCalls)) return [];
+  const entries: TranscriptEntry[] = [];
+  for (const toolCall of toolCalls) {
+    if (typeof toolCall !== "object" || toolCall === null || Array.isArray(toolCall)) continue;
+    const rec = toolCall as Record<string, unknown>;
+    const id = typeof rec.id === "string" && rec.id.trim()
+      ? rec.id
+      : typeof rec.toolUseId === "string" && rec.toolUseId.trim()
+        ? rec.toolUseId
+        : undefined;
+    entries.push({
+      kind: "tool_call",
+      ts,
+      name: toolNameFromRecord(rec),
+      input: toolInputFromRecord(rec),
+      ...(id ? { toolUseId: id } : {}),
+    });
+  }
+  return entries;
+}
+
 function entriesFromContentArray(content: unknown, ts: string): TranscriptEntry[] {
   if (!Array.isArray(content)) return [];
   const entries: TranscriptEntry[] = [];
@@ -28,8 +96,37 @@ function entriesFromContentArray(content: unknown, ts: string): TranscriptEntry[
     if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
     const rec = item as Record<string, unknown>;
     const text = textFromRecord(rec).trim();
-    if (!text) continue;
     const type = typeof rec.type === "string" ? rec.type : "";
+    if (/tool_(?:use|call)|function_call/i.test(type)) {
+      entries.push({
+        kind: "tool_call",
+        ts,
+        name: toolNameFromRecord(rec),
+        input: toolInputFromRecord(rec),
+        ...(typeof rec.id === "string" ? { toolUseId: rec.id } : {}),
+      });
+      continue;
+    }
+    if (/tool_(?:result|output)|function_result/i.test(type)) {
+      const toolUseId = typeof rec.toolUseId === "string"
+        ? rec.toolUseId
+        : typeof rec.tool_call_id === "string"
+          ? rec.tool_call_id
+          : typeof rec.id === "string"
+            ? rec.id
+            : "tool";
+      const content = text || stringifyCompact(rec.content ?? rec.output ?? rec.result ?? "");
+      entries.push({
+        kind: "tool_result",
+        ts,
+        toolUseId,
+        toolName: toolNameFromRecord(rec),
+        content,
+        isError: rec.isError === true || rec.error === true,
+      });
+      continue;
+    }
+    if (!text) continue;
     entries.push({ kind: /think|reason/i.test(type) || "think" in rec || "thinking" in rec ? "thinking" : "assistant", ts, text });
   }
   return entries;
@@ -63,10 +160,30 @@ export function parseSimpleCliStdoutLine(line: string, ts: string): TranscriptEn
           errors: [],
         }];
       }
+      if (rec.role === "tool" || type === "tool" || type === "tool_result" || typeof rec.tool_call_id === "string") {
+        const content = textFromContentArray(rec.content)
+          || textFromRecord(rec)
+          || stringifyCompact(rec.content ?? rec.output ?? rec.result ?? "");
+        return [{
+          kind: "tool_result",
+          ts,
+          toolUseId: typeof rec.tool_call_id === "string" ? rec.tool_call_id : typeof rec.id === "string" ? rec.id : "tool",
+          toolName: typeof rec.name === "string" ? rec.name : undefined,
+          content,
+          isError: rec.isError === true || rec.error === true,
+        }];
+      }
+      const toolCallEntries = entriesFromToolCalls(rec.tool_calls ?? rec.toolCalls, ts);
+      const nestedToolCallEntries = nestedData ? entriesFromToolCalls(nestedData.tool_calls ?? nestedData.toolCalls, ts) : [];
       const contentEntries = entriesFromContentArray(rec.content, ts);
-      if (contentEntries.length > 0) return contentEntries;
       const nestedEntries = nestedData ? entriesFromContentArray(nestedData.content, ts) : [];
-      if (nestedEntries.length > 0) return nestedEntries;
+      const structuredEntries = [
+        ...contentEntries,
+        ...nestedEntries,
+        ...toolCallEntries,
+        ...nestedToolCallEntries,
+      ];
+      if (structuredEntries.length > 0) return structuredEntries;
       const content = textFromRecord(nestedData ?? rec);
       if (content) {
         if (/thinking|reasoning/i.test(type)) return [{ kind: "thinking", ts, text: content }];

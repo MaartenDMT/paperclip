@@ -18,12 +18,19 @@ const POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS = Math.max(
   1,
   Number.parseInt(process.env.PAPERCLIP_POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS ?? "", 10) || 5,
 );
+const POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS ?? "", 10) || 60_000,
+);
 
 function createUtilitySql(url: string) {
   return postgres(url, {
     max: 1,
     connect_timeout: POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS,
     onnotice: () => {},
+    connection: {
+      idle_in_transaction_session_timeout: POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    },
   });
 }
 
@@ -73,8 +80,13 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+export function createDb(url: string, options: { max?: number } = {}) {
+  const sql = postgres(url, {
+    ...(options.max ? { max: options.max } : {}),
+    connection: {
+      idle_in_transaction_session_timeout: POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    },
+  });
   return drizzlePg(sql, { schema });
 }
 

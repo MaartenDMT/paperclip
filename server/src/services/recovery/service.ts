@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -39,6 +40,7 @@ import {
   REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  hasExplicitNoRemainingWorkDisposition,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
@@ -57,6 +59,16 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  DEAD_ADAPTER_PARK_NOTICE_BODY,
+  DEFAULT_DEAD_ADAPTER_FAILURE_THRESHOLD,
+  decideDeadAdapterCircuitBreaker,
+} from "./dead-adapter-circuit-breaker.js";
+import {
+  RECOVERY_BUDGET_PARK_NOTICE_BODY,
+  RECOVERY_RESUME_BOUNCE_SOURCE,
+  decideRecoveryCycleBudget,
+} from "./recovery-cycle-budget.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
@@ -152,16 +164,7 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 function hasNoRemainingRecoveryWorkDisposition(body: string) {
-  const normalized = body.toLowerCase().replace(/\s+/g, " ").trim();
-  if (!normalized) return false;
-
-  const recordsNoRemainingWork =
-    /\bremaining work\s*:\s*(none|nothing|no\b)/.test(normalized) ||
-    /\bnext (follow-up|followup|action)\s*:\s*(none|no action required)\b/.test(normalized) ||
-    /\bno (new )?action (is )?required\b/.test(normalized);
-  if (!recordsNoRemainingWork) return false;
-
-  return /\b(done|resolved|closed|false[- ]positive|no live blocker|no new action)\b/.test(normalized);
+  return hasExplicitNoRemainingWorkDisposition(body);
 }
 
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
@@ -463,6 +466,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRecentIssueRuns(companyId: string, issueId: string, limit: number) {
+    return db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(limit);
+  }
+
+  // Trips when the issue's most recent runs are all terminal adapter/runtime
+  // failures (broken adapter binary, lost process, billing/quota rejection). When
+  // tripped, the sweep must stop re-dispatching the dead agent and leave the issue
+  // parked in `blocked` for a human instead of bouncing it back to `todo` forever.
+  async function hasNoLiveExecutionPath(companyId: string, issueId: string) {
+    const runs = await getRecentIssueRuns(
+      companyId,
+      issueId,
+      DEFAULT_DEAD_ADAPTER_FAILURE_THRESHOLD,
+    );
+    return decideDeadAdapterCircuitBreaker({ runs }).tripped;
+  }
+
+  // How many times recovery has already auto-resumed this issue back to `todo`.
+  // Each resume is recorded in the activity log; counting them bounds recovery at
+  // the issue level so a never-disposable issue cannot churn forever.
+  async function countRecoveryResumeCycles(companyId: string, issueId: string) {
+    const rows = await db
+      .select({ value: count() })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          sql`${activityLog.details} ->> 'source' = ${RECOVERY_RESUME_BOUNCE_SOURCE}`,
+        ),
+      );
+    return rows[0]?.value ?? 0;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2055,20 +2106,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n"), {}, { authorType: "system" });
 
     if (sourceOnlyBlockedByThisWrapper) {
+      // Decide whether resuming the source is safe, or whether it should stay
+      // parked in `blocked` for a human. Two guards prevent infinite churn:
+      //   - dead adapter: the assignee has no live execution path, so resuming
+      //     just re-enters the dispatch -> adapter_failed -> re-block loop.
+      //   - recovery budget: the issue has already been auto-resumed too many
+      //     times without reaching a terminal/human-owned state, so further
+      //     resumes only re-enter the recover -> no-progress -> re-block loop.
+      // In both cases we still clear the obsolete wrapper blocker, but leave the
+      // source `blocked` instead of bouncing it back to `todo`.
+      let parkReason: "dead_adapter" | "recovery_budget" | null = null;
+      if (!sourceIsRecoveryOwned) {
+        if (await hasNoLiveExecutionPath(issue.companyId, sourceIssue.id)) {
+          parkReason = "dead_adapter";
+        } else if (
+          decideRecoveryCycleBudget({
+            priorResumeCycles: await countRecoveryResumeCycles(issue.companyId, sourceIssue.id),
+          }).exhausted
+        ) {
+          parkReason = "recovery_budget";
+        }
+      }
+      const sourceNextStatus = sourceIsRecoveryOwned ? "done" : parkReason ? "blocked" : "todo";
       await issuesSvc.update(sourceIssue.id, {
-        status: sourceIsRecoveryOwned ? "done" : "todo",
+        status: sourceNextStatus,
         blockedByIssueIds: [],
       });
+      const sourceMessage = sourceIsRecoveryOwned
+        ? "Paperclip closed this recovery-owned source issue because its only unresolved blocker was an obsolete recovery wrapper."
+        : parkReason === "dead_adapter"
+          ? "Paperclip cleared the obsolete recovery wrapper but kept this issue `blocked`: the assigned agent has no live execution path (recent runs all failed at the adapter/runtime level), so retrying would only re-enter the failure loop."
+          : parkReason === "recovery_budget"
+            ? RECOVERY_BUDGET_PARK_NOTICE_BODY
+            : "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete recovery wrapper.";
+      const sourceNextAction = sourceIsRecoveryOwned
+        ? "Next action: none unless a fresh recovery signal creates new evidence."
+        : parkReason === "dead_adapter"
+          ? "Next action: a board operator should restore a live execution path (fix the adapter/runtime or billing) or record a manual resolution before this issue can resume."
+          : parkReason === "recovery_budget"
+            ? "Next action: a human should clarify scope, resolve the real blocker, or mark this issue done/cancelled; move it back to `todo` only once the underlying problem is addressed."
+            : "Next action: assigned owner should resume or retry the source issue normally.";
       await issuesSvc.addComment(sourceIssue.id, [
-        sourceIsRecoveryOwned
-          ? "Paperclip closed this recovery-owned source issue because its only unresolved blocker was an obsolete recovery wrapper."
-          : "Paperclip returned this source issue to `todo` because its only unresolved blocker was an obsolete recovery wrapper.",
+        sourceMessage,
         "",
         `- Cleared recovery wrapper: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
         "",
-        sourceIsRecoveryOwned
-          ? "Next action: none unless a fresh recovery signal creates new evidence."
-          : "Next action: assigned owner should resume or retry the source issue normally.",
+        sourceNextAction,
       ].join("\n"), {}, { authorType: "system" });
       await logActivity(db, {
         companyId: issue.companyId,
@@ -2081,11 +2164,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         entityId: sourceIssue.id,
         details: {
           identifier: sourceIssue.identifier,
-          status: sourceIsRecoveryOwned ? "done" : "todo",
+          status: sourceNextStatus,
           previousStatus: sourceIssue.status,
           source: sourceIsRecoveryOwned
             ? "recovery.resolve_obsolete_stranded_recovery_source_close"
-            : "recovery.resolve_obsolete_stranded_source_resume",
+            : parkReason === "dead_adapter"
+              ? "recovery.park_dead_adapter_obsolete_wrapper"
+              : parkReason === "recovery_budget"
+                ? "recovery.park_recovery_budget_obsolete_wrapper"
+                : "recovery.resolve_obsolete_stranded_source_resume",
           recoveryIssueId: issue.id,
         },
       });
@@ -2706,6 +2793,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  // Quietly park an issue whose assignee has no live execution path. Unlike
+  // `escalateStrandedAssignedIssue`, this does NOT spin up a recovery wrapper
+  // (which a dead adapter would just bounce again) — it moves the issue to
+  // `blocked`, preserves any existing first-class blockers, and posts a single
+  // human-facing notice. Re-entry is prevented because the sweep skips `blocked`
+  // issues and `resolveObsoleteStrandedRecoveryIssue` will not return a
+  // dead-adapter issue to `todo`.
+  async function parkIssueForDeadAdapter(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: string;
+    consecutiveAdapterFailures: number;
+  }) {
+    const blockerIds = await existingUnresolvedBlockerIssueIds(
+      input.issue.companyId,
+      input.issue.id,
+    );
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      blockedByIssueIds: blockerIds,
+    });
+    if (!updated) return null;
+
+    await issuesSvc.addComment(input.issue.id, DEAD_ADAPTER_PARK_NOTICE_BODY, {}, {
+      authorType: "system",
+      presentation: {
+        kind: "system_notice",
+        tone: "danger",
+        title: "No live execution path",
+        detailsDefaultOpen: false,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.issue.assigneeAgentId ?? null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "blocked",
+        previousStatus: input.previousStatus,
+        source: "recovery.park_dead_adapter",
+        consecutiveAdapterFailures: input.consecutiveAdapterFailures,
+        blockerIssueIds: blockerIds,
+      },
+    });
+
+    return updated;
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { companyId?: string }) {
     const candidates = await db
       .select()
@@ -2786,6 +2927,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (issue.status === "blocked") {
         result.skipped += 1;
         continue;
+      }
+
+      // Dead-adapter circuit breaker: if this issue's recent runs are all terminal
+      // adapter/runtime failures, the assignee has no live execution path. Stop
+      // re-dispatching (which only produces another adapter failure) and park the
+      // issue in `blocked` for a human instead of bouncing it forever.
+      {
+        const recentRuns = await getRecentIssueRuns(
+          issue.companyId,
+          issue.id,
+          DEFAULT_DEAD_ADAPTER_FAILURE_THRESHOLD,
+        );
+        const breaker = decideDeadAdapterCircuitBreaker({ runs: recentRuns });
+        if (breaker.tripped) {
+          const updated = await parkIssueForDeadAdapter({
+            issue,
+            previousStatus: issue.status,
+            consecutiveAdapterFailures: breaker.consecutiveAdapterFailures,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   doesCommandLineMatchLocalServiceRecord,
   findAdoptableLocalService,
+  isLocalServiceRecordAlive,
   pruneStaleLocalServiceRegistryRecords,
   removeLocalServiceRegistryRecord,
   type LocalServiceRegistryRecord,
@@ -78,6 +79,19 @@ describe("local service supervisor", () => {
         serviceName: "paperclip-dev-watch",
       }),
     ).toBe(false);
+  });
+
+  it("treats a service as alive while its registered child process is still running", () => {
+    const record = createRegistryRecord({
+      pid: 9_999_999,
+      processGroupId: null,
+      metadata: {
+        repoRoot: "A:\\Programming\\projects\\paperclip",
+        childPid: process.pid,
+      },
+    });
+
+    expect(isLocalServiceRecordAlive(record)).toBe(true);
   });
 
   it("removes an old alive service record when its health check fails", async () => {

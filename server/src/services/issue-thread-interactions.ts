@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  campaignPhases,
+  campaigns,
+  costEvents,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -13,6 +16,7 @@ import {
   issueThreadInteractions,
   issues,
   meetingIssueLinks,
+  meetingParticipants,
   meetings,
 } from "@paperclipai/db";
 import type {
@@ -88,6 +92,7 @@ type IssueTouchDb = Pick<Db, "update">;
 
 type ListWorkMeetingsOptions = {
   limit?: number;
+  offset?: number;
   status?: string | null;
   agentId?: string | null;
   expectedOutput?: string | null;
@@ -113,7 +118,8 @@ const MEETING_RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const STALE_REVIEW_MS = 24 * 60 * 60 * 1000;
 const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
-const PENDING_MEETING_REWAKE_MS = 15 * 60 * 1000;
+const OPERATING_SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ACTIVE_WORK_PRESSURE_RUNS = 3;
 
 async function listIssueIdsWithPendingNextActionPath(db: Db, companyId: string, issueIds: string[]) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
@@ -172,6 +178,10 @@ const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpect
   blocked_without_edge: BUSINESS_OPERATING_MEETING_OUTPUTS,
   stale_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   stale_in_progress: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  active_work_pressure: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  failed_run_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  campaign_phase_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  productivity_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   no_recent_meetings: BUSINESS_OPERATING_MEETING_OUTPUTS,
 };
 
@@ -196,6 +206,34 @@ const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
     "Surface problems, spend or budget risk, workflow friction, memory errors, and missing inputs.",
     "Choose the optimization, plan update, workflow correction, memory correction, owner, and next measurable checkpoint.",
   ],
+  active_work_pressure: [
+    "What changed across active queued/running work since the last operating review?",
+    "What is blocked, overloaded, duplicated, or waiting on scheduler/agent capacity?",
+    "Who is underperforming or stuck based on active run pressure, handoff clarity, output quality, and churn?",
+    "What decision is needed now to protect goal, KPI, budget, or delivery path?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
+  failed_run_review: [
+    "What changed in the failed or stale runs, and what user-visible work is affected?",
+    "What is blocked by runtime errors, adapter failures, stale runs, or missing output?",
+    "Who is underperforming or stuck based on repeated failure, missing comments, unclear next action, or high churn?",
+    "What decision is needed: retry, reassign, pause, escalate, approve spend, or create recovery work?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
+  campaign_phase_review: [
+    "What changed in active campaign phases and linked execution issues?",
+    "What is blocked in planning, review, approval, execution, or result documentation?",
+    "Who is underperforming or stuck across lead, assignee, reviewer, and contributors?",
+    "What decision is needed to approve, revise, execute, pause, or complete the phase?",
+    "Name the exact issue, phase, document, or approval that must change next.",
+  ],
+  productivity_review: [
+    "What changed in productivity review evidence: no-comment streaks, long-active work, churn, cost, and next actions?",
+    "What is blocked by repeated planning, missing output, repeated failure, unclear ownership, or absent comments?",
+    "Who is underperforming or stuck, and what concrete coaching, reassignment, or workflow correction is needed?",
+    "What decision is needed: continue, stop, reassign, split work, create follow-up, or change process?",
+    "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
+  ],
   no_recent_meetings: [
     "Review company goals, near-term targets, KPIs, and open work health.",
     "Inspect finance signals: budget, spend trend, cost of delay, and expected return on the active work.",
@@ -209,6 +247,10 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
   blocked_without_edge: "Business review focus: goal alignment, business requirement, KPI and finance impact, employee ownership, blocker ownership, cost of delay, escalation path, and process prevention.",
   stale_review: "Business review focus: goal and target fit, KPI movement, financial or budget impact, customer value, employee decision quality, review workflow, and process latency.",
   stale_in_progress: "Business review focus: progress against target, KPI risk, budget burn, business requirement fit, employee performance, execution problems, workflow optimization, memory correctness, and plan correction.",
+  active_work_pressure: "Business review focus: minimal, precise operating review of what changed, what is blocked, who is underperforming or stuck, what decision is needed, and the exact issue operation to take.",
+  failed_run_review: "Business review focus: minimal, precise operating review of failed/stale run impact, blocked work, agent performance, retry/reassignment decisions, cost/churn, and exact recovery issue operations.",
+  campaign_phase_review: "Business review focus: minimal, precise operating review of campaign phase progress, plan/review/execution blockers, responsible agents, required decisions, and exact issue/document/approval operations.",
+  productivity_review: "Business review focus: minimal, precise operating review of productivity evidence, churn, cost, missing comments, agent performance, required decisions, and exact follow-up issue operations.",
   no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
@@ -216,6 +258,10 @@ const MEETING_TRIGGER_TITLE_PREFIX: Record<MeetingWorkflowTrigger, string> = {
   blocked_without_edge: "Blocked work",
   stale_review: "Review waiting",
   stale_in_progress: "Execution check-in",
+  active_work_pressure: "Operating pressure",
+  failed_run_review: "Run failure review",
+  campaign_phase_review: "Campaign phase review",
+  productivity_review: "Productivity review",
   no_recent_meetings: "Operating review",
 };
 
@@ -229,6 +275,12 @@ function meetingTitleForRecommendation(recommendation: MeetingWorkflowRecommenda
   const prefix = MEETING_TRIGGER_TITLE_PREFIX[recommendation.trigger];
   if (recommendation.trigger === "no_recent_meetings") {
     return `${prefix}: company work health`;
+  }
+  if (!recommendation.issueId) {
+    if (recommendation.trigger === "active_work_pressure") return `${prefix}: queued and running work`;
+    if (recommendation.trigger === "failed_run_review") return `${prefix}: failed and stale runs`;
+    if (recommendation.trigger === "campaign_phase_review") return `${prefix}: active campaign phases`;
+    if (recommendation.trigger === "productivity_review") return `${prefix}: stuck work evidence`;
   }
   const topic = [
     recommendation.issueIdentifier,
@@ -262,6 +314,34 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
         when: "An in-progress issue has not moved for more than 72 hours.",
         chair: "Nearest department/domain owner.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.stale_in_progress,
+      },
+      {
+        id: "active_work_pressure",
+        label: "Active work pressure",
+        when: "Queued/running/scheduled work accumulates enough to require a short operating review.",
+        chair: "CEO with direct department/domain heads, or the nearest operating head when scoped.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.active_work_pressure,
+      },
+      {
+        id: "failed_run_review",
+        label: "Failed run review",
+        when: "Recent failed or timed-out runs indicate runtime, quality, ownership, or recovery risk.",
+        chair: "CEO with direct department/domain heads, or the nearest operating head when scoped.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.failed_run_review,
+      },
+      {
+        id: "campaign_phase_review",
+        label: "Campaign phase review",
+        when: "Campaign phases are waiting in review, revision, approval, or execution states.",
+        chair: "Campaign lead, CEO, or relevant department/domain heads.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.campaign_phase_review,
+      },
+      {
+        id: "productivity_review",
+        label: "Productivity review",
+        when: "Open productivity review issues show no-comment streaks, long-active work, churn, cost, or weak next actions.",
+        chair: "Responsible manager or direct operating head.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.productivity_review,
       },
       {
         id: "no_recent_meetings",
@@ -298,8 +378,14 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
 }
 
 function severityForMeetingTrigger(trigger: MeetingWorkflowTrigger): MeetingWorkflowRecommendation["severity"] {
-  if (trigger === "blocked_without_edge") return "urgent";
-  if (trigger === "stale_review" || trigger === "stale_in_progress") return "warning";
+  if (trigger === "blocked_without_edge" || trigger === "failed_run_review") return "urgent";
+  if (
+    trigger === "stale_review" ||
+    trigger === "stale_in_progress" ||
+    trigger === "active_work_pressure" ||
+    trigger === "campaign_phase_review" ||
+    trigger === "productivity_review"
+  ) return "warning";
   return "info";
 }
 
@@ -390,10 +476,6 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
 
 function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
-}
-
-function toTimeMillis(value: Date | string) {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }
 
 async function validateMeetingResultIssueIdsForCompany(db: Db, companyId: string, result: AgentMeetingResult) {
@@ -887,149 +969,12 @@ export function issueThreadInteractionService(db: Db) {
         recommendation.issueTitle ? `Title: ${recommendation.issueTitle}` : null,
         recommendation.issueStatus ? `Status: ${recommendation.issueStatus}` : null,
         recommendation.suggestedHeadName ? `Suggested chair: ${recommendation.suggestedHeadName}` : null,
+        `Signal: ${recommendation.reason}`,
         MEETING_TRIGGER_FOCUS[recommendation.trigger],
         "Record the outcome as a meeting result, including businessReview, agentPerformanceReviews, right-track checks, ideas, workflow corrections, and memory corrections when relevant.",
         "Convert action items/blockers into linked issues; agentPerformanceReviews can link follow-up issues for coaching or reassignment; memoryCorrections should name karpathy-memory, para-memory, or other and identify the file/path when known.",
       ].filter(Boolean).join("\n"),
     });
-  }
-
-  async function resolveTerminalMeetingWorkflowInteractions(companyId: string) {
-    const rows = await db
-      .select({
-        interaction: issueThreadInteractions,
-        issueStatus: issues.status,
-      })
-      .from(issueThreadInteractions)
-      .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.kind, "agent_meeting"),
-        eq(issueThreadInteractions.status, "pending"),
-        sql`${issueThreadInteractions.idempotencyKey} like 'meeting-workflow:%'`,
-        sql`${issues.status} in ('done', 'cancelled')`,
-      ))
-      .limit(200);
-
-    let resolved = 0;
-    for (const row of rows) {
-      const now = new Date();
-      const result = agentMeetingResultSchema.parse({
-        version: 1,
-        summaryMarkdown: `Source issue is already ${row.issueStatus}; Paperclip closed this stale pending meeting automatically because no live meeting remains.`,
-        decisions: [`Source issue is already ${row.issueStatus}; no live meeting remains.`],
-        actionItems: [],
-        blockers: [],
-        openQuestions: [],
-      });
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result,
-          resolvedByAgentId: null,
-          resolvedByUserId: null,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, row.interaction.id),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-      if (!updated) continue;
-      resolved += 1;
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "meeting_workflow",
-        action: "issue.thread_interaction_answered",
-        entityType: "issue",
-        entityId: row.interaction.issueId,
-        details: {
-          interactionId: row.interaction.id,
-          interactionKind: "agent_meeting",
-          interactionStatus: "answered",
-          source: "meeting_workflow",
-          reason: "terminal_source_issue",
-          issueStatus: row.issueStatus,
-        },
-      });
-    }
-
-    return resolved;
-  }
-
-  async function resolveSupersededMeetingWorkflowInteractions(companyId: string) {
-    const rows = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.kind, "agent_meeting"),
-        eq(issueThreadInteractions.status, "pending"),
-        sql`${issueThreadInteractions.idempotencyKey} like 'meeting-workflow:%'`,
-      ))
-      .limit(200);
-
-    const supersededIssueIds = await listIssueIdsWithPendingNextActionPath(
-      db,
-      companyId,
-      rows.map((row) => row.issueId),
-    );
-
-    let resolved = 0;
-    for (const row of rows) {
-      if (!supersededIssueIds.has(row.issueId)) continue;
-
-      const now = new Date();
-      const result = agentMeetingResultSchema.parse({
-        version: 1,
-        summaryMarkdown:
-          "Source issue already has a pending non-meeting interaction or approval that owns the next action; Paperclip closed this stale workflow meeting automatically.",
-        decisions: [
-          "Pending non-meeting interaction or approval already owns the next action for the source issue.",
-        ],
-        actionItems: [],
-        blockers: [],
-        openQuestions: [],
-      });
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result,
-          resolvedByAgentId: null,
-          resolvedByUserId: null,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, row.id),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-      if (!updated) continue;
-
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "meeting_workflow",
-        action: "issue.thread_interaction_answered",
-        entityType: "issue",
-        entityId: row.issueId,
-        details: {
-          interactionId: row.id,
-          interactionKind: "agent_meeting",
-          interactionStatus: "answered",
-          source: "meeting_workflow",
-          reason: "pending_next_action_path",
-        },
-      });
-      resolved += 1;
-    }
-
-    return resolved;
   }
 
   async function listRunnableMeetingParticipantIds(companyId: string, participantAgentIds: string[]) {
@@ -1041,153 +986,66 @@ export function issueThreadInteractionService(db: Db) {
       .where(and(
         eq(agents.companyId, companyId),
         inArray(agents.id, uniqueIds),
-        sql`${agents.status} <> 'terminated'`,
+        sql`${agents.status} not in ('paused', 'pending_approval', 'terminated')`,
       ));
     const runnableIds = new Set(rows.map((row) => row.id));
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
   }
 
-  async function repairLegacySingleDepartmentWorkflowMeetingParticipants(
-    companyId: string,
-    interaction: AgentMeetingInteraction,
-    idempotencyKey: string | null,
-  ) {
-    if (!idempotencyKey?.startsWith("meeting-workflow:")) {
-      return interaction.payload.participantAgentIds;
-    }
-    if (idempotencyKey.startsWith("meeting-workflow:no_recent_meetings:")) {
-      return interaction.payload.participantAgentIds;
-    }
-
-    const participantAgentIds = interaction.payload.participantAgentIds;
-    const agentRows = await db
-      .select({ id: agents.id, reportsTo: agents.reportsTo, role: agents.role })
-      .from(agents)
-      .where(and(
-        eq(agents.companyId, companyId),
-        sql`${agents.status} <> 'terminated'`,
-      ));
-    const agentById = new Map(agentRows.map((agent) => [agent.id, agent] as const));
-    const topLevelHead =
-      agentRows.find((agent) => agent.role === "ceo" && !agent.reportsTo) ??
-      agentRows.find((agent) => !agent.reportsTo) ??
-      null;
-    if (!topLevelHead || !participantAgentIds.includes(topLevelHead.id)) {
-      return participantAgentIds;
-    }
-
-    const directHeadIds = new Set(
-      agentRows
-        .filter((agent) => agent.reportsTo === topLevelHead.id)
-        .map((agent) => agent.id),
-    );
-    const relatedIssues = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId, priority: issues.priority })
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, companyId),
-        sql`(${issues.id} = ${interaction.issueId} or ${issues.parentId} = ${interaction.issueId})`,
-      ));
-    if (relatedIssues.some((issue) => issue.priority === "critical")) {
-      return participantAgentIds;
-    }
-
-    const resolveHeadId = (agentId: string | null) => {
-      const assignee = agentId ? agentById.get(agentId) ?? null : null;
-      if (!assignee) return null;
-      if (assignee.reportsTo === topLevelHead.id || directHeadIds.has(assignee.id)) return assignee.id;
-      return assignee.reportsTo ?? assignee.id;
-    };
-    const relatedHeadIds = new Set<string>();
-    for (const issue of relatedIssues) {
-      const headId = resolveHeadId(issue.assigneeAgentId);
-      if (headId) relatedHeadIds.add(headId);
-    }
-    if (relatedHeadIds.size !== 1 || relatedHeadIds.has(topLevelHead.id)) {
-      return participantAgentIds;
-    }
-
-    const [departmentHeadId] = [...relatedHeadIds];
-    if (!departmentHeadId) return participantAgentIds;
-
-    const repairedParticipantIds = [
-      ...new Set([
-        departmentHeadId,
-        ...participantAgentIds.filter((agentId) => agentId !== topLevelHead.id),
-      ]),
-    ];
-    if (isDeepStrictEqual(repairedParticipantIds, participantAgentIds)) {
-      return participantAgentIds;
-    }
-
-    await db
-      .update(issueThreadInteractions)
-      .set({
-        payload: agentMeetingPayloadSchema.parse({
-          ...interaction.payload,
-          participantAgentIds: repairedParticipantIds,
-        }),
-      })
-      .where(eq(issueThreadInteractions.id, interaction.id));
-
-    return repairedParticipantIds;
-  }
-
-  async function reconcilePendingMeetingWorkflowWakeups(companyId: string) {
-    const cutoff = new Date(Date.now() - PENDING_MEETING_REWAKE_MS);
+  async function migrateLegacyMeetingWorkflowInteractions(companyId: string): Promise<{
+    meetings: ReconcileMeetingWorkflowResult["meetings"];
+    cancelledUnrunnable: number;
+    migrated: number;
+    activeLegacyIssueIds: Set<string>;
+  }> {
     const rows = await db
       .select({
         interaction: issueThreadInteractions,
-        issueStatus: issues.status,
+        projectId: issues.projectId,
+        goalId: issues.goalId,
       })
       .from(issueThreadInteractions)
       .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
       .where(and(
         eq(issueThreadInteractions.companyId, companyId),
         eq(issueThreadInteractions.kind, "agent_meeting"),
-        eq(issueThreadInteractions.status, "pending"),
-        sql`${issueThreadInteractions.idempotencyKey} like 'meeting-workflow:%'`,
-        sql`${issues.status} not in ('done', 'cancelled')`,
-        lte(issueThreadInteractions.updatedAt, cutoff),
+        sql`${issueThreadInteractions.status} <> 'cancelled'`,
       ))
-      .orderBy(asc(issueThreadInteractions.updatedAt))
-      .limit(50);
+      .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id))
+      .limit(200);
 
-    const interactionIds = rows.map((row) => row.interaction.id);
-    const activeRunRows = interactionIds.length > 0
-      ? await db
-          .select({
-            interactionId: sql<string>`${heartbeatRuns.contextSnapshot}->>'interactionId'`,
-          })
-          .from(heartbeatRuns)
-          .where(and(
-            eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, ["queued", "running"]),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot}->>'interactionId'`, interactionIds),
-          ))
-      : [];
-    const interactionIdsWithActiveRuns = new Set(activeRunRows.map((row) => row.interactionId));
-
-    const meetings: ReconcileMeetingWorkflowResult["meetings"] = [];
+    const wakeTargets: ReconcileMeetingWorkflowResult["meetings"] = [];
+    const activeLegacyIssueIds = new Set<string>();
     let cancelledUnrunnable = 0;
-    for (const row of rows) {
-      if (interactionIdsWithActiveRuns.has(row.interaction.id)) continue;
+    let migrated = 0;
 
+    for (const row of rows) {
       const interaction = hydrateInteraction(row.interaction);
       if (interaction.kind !== "agent_meeting") continue;
-
-      const repairedParticipantIds = await repairLegacySingleDepartmentWorkflowMeetingParticipants(
-        companyId,
-        interaction,
-        row.interaction.idempotencyKey,
-      );
-      const runnableParticipantIds = await listRunnableMeetingParticipantIds(
-        companyId,
-        repairedParticipantIds,
-      );
-      if (runnableParticipantIds.length === 0) {
-        const now = new Date();
-        const [updated] = await db
+      const now = new Date();
+      const idempotencyKey = row.interaction.idempotencyKey ?? `legacy-issue-interaction:${row.interaction.id}`;
+      const participantAgentIds = [...new Set(interaction.payload.participantAgentIds)];
+      const runnableParticipantIds = interaction.status === "pending"
+        ? await listRunnableMeetingParticipantIds(companyId, participantAgentIds)
+        : participantAgentIds;
+      const hasActiveLegacyRun = interaction.status === "pending"
+        ? await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, companyId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              sql`${heartbeatRuns.contextSnapshot}->>'interactionId' = ${row.interaction.id}`,
+            ))
+            .limit(1)
+            .then((activeRows) => activeRows.length > 0)
+        : false;
+      if (hasActiveLegacyRun) {
+        activeLegacyIssueIds.add(interaction.issueId);
+        continue;
+      }
+      if (interaction.status === "pending" && runnableParticipantIds.length === 0) {
+        const [cancelled] = await db
           .update(issueThreadInteractions)
           .set({
             status: "cancelled",
@@ -1201,48 +1059,115 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueThreadInteractions.status, "pending"),
           ))
           .returning();
-        if (!updated) continue;
-        cancelledUnrunnable += 1;
-        await logActivity(db, {
-          companyId,
-          actorType: "system",
-          actorId: "meeting_workflow",
-          action: "issue.thread_interaction_cancelled",
-          entityType: "issue",
-          entityId: row.interaction.issueId,
-          details: {
-            interactionId: row.interaction.id,
-            interactionKind: "agent_meeting",
-            interactionStatus: "cancelled",
-            source: "meeting_workflow",
-            reason: "no_runnable_participants",
-            issueStatus: row.issueStatus,
-          },
-        });
+        if (cancelled) cancelledUnrunnable += 1;
         continue;
       }
 
-      const [updated] = await db
+      const existingMeeting = await db
+        .select({ id: meetings.id, status: meetings.status, chairAgentId: meetings.chairAgentId, sourceIssueId: meetings.sourceIssueId })
+        .from(meetings)
+        .where(and(eq(meetings.companyId, companyId), eq(meetings.idempotencyKey, idempotencyKey)))
+        .then((existingRows) => existingRows[0] ?? null);
+
+      const chairAgentId = runnableParticipantIds.includes(participantAgentIds[0] ?? "")
+        ? participantAgentIds[0]!
+        : runnableParticipantIds[0] ?? null;
+      const migratedMeeting = existingMeeting ?? await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [meeting] = await txDb
+          .insert(meetings)
+          .values({
+            companyId,
+            projectId: row.projectId ?? null,
+            goalId: row.goalId ?? null,
+            sourceIssueId: interaction.issueId,
+            meetingType: "operating_review",
+            title: interaction.title ?? null,
+            purpose: interaction.payload.purpose,
+            status: interaction.status,
+            chairAgentId,
+            idempotencyKey,
+            agenda: interaction.payload.agenda,
+            expectedOutputs: interaction.payload.expectedOutputs,
+            contextMarkdown: interaction.payload.contextMarkdown ?? null,
+            result: interaction.result ?? null,
+            createdByAgentId: row.interaction.createdByAgentId ?? null,
+            createdByUserId: row.interaction.createdByUserId ?? null,
+            resolvedByAgentId: row.interaction.resolvedByAgentId ?? null,
+            resolvedByUserId: row.interaction.resolvedByUserId ?? null,
+            resolvedAt: row.interaction.resolvedAt ?? null,
+            createdAt: row.interaction.createdAt,
+            updatedAt: interaction.status === "pending" ? now : row.interaction.updatedAt,
+          })
+          .returning();
+        if (runnableParticipantIds.length > 0) {
+          await txDb
+            .insert(meetingParticipants)
+            .values(runnableParticipantIds.map((agentId) => ({
+              companyId,
+              meetingId: meeting.id,
+              agentId,
+              role: agentId === chairAgentId ? "chair" : "participant",
+              status: interaction.status === "pending" ? "pending" : interaction.status,
+              createdAt: row.interaction.createdAt,
+              updatedAt: interaction.status === "pending" ? now : row.interaction.updatedAt,
+            })))
+            .onConflictDoNothing();
+        }
+        await txDb
+          .insert(meetingIssueLinks)
+          .values({
+            companyId,
+            meetingId: meeting.id,
+            issueId: interaction.issueId,
+            linkKind: "source",
+          })
+          .onConflictDoNothing();
+        return meeting;
+      });
+
+      const [cancelledLegacy] = await db
         .update(issueThreadInteractions)
-        .set({ updatedAt: new Date() })
+        .set({
+          status: "cancelled",
+          resolvedByAgentId: null,
+          resolvedByUserId: null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
         .where(and(
           eq(issueThreadInteractions.id, row.interaction.id),
-          eq(issueThreadInteractions.status, "pending"),
+          sql`${issueThreadInteractions.status} <> 'cancelled'`,
         ))
         .returning();
-      if (!updated) continue;
-      meetings.push({
-        id: interaction.id,
-        issueId: interaction.issueId,
-        participantAgentIds: runnableParticipantIds,
-        chairAgentId: runnableParticipantIds[0] ?? null,
+      if (!cancelledLegacy) continue;
+      migrated += existingMeeting ? 0 : 1;
+
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "issue.thread_interaction_meeting_migrated",
+        entityType: "meeting",
+        entityId: migratedMeeting.id,
+        details: {
+          legacyInteractionId: row.interaction.id,
+          issueId: interaction.issueId,
+          idempotencyKey,
+        },
       });
+
+      if (interaction.status === "pending") {
+        wakeTargets.push({
+          id: migratedMeeting.id,
+          issueId: interaction.issueId,
+          participantAgentIds: runnableParticipantIds,
+          chairAgentId,
+        });
+      }
     }
 
-    return {
-      meetings,
-      cancelledUnrunnable,
-    };
+    return { meetings: wakeTargets, cancelledUnrunnable, migrated, activeLegacyIssueIds };
   }
 
   return {
@@ -1250,113 +1175,7 @@ export function issueThreadInteractionService(db: Db) {
       companyId: string,
       options: ListWorkMeetingsOptions = {},
     ): Promise<WorkMeetingSummary[]> => {
-      const limit = Math.min(Math.max(Math.floor(options.limit ?? 50), 1), 200);
-      const firstClassMeetings = await meetingService(db).listForCompany(companyId, options);
-      const filters = [
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.kind, "agent_meeting"),
-      ];
-      if (options.status) filters.push(eq(issueThreadInteractions.status, options.status));
-      if (options.agentId) {
-        filters.push(sql`${issueThreadInteractions.payload}->'participantAgentIds' ? ${options.agentId}`);
-      }
-      if (options.expectedOutput) {
-        filters.push(sql`${issueThreadInteractions.payload}->'expectedOutputs' ? ${options.expectedOutput}`);
-      }
-      if (options.q) {
-        const q = `%${options.q.replace(/[%_\\]/g, (char) => `\\${char}`)}%`;
-        filters.push(sql`(
-          ${issueThreadInteractions.title} ilike ${q} escape '\\'
-          or ${issueThreadInteractions.summary} ilike ${q} escape '\\'
-          or ${issues.title} ilike ${q} escape '\\'
-          or ${issues.identifier} ilike ${q} escape '\\'
-          or (${issueThreadInteractions.payload}->>'purpose') ilike ${q} escape '\\'
-        )`);
-      }
-
-      const rows = await db
-        .select({
-          interaction: issueThreadInteractions,
-          projectId: issues.projectId,
-          goalId: issues.goalId,
-          issueIdentifier: issues.identifier,
-          issueTitle: issues.title,
-          issueStatus: issues.status,
-        })
-        .from(issueThreadInteractions)
-        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
-        .where(and(...filters))
-        .orderBy(desc(issueThreadInteractions.createdAt))
-        .limit(limit);
-
-      const participantIds = [...new Set(rows.flatMap((row) => {
-        const interaction = hydrateInteraction(row.interaction);
-        return interaction.kind === "agent_meeting" ? interaction.payload.participantAgentIds : [];
-      }))];
-      const participantRows = participantIds.length > 0
-        ? await db
-            .select({
-              id: agents.id,
-              name: agents.name,
-              role: agents.role,
-              title: agents.title,
-              status: agents.status,
-            })
-            .from(agents)
-            .where(and(eq(agents.companyId, companyId), inArray(agents.id, participantIds)))
-        : [];
-      const participantById = new Map(participantRows.map((agent) => [agent.id, agent]));
-
-      const now = Date.now();
-      const legacyMeetings: WorkMeetingSummary[] = rows.map((row) => {
-        const interaction = hydrateInteraction(row.interaction);
-        if (interaction.kind !== "agent_meeting") {
-          throw unprocessable("Unexpected non-meeting interaction in work meeting query");
-        }
-        const result = interaction.result ?? null;
-        const unlinked = countUnlinkedMeetingOutcomes(result);
-        return {
-          id: interaction.id,
-          companyId: interaction.companyId,
-          threadKind: "issue_interaction",
-          projectId: row.projectId ?? null,
-          goalId: row.goalId ?? null,
-          issueId: interaction.issueId,
-          issueIdentifier: row.issueIdentifier,
-          issueTitle: row.issueTitle,
-          issueStatus: row.issueStatus as WorkMeetingSummary["issueStatus"],
-          linkedIssues: [{
-            issueId: interaction.issueId,
-            identifier: row.issueIdentifier,
-            title: row.issueTitle,
-            status: row.issueStatus as WorkMeetingSummary["issueStatus"] & string,
-            linkKind: "source",
-          }],
-          sourceIssueId: interaction.issueId,
-          meetingType: "legacy_issue_interaction",
-          chairAgentId: null,
-          title: interaction.title ?? null,
-          status: interaction.status,
-          purpose: interaction.payload.purpose,
-          agenda: interaction.payload.agenda,
-          participantAgentIds: interaction.payload.participantAgentIds,
-          participants: interaction.payload.participantAgentIds
-            .map((agentId) => participantById.get(agentId))
-            .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent)),
-          expectedOutputs: interaction.payload.expectedOutputs,
-          result,
-          resultSummaryMarkdown: result?.summaryMarkdown ?? null,
-          pendingAgeHours: interaction.status === "pending"
-            ? Math.max(0, (now - toTimeMillis(interaction.createdAt)) / (1000 * 60 * 60))
-            : null,
-          ...unlinked,
-          createdAt: interaction.createdAt,
-          resolvedAt: interaction.resolvedAt ?? null,
-        };
-      });
-      return [...firstClassMeetings, ...legacyMeetings]
-        .sort((left, right) => toTimeMillis(right.createdAt) - toTimeMillis(left.createdAt))
-        .slice(0, limit);
+      return meetingService(db).listForCompany(companyId, options);
     },
 
     linkMeetingOutcomeIssue: async (
@@ -1386,6 +1205,16 @@ export function issueThreadInteractionService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!current) throw notFound("Meeting not found");
       if (!current.result) throw unprocessable("Meeting has no result to operationalize");
+      const migratedIdempotencyKey = current.idempotencyKey ?? `legacy-issue-interaction:${current.id}`;
+      const [migratedMeeting] = await db
+        .select({ id: meetings.id })
+        .from(meetings)
+        .where(and(eq(meetings.companyId, companyId), eq(meetings.idempotencyKey, migratedIdempotencyKey)))
+        .limit(1);
+      if (migratedMeeting) {
+        await meetingService(db).linkOutcomeIssue(migratedMeeting.id, input, actor);
+        return { threadKind: "meeting" as const, meetingId: migratedMeeting.id, issueId: input.issueId };
+      }
 
       const result = agentMeetingResultSchema.parse(current.result);
       const nextResult = setMeetingOutcomeIssueId(result, input.outcomeType, input.index, input.issueId);
@@ -1416,15 +1245,7 @@ export function issueThreadInteractionService(db: Db) {
 
     getMeetingWorkflowHealth: async (companyId: string): Promise<MeetingWorkflowHealth> => {
       const now = Date.now();
-      const meetingRows = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.kind, "agent_meeting"),
-        ))
-        .orderBy(desc(issueThreadInteractions.createdAt))
-        .limit(500);
+      const meetingRows: IssueThreadInteractionRow[] = [];
       const firstClassMeetingRows = await db
         .select()
         .from(meetings)
@@ -1440,7 +1261,10 @@ export function issueThreadInteractionService(db: Db) {
           title: issues.title,
           status: issues.status,
           priority: issues.priority,
+          originKind: issues.originKind,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
           updatedAt: issues.updatedAt,
         })
         .from(issues)
@@ -1491,11 +1315,11 @@ export function issueThreadInteractionService(db: Db) {
 
       const blockerEdgeRows = openIssueIds.length > 0
         ? await db
-            .select({ issueId: issueRelations.issueId })
+            .select({ issueId: issueRelations.relatedIssueId })
             .from(issueRelations)
             .where(and(
               eq(issueRelations.companyId, companyId),
-              inArray(issueRelations.issueId, openIssueIds),
+              inArray(issueRelations.relatedIssueId, openIssueIds),
               eq(issueRelations.type, "blocks"),
             ))
         : [];
@@ -1524,10 +1348,109 @@ export function issueThreadInteractionService(db: Db) {
         childAssigneesByParentId.set(child.parentId, current);
       }
 
-      const explicitWaitingPathIssueIds = await listIssueIdsWithPendingNextActionPath(
-        db,
-        companyId,
-        openIssueIds,
+      const pendingInteractionRows = openIssueIds.length > 0
+        ? await db
+            .select({ issueId: issueThreadInteractions.issueId })
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, companyId),
+              inArray(issueThreadInteractions.issueId, openIssueIds),
+              eq(issueThreadInteractions.status, "pending"),
+              sql`${issueThreadInteractions.kind} <> 'agent_meeting'`,
+            ))
+        : [];
+      const pendingInteractionIssueIds = new Set(pendingInteractionRows.map((row) => row.issueId));
+
+      const pendingApprovalRows = openIssueIds.length > 0
+        ? await db
+            .select({ issueId: issueApprovals.issueId })
+            .from(issueApprovals)
+            .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+            .where(and(
+              eq(issueApprovals.companyId, companyId),
+              inArray(issueApprovals.issueId, openIssueIds),
+              inArray(approvals.status, ["pending", "revision_requested"]),
+            ))
+        : [];
+      const pendingApprovalIssueIds = new Set(pendingApprovalRows.map((row) => row.issueId));
+
+      const activeRunRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(200);
+      const failedRunRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          errorCode: heartbeatRuns.errorCode,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+          gte(heartbeatRuns.updatedAt, new Date(now - OPERATING_SIGNAL_WINDOW_MS)),
+        ))
+        .orderBy(desc(heartbeatRuns.updatedAt))
+        .limit(100);
+      const activeCampaignPhaseRows = await db
+        .select({
+          id: campaignPhases.id,
+          status: campaignPhases.status,
+          title: campaignPhases.title,
+          campaignTitle: campaigns.title,
+        })
+        .from(campaignPhases)
+        .innerJoin(campaigns, eq(campaignPhases.campaignId, campaigns.id))
+        .where(and(
+          eq(campaignPhases.companyId, companyId),
+          inArray(campaignPhases.status, ["in_review", "revision_requested", "approved", "executing"]),
+          sql`${campaigns.status} not in ('completed', 'cancelled', 'archived')`,
+        ))
+        .orderBy(desc(campaignPhases.updatedAt))
+        .limit(50);
+      const recentCostRow = await db
+        .select({
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          eventCount: sql<number>`count(*)::int`,
+        })
+        .from(costEvents)
+        .where(and(
+          eq(costEvents.companyId, companyId),
+          gte(costEvents.occurredAt, new Date(now - OPERATING_SIGNAL_WINDOW_MS)),
+        ))
+        .then((rows) => rows[0] ?? { costCents: 0, eventCount: 0 });
+      const issueIdFromRunContext = (context: Record<string, unknown> | null | undefined) => {
+        const issueId = typeof context?.issueId === "string" ? context.issueId : null;
+        const taskId = typeof context?.taskId === "string" ? context.taskId : null;
+        return issueId ?? taskId;
+      };
+      const openIssueIdSet = new Set(openIssueIds);
+      const activeIssueScopedRuns = activeRunRows.filter((run) => {
+        const issueId = issueIdFromRunContext(run.contextSnapshot);
+        return !issueId || openIssueIdSet.has(issueId);
+      });
+      const failedIssueScopedRuns = failedRunRows.filter((run) => {
+        const issueId = issueIdFromRunContext(run.contextSnapshot);
+        return !issueId || openIssueIdSet.has(issueId);
+      });
+      const openProductivityReviewIssues = openIssueRows.filter(
+        (issue) => issue.originKind === "issue_productivity_review",
       );
 
       const meetingsByIssueId = new Map<string, IssueThreadInteractionRow[]>();
@@ -1564,12 +1487,46 @@ export function issueThreadInteractionService(db: Db) {
         return assignee ?? topLevelHead;
       };
       const resolveDepartmentHeadId = (agentId: string | null) => resolveHead(agentId)?.id ?? null;
+      const isMeetingRunnableAgentId = (agentId: string | null | undefined) => {
+        const status = agentId ? agentById.get(agentId)?.status : null;
+        return Boolean(status && !["paused", "pending_approval", "terminated"].includes(status));
+      };
       const companyOperatingParticipantIds = () => {
-        const headIds = [...directHeadIds].filter((agentId) => agentById.get(agentId)?.status !== "terminated");
+        const headIds = [...directHeadIds].filter((agentId) => isMeetingRunnableAgentId(agentId));
         return [...new Set([
-          ...(topLevelHeadId ? [topLevelHeadId] : []),
+          ...(isMeetingRunnableAgentId(topLevelHeadId) ? [topLevelHeadId!] : []),
           ...headIds,
         ])].slice(0, 20);
+      };
+      const ensureDiscussionParticipantIds = (participantIds: string[], chairCandidateId: string | null) => {
+        if (participantIds.length !== 1) return participantIds;
+        const [soleParticipantId] = participantIds;
+        const soleParticipant = agentById.get(soleParticipantId!);
+        const directReportIds = companyAgentRows
+          .filter((agent) => agent.reportsTo === soleParticipantId)
+          .map((agent) => agent.id);
+        const peerIds = soleParticipant?.reportsTo
+          ? companyAgentRows
+              .filter((agent) => agent.reportsTo === soleParticipant.reportsTo)
+              .map((agent) => agent.id)
+          : [];
+        const candidates = [
+          ...directReportIds,
+          ...peerIds,
+          chairCandidateId && chairCandidateId !== soleParticipantId ? chairCandidateId : null,
+        ].filter((agentId): agentId is string =>
+          Boolean(agentId) &&
+          agentId !== soleParticipantId &&
+          isMeetingRunnableAgentId(agentId),
+        );
+        const nextIds = [...participantIds];
+        for (const candidate of candidates) {
+          if (!nextIds.includes(candidate)) {
+            nextIds.push(candidate);
+            break;
+          }
+        }
+        return nextIds;
       };
       const buildRecommendation = (
         trigger: MeetingWorkflowTrigger,
@@ -1615,10 +1572,18 @@ export function issueThreadInteractionService(db: Db) {
             ? [topLevelHead.id]
             : []),
         ])].slice(0, 20);
-        const participantIds = trigger === "no_recent_meetings"
+        const rawParticipantIds = trigger === "no_recent_meetings" || issue === null
           ? companyOperatingParticipantIds()
           : issueParticipantIds;
-        const suggestedHead = trigger === "no_recent_meetings" ? topLevelHead : headForMeeting;
+        const participantIds = ensureDiscussionParticipantIds(
+          rawParticipantIds.filter((agentId) => isMeetingRunnableAgentId(agentId)),
+          headForMeeting?.id ?? null,
+        );
+        const preferredHead = trigger === "no_recent_meetings" ? topLevelHead : headForMeeting;
+        const suggestedHeadId = participantIds.includes(preferredHead?.id ?? "")
+          ? preferredHead?.id ?? null
+          : participantIds[0] ?? null;
+        const suggestedHead = suggestedHeadId ? agentById.get(suggestedHeadId) ?? null : null;
         return {
           id: `${trigger}:${issue?.id ?? "company"}`,
           trigger,
@@ -1628,7 +1593,7 @@ export function issueThreadInteractionService(db: Db) {
           issueIdentifier: issue?.identifier ?? null,
           issueTitle: issue?.title ?? null,
           issueStatus: issue?.status as MeetingWorkflowRecommendation["issueStatus"] ?? null,
-          suggestedHeadAgentId: suggestedHead?.id ?? null,
+          suggestedHeadAgentId: suggestedHeadId,
           suggestedHeadName: suggestedHead?.name ?? null,
           participantAgentIds: participantIds,
           participantNames: participantIds
@@ -1637,16 +1602,18 @@ export function issueThreadInteractionService(db: Db) {
           expectedOutputs: MEETING_TRIGGER_OUTPUTS[trigger],
         };
       };
+      const hasExplicitWaitingPath = (issue: typeof openIssueRows[number]) => (
+        Boolean(issue.assigneeUserId) ||
+        Boolean(issue.executionState) ||
+        pendingInteractionIssueIds.has(issue.id) ||
+        pendingApprovalIssueIds.has(issue.id)
+      );
 
       const recommendations: MeetingWorkflowRecommendation[] = [];
       for (const issue of openIssueRows) {
         if (hasMeetingCoverage(issue.id)) continue;
         const ageMs = now - issue.updatedAt.getTime();
-        if (
-          issue.status === "blocked" &&
-          !blockerEdgeIssueIds.has(issue.id) &&
-          !explicitWaitingPathIssueIds.has(issue.id)
-        ) {
+        if (issue.status === "blocked" && !blockerEdgeIssueIds.has(issue.id) && !hasExplicitWaitingPath(issue)) {
           recommendations.push(buildRecommendation(
             "blocked_without_edge",
             issue,
@@ -1654,11 +1621,7 @@ export function issueThreadInteractionService(db: Db) {
           ));
           continue;
         }
-        if (
-          issue.status === "in_review" &&
-          ageMs >= STALE_REVIEW_MS &&
-          !explicitWaitingPathIssueIds.has(issue.id)
-        ) {
+        if (issue.status === "in_review" && ageMs >= STALE_REVIEW_MS && !hasExplicitWaitingPath(issue)) {
           recommendations.push(buildRecommendation(
             "stale_review",
             issue,
@@ -1673,6 +1636,62 @@ export function issueThreadInteractionService(db: Db) {
             "Issue has not moved for more than 72 hours while in progress.",
           ));
         }
+      }
+
+      if (recommendations.length === 0 && failedIssueScopedRuns.length > 0) {
+        const errorCodes = [...new Set(failedIssueScopedRuns.map((run) => run.errorCode).filter(Boolean))];
+        recommendations.push(buildRecommendation(
+          "failed_run_review",
+          null,
+          [
+            `${failedIssueScopedRuns.length} failed/timed-out runs in the last 24h require operating review.`,
+            errorCodes.length > 0 ? `Error codes: ${errorCodes.slice(0, 5).join(", ")}.` : null,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+          ].filter(Boolean).join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && activeIssueScopedRuns.length >= ACTIVE_WORK_PRESSURE_RUNS) {
+        const queuedCount = activeIssueScopedRuns.filter((run) => run.status === "queued").length;
+        const runningCount = activeIssueScopedRuns.filter((run) => run.status === "running").length;
+        const scheduledRetryCount = activeIssueScopedRuns.filter((run) => run.status === "scheduled_retry").length;
+        recommendations.push(buildRecommendation(
+          "active_work_pressure",
+          null,
+          [
+            `Active queued/running work: ${activeIssueScopedRuns.length} runs (${queuedCount} queued, ${runningCount} running, ${scheduledRetryCount} scheduled retry).`,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+            "Review scheduler pressure, stuck agents, blockers, decisions, and exact issue operations.",
+          ].join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && openProductivityReviewIssues.length > 0) {
+        recommendations.push(buildRecommendation(
+          "productivity_review",
+          null,
+          [
+            `${openProductivityReviewIssues.length} open productivity review issue(s) need management synthesis.`,
+            `Cost events in window: ${recentCostRow.eventCount}; cost: ${recentCostRow.costCents} cents.`,
+            "Review no-comment streaks, long-active work, churn, agent performance, decisions, and exact follow-up issue operations.",
+          ].join(" "),
+        ));
+      }
+
+      if (recommendations.length === 0 && activeCampaignPhaseRows.length > 0) {
+        const phaseSummary = activeCampaignPhaseRows
+          .slice(0, 5)
+          .map((phase) => `${phase.campaignTitle}: ${phase.title} (${phase.status})`)
+          .join("; ");
+        recommendations.push(buildRecommendation(
+          "campaign_phase_review",
+          null,
+          [
+            `${activeCampaignPhaseRows.length} campaign phase(s) are in review/revision/approval/execution.`,
+            phaseSummary ? `Phases: ${phaseSummary}.` : null,
+            "Review progress, blockers, responsible agents, decisions, and exact issue/document/approval operations.",
+          ].filter(Boolean).join(" "),
+        ));
       }
 
       const legacyMeetingsLast7Days = meetingRows.filter(
@@ -1692,6 +1711,18 @@ export function issueThreadInteractionService(db: Db) {
 
       const pendingMeetings = meetingRows.filter((meeting) => meeting.status === "pending");
       const firstClassPendingMeetings = firstClassMeetingRows.filter((meeting) => meeting.status === "pending");
+      const unlinkedOutcomeItems = [
+        ...meetingRows.map((meeting) =>
+          countUnlinkedMeetingOutcomes(
+            meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null,
+          ).unlinkedOutcomeItems,
+        ),
+        ...firstClassMeetingRows.map((meeting) =>
+          countUnlinkedMeetingOutcomes(
+            meeting.result ? agentMeetingResultSchema.parse(meeting.result) : null,
+          ).unlinkedOutcomeItems,
+        ),
+      ].reduce((sum, count) => sum + count, 0);
       const allMeetingCreatedAts = [...meetingRows, ...firstClassMeetingRows]
         .map((meeting) => meeting.createdAt)
         .sort((left, right) => right.getTime() - left.getTime());
@@ -1704,13 +1735,14 @@ export function issueThreadInteractionService(db: Db) {
             meetingRows.filter((meeting) => meeting.status !== "pending").length +
             firstClassMeetingRows.filter((meeting) => meeting.status !== "pending").length,
           stalePendingMeetings: [
-            ...pendingMeetings.map((meeting) => meeting.createdAt),
-            ...firstClassPendingMeetings.map((meeting) => meeting.createdAt),
+            ...pendingMeetings.map((meeting) => meeting.updatedAt ?? meeting.createdAt),
+            ...firstClassPendingMeetings.map((meeting) => meeting.updatedAt ?? meeting.createdAt),
           ].filter(
             (createdAt) => now - createdAt.getTime() >= STALE_PENDING_MEETING_MS,
           ).length,
           meetingsLast7Days,
           openMeetingGaps: recommendations.length,
+          unlinkedOutcomeItems,
           lastMeetingAt: allMeetingCreatedAts[0] ?? null,
         },
         policy: meetingWorkflowPolicy(),
@@ -1721,16 +1753,26 @@ export function issueThreadInteractionService(db: Db) {
     reconcileMeetingWorkflow: async (companyId: string): Promise<ReconcileMeetingWorkflowResult> => {
       const meetingsSvc = meetingService(db);
       await meetingsSvc.repairWorkflowMeetingLinks(companyId);
+      const migratedLegacyMeetings = await migrateLegacyMeetingWorkflowInteractions(companyId);
       const resolvedTerminal =
-        await resolveSupersededMeetingWorkflowInteractions(companyId) +
-        await resolveTerminalMeetingWorkflowInteractions(companyId) +
         await meetingsSvc.resolveSupersededWorkflowMeetings(companyId) +
         await meetingsSvc.resolveTerminalWorkflowMeetings(companyId);
-      const legacyPendingWakeups = await reconcilePendingMeetingWorkflowWakeups(companyId);
       const firstClassPendingWakeups = await meetingsSvc.reconcilePendingWorkflowWakeups(companyId);
       const health = await issueThreadInteractionService(db).getMeetingWorkflowHealth(companyId);
-      const meetings: ReconcileMeetingWorkflowResult["meetings"] = [
-        ...legacyPendingWakeups.meetings,
+      const migratedWakeupIds = migratedLegacyMeetings.meetings.map((meeting) => meeting.id);
+      const pendingMigratedWakeupIds = migratedWakeupIds.length > 0
+        ? new Set((await db
+            .select({ id: meetings.id })
+            .from(meetings)
+            .where(and(
+              eq(meetings.companyId, companyId),
+              inArray(meetings.id, migratedWakeupIds),
+              eq(meetings.status, "pending"),
+            ))).map((meeting) => meeting.id))
+        : new Set<string>();
+      const pendingMigratedWakeups = migratedLegacyMeetings.meetings.filter((meeting) => pendingMigratedWakeupIds.has(meeting.id));
+      const meetingWakeTargets: ReconcileMeetingWorkflowResult["meetings"] = [
+        ...pendingMigratedWakeups,
         ...firstClassPendingWakeups.meetings,
       ];
       const coveredRecommendationKeys = new Set<string>();
@@ -1738,6 +1780,10 @@ export function issueThreadInteractionService(db: Db) {
 
       for (const recommendation of health.recommendations) {
         const recommendationKey = recommendation.issueId ?? recommendation.id;
+        if (recommendation.issueId && migratedLegacyMeetings.activeLegacyIssueIds.has(recommendation.issueId)) {
+          skipped += 1;
+          continue;
+        }
         if (coveredRecommendationKeys.has(recommendationKey)) {
           skipped += 1;
           continue;
@@ -1749,7 +1795,7 @@ export function issueThreadInteractionService(db: Db) {
           skipped += 1;
           continue;
         }
-        meetings.push({
+        meetingWakeTargets.push({
           id: meeting.id,
           issueId: meeting.issueId,
           participantAgentIds: meeting.participantAgentIds,
@@ -1759,12 +1805,12 @@ export function issueThreadInteractionService(db: Db) {
 
       return {
         checked: health.recommendations.length,
-        created: meetings.length - legacyPendingWakeups.meetings.length - firstClassPendingWakeups.meetings.length,
-        requeuedPending: legacyPendingWakeups.meetings.length + firstClassPendingWakeups.meetings.length,
-        cancelledUnrunnable: legacyPendingWakeups.cancelledUnrunnable + firstClassPendingWakeups.cancelledUnrunnable,
+        created: meetingWakeTargets.length - pendingMigratedWakeups.length - firstClassPendingWakeups.meetings.length,
+        requeuedPending: pendingMigratedWakeups.length + firstClassPendingWakeups.meetings.length,
+        cancelledUnrunnable: migratedLegacyMeetings.cancelledUnrunnable + firstClassPendingWakeups.cancelledUnrunnable,
         resolvedTerminal,
         skipped,
-        meetings,
+        meetings: meetingWakeTargets,
       };
     },
 
@@ -2316,6 +2362,7 @@ export function issueThreadInteractionService(db: Db) {
         }
 
         await touchIssue(db, issue.id);
+        await migrateLegacyMeetingWorkflowInteractions(issue.companyId);
         return hydrateInteraction(updated);
       }
 

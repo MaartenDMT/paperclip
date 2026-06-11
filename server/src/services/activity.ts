@@ -38,14 +38,26 @@ const SKILL_SYNC_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "minimax_local",
   "opencode_local",
   "pi_local",
+  "zai_local",
 ]);
 const SKILL_ACTIVATION_TELEMETRY_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
+  "minimax_local",
   "opencode_local",
+  "zai_local",
 ]);
+
+export function adapterSupportsSkillSync(adapterType: string) {
+  return SKILL_SYNC_ADAPTERS.has(adapterType);
+}
+
+export function adapterSupportsSkillActivationTelemetry(adapterType: string) {
+  return SKILL_ACTIVATION_TELEMETRY_ADAPTERS.has(adapterType);
+}
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
@@ -557,8 +569,8 @@ export function activityService(db: Db) {
           .sort((a, b) => b.activationCount - a.activationCount || a.skillName.localeCompare(b.skillName));
         const activatedKeys = new Set(activatedSkills.map((skill) => skill.skillKey));
         const neverUsedSkills = desiredSkills.filter((skill) => !activatedKeys.has(skill));
-        const adapterSupportsSkillSync = SKILL_SYNC_ADAPTERS.has(agent.adapterType);
-        const adapterSupportsActivationTelemetry = SKILL_ACTIVATION_TELEMETRY_ADAPTERS.has(agent.adapterType);
+        const adapterSupportsSkillSyncForAgent = adapterSupportsSkillSync(agent.adapterType);
+        const adapterSupportsActivationTelemetry = adapterSupportsSkillActivationTelemetry(agent.adapterType);
 
         return {
           agentId: agent.agentId,
@@ -567,14 +579,14 @@ export function activityService(db: Db) {
           status: agent.status,
           desiredSkills,
           desiredSkillCount: desiredSkills.length,
-          runtimeSynced: adapterSupportsSkillSync && desiredSkills.length > 0,
-          adapterSupportsSkillSync,
+          runtimeSynced: adapterSupportsSkillSyncForAgent && desiredSkills.length > 0,
+          adapterSupportsSkillSync: adapterSupportsSkillSyncForAgent,
           adapterSupportsActivationTelemetry,
           activatedLast7d: activatedSkills,
           activatedLast7dCount: activatedSkills.reduce((sum, skill) => sum + skill.activationCount, 0),
           neverUsedSkills,
           neverUsedCount: neverUsedSkills.length,
-          missingDesiredSkills: desiredSkills.length === 0,
+          missingDesiredSkills: adapterSupportsSkillSyncForAgent && desiredSkills.length === 0,
         };
       });
     },

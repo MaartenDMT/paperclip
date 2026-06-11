@@ -84,6 +84,11 @@ export function shouldRecoverEmbeddedPostgresStartError(
     haystack.includes("check if there are any old server processes still running") ||
     haystack.includes("another server might be running") ||
     haystack.includes("lock file \"postmaster.pid\" already exists") ||
+    haystack.includes("database system was interrupted") ||
+    haystack.includes("automatic recovery in progress") ||
+    haystack.includes("checkpoint starting: end-of-recovery") ||
+    ((haystack.includes("eperm") || haystack.includes("permission denied")) &&
+      haystack.includes("postmaster.pid")) ||
     haystack.includes("is another postmaster")
   );
 }
@@ -346,6 +351,7 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   instance: EmbeddedPostgresInstance;
   postmasterPidFile: string;
   getRecentLogs: () => string[];
+  verifyStarted?: () => Promise<boolean>;
   onRecovered?: (message: string) => void;
   terminateProcessTree?: (pid: number) => Promise<boolean>;
   findCandidateProcessPids?: (dataDir: string) => Promise<number[]>;
@@ -366,6 +372,12 @@ export async function startEmbeddedPostgresWithRecovery(input: {
   for (let recoveryAttempt = 0; ; recoveryAttempt += 1) {
     try {
       await startWithTimeout(input.instance, startTimeoutMs);
+      if (input.verifyStarted) {
+        const verified = await input.verifyStarted();
+        if (!verified) {
+          throw new Error(`embedded PostgreSQL start timed out after readiness check`);
+        }
+      }
       return;
     } catch (error) {
       const recentLogs = input.getRecentLogs();

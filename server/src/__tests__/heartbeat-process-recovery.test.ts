@@ -932,6 +932,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("queued");
   });
 
+  it("terminates and retries a critically silent Kimi local child", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "kimi_local",
+      processPid: child.pid ?? null,
+      processStartedAt: new Date("2026-03-19T00:00:00.000Z"),
+      lastOutputAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(await waitForPidExit(child.pid!, 2_000)).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("critically silent");
+    expect(retryRun?.status).toBe("queued");
+  });
+
   it("terminates and retries a critically silent tracked local child", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -1068,6 +1098,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.error).toContain("process_lost retry cap reached");
+
+    const continuationRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((runs) => runs.filter((run) => {
+        const context = run.contextSnapshot as Record<string, unknown> | null;
+        return context?.retryReason === "issue_continuation_needed";
+      }));
+    expect(continuationRuns).toHaveLength(0);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

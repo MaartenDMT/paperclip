@@ -14,6 +14,8 @@ import {
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createCompatibleDevServiceIdentities, createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { resolvePaperclipEnvPath } from "../server/src/paths.ts";
+import { config as loadDotenv } from "dotenv";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -34,6 +36,14 @@ if (worktreeEnvBootstrap.missingEnv) {
   );
   process.exit(1);
 }
+
+// Load the resolved Paperclip instance .env (e.g. DATABASE_URL) into the
+// environment BEFORE spawning the migration preflight and server child. The
+// worktree bootstrap above only covers a linked worktree's repo-local
+// .paperclip/.env; for the default instance, DATABASE_URL lives in the instance
+// .env. Without it the preflight's migration-status falls back to embedded
+// Postgres and can hang. override:false so shell/worktree values still win.
+loadDotenv({ path: resolvePaperclipEnvPath(), override: false, quiet: true });
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -57,6 +67,10 @@ const migrationStatusRecoveryRetries = Number.parseInt(
   process.env.PAPERCLIP_MIGRATION_STATUS_RECOVERY_RETRIES ?? "6",
   10,
 ) || 6;
+const pluginSdkBuildTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_PLUGIN_SDK_BUILD_TIMEOUT_MS ?? "120000",
+  10,
+) || 120_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
@@ -590,7 +604,12 @@ function shouldRetryMigrationStatusAfterRecovery(status: { code: number; stdout:
 
 async function getMigrationStatusPayload() {
   let status = await runNode(
-    [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+    [
+      tsxCliPath,
+      path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+      "--json",
+      "--keep-embedded-postgres",
+    ],
     { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
   );
   for (let attempt = 1; attempt <= migrationStatusRecoveryRetries && shouldRetryMigrationStatusAfterRecovery(status); attempt += 1) {
@@ -599,7 +618,12 @@ async function getMigrationStatusPayload() {
     );
     await delay(Math.min(5_000, 500 * attempt));
     status = await runNode(
-      [tsxCliPath, path.join(repoRoot, "packages", "db", "src", "migration-status.ts"), "--json"],
+      [
+        tsxCliPath,
+        path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+        "--json",
+        "--keep-embedded-postgres",
+      ],
       { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
     );
   }
@@ -718,16 +742,30 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 }
 
 async function buildPluginSdk() {
+  const pluginSdkDistEntry = path.join(repoRoot, "packages", "plugins", "sdk", "dist", "index.js");
+  if (existsSync(pluginSdkDistEntry)) {
+    console.log(
+      `[paperclip] plugin sdk build already exists at ${path.relative(repoRoot, pluginSdkDistEntry)}; skipping prebuild`,
+    );
+    return;
+  }
+
   console.log("[paperclip] building plugin sdk...");
   const result = await runPnpm(
     ["--filter", "@paperclipai/plugin-sdk", "build"],
-    { stdio: "inherit" },
+    { stdio: "inherit", timeoutMs: pluginSdkBuildTimeoutMs },
   );
   if (result.signal) {
     exitForSignal(result.signal);
     return;
   }
   if (result.code !== 0) {
+    if (existsSync(pluginSdkDistEntry)) {
+      console.warn(
+        `[paperclip] plugin sdk build failed or timed out; continuing with existing ${path.relative(repoRoot, pluginSdkDistEntry)}`,
+      );
+      return;
+    }
     console.error("[paperclip] plugin sdk build failed");
     process.exit(result.code);
   }
@@ -807,7 +845,7 @@ async function startServerChild() {
         }
       : {
           command: process.execPath,
-          args: [tsxCliPath, path.join(serverRoot, "src", "index.ts"), ...forwardedArgs],
+          args: [tsxCliPath, path.join(serverRoot, "scripts", "start-server-launcher.ts"), ...forwardedArgs],
           cwd: serverRoot,
         };
   child = spawn(

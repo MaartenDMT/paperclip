@@ -73,6 +73,15 @@ describe("shouldRecoverEmbeddedPostgresStartError", () => {
     ).toBe(true);
   });
 
+  it("recognizes Windows EPERM access failures on stale postmaster.pid", () => {
+    expect(
+      shouldRecoverEmbeddedPostgresStartError(
+        "EPERM, Permission denied: \\\\?\\D:\\WindowsData\\paperclip\\instances\\default\\db\\postmaster.pid '\\\\?\\D:\\WindowsData\\paperclip\\instances\\default\\db\\postmaster.pid'",
+        [],
+      ),
+    ).toBe(true);
+  });
+
   it("does not retry unrelated startup failures", () => {
     expect(
       shouldRecoverEmbeddedPostgresStartError("startup failed", [

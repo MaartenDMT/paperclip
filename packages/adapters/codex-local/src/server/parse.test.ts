@@ -98,6 +98,36 @@ describe("parseCodexJsonl", () => {
       },
     ]);
   });
+
+  it("extracts Skill tool calls from nested Codex tool payload shapes", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "function_call",
+          tool: "Skill",
+          state: {
+            input: { skill: "company-creator" },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "function_call",
+          call: {
+            name: "Skill",
+            arguments: JSON.stringify({ skill_name: "graphify-memory" }),
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout).skillActivations).toEqual([
+      { skillKey: "company-creator", skillName: "company-creator", source: "codex" },
+      { skillKey: "graphify-memory", skillName: "graphify-memory", source: "codex" },
+    ]);
+  });
 });
 
 describe("isCodexUnknownSessionError", () => {

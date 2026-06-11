@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, Flag, Plus } from "lucide-react";
+import { FileText, Flag, ListTodo, Plus } from "lucide-react";
+import type { CampaignPhaseDetail } from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { agentsApi } from "../api/agents";
@@ -18,6 +19,96 @@ import { queryKeys } from "../lib/queryKeys";
 function useCampaignId() {
   const params = useParams();
   return params.campaignId;
+}
+
+function phaseProgressLabel(phase: CampaignPhaseDetail) {
+  if (!phase.executionIssue) return "No execution issue";
+  const progress = phase.taskProgress;
+  if (!progress || progress.totalCount === 0) return `${phase.executionIssue.status}`;
+  return `${progress.completedCount}/${progress.totalCount} done`;
+}
+
+function phaseOpenLabel(phase: CampaignPhaseDetail) {
+  const progress = phase.taskProgress;
+  if (!phase.executionIssue) return "Task breakdown not started";
+  if (!progress) return "No progress data";
+  if (progress.openCount === 0) return "No open issues";
+  return `${progress.openCount} open`;
+}
+
+function PhaseWorkMap({
+  phases,
+  selectedPhaseId,
+  onSelectPhase,
+}: {
+  phases: CampaignPhaseDetail[];
+  selectedPhaseId: string | null;
+  onSelectPhase: (phaseId: string) => void;
+}) {
+  return (
+    <section className="space-y-3 rounded-lg border border-border bg-muted/10 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ListTodo className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold">Phase work map</h2>
+        </div>
+        <span className="text-xs text-muted-foreground">Implementation status and next work per phase</span>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {phases.map((phase) => {
+          const progress = phase.taskProgress;
+          const nextIssue = progress?.nextIssues[0] ?? null;
+          const selected = phase.id === selectedPhaseId;
+          const percent = progress && progress.totalCount > 0
+            ? Math.round((progress.completedCount / progress.totalCount) * 100)
+            : 0;
+          return (
+            <button
+              key={phase.id}
+              type="button"
+              className={[
+                "min-w-0 rounded-md border p-3 text-left transition hover:bg-accent/40",
+                selected ? "border-primary bg-accent/50" : "border-border bg-background",
+              ].join(" ")}
+              onClick={() => onSelectPhase(phase.id)}
+            >
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {phase.sequenceNumber}. {phase.title}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{phase.assignee?.name ?? "Unassigned"}</p>
+                </div>
+                <StatusBadge status={phase.status} />
+              </div>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-medium">{phaseProgressLabel(phase)}</span>
+                  <span className="text-muted-foreground">{phaseOpenLabel(phase)}</span>
+                </div>
+                {progress ? (
+                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
+                  </div>
+                ) : (
+                  <div className="h-1.5 rounded-full bg-muted" />
+                )}
+                {nextIssue ? (
+                  <p className="truncate text-xs text-muted-foreground">
+                    Next: {nextIssue.identifier ?? "Issue"} - {nextIssue.title}
+                  </p>
+                ) : (
+                  <p className="truncate text-xs text-muted-foreground">
+                    {phase.executionIssue ? "No next issue queued." : "Approve/start this phase to create work."}
+                  </p>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function PhaseCreatePanel({
@@ -275,7 +366,9 @@ export function CampaignDetail() {
             <StatusBadge status={campaign.status} />
           </div>
           {campaign.objective ? (
-            <p className="max-w-4xl text-sm text-muted-foreground">{campaign.objective}</p>
+            <p className="line-clamp-4 max-w-4xl whitespace-pre-line text-sm text-muted-foreground">
+              {campaign.objective}
+            </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-muted-foreground">Lead:</span>
@@ -319,29 +412,36 @@ export function CampaignDetail() {
           onAction={() => setCreatingPhase(true)}
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <CampaignPhaseTimeline
+        <div className="space-y-4">
+          <PhaseWorkMap
             phases={campaign.phases}
             selectedPhaseId={selectedPhase?.id ?? null}
             onSelectPhase={setSelectedPhaseId}
           />
-          {selectedPhase ? (
-            <CampaignPhaseComposer
-              phase={selectedPhase}
-              isSaving={savePlan.isPending}
-              isSubmitting={submitPlan.isPending}
-              onSavePlan={(body) => savePlan.mutate({ phaseId: selectedPhase.id, body })}
-              onSubmitPlan={(body) =>
-                submitPlan.mutate({
-                  phaseId: selectedPhase.id,
-                  body,
-                  persistedBody: selectedPhase.planDocument?.latestBody ?? "",
-                })
-              }
+          <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <CampaignPhaseTimeline
+              phases={campaign.phases}
+              selectedPhaseId={selectedPhase?.id ?? null}
+              onSelectPhase={setSelectedPhaseId}
             />
-          ) : (
-            <EmptyState icon={FileText} message="Select a phase to review its plan." />
-          )}
+            {selectedPhase ? (
+              <CampaignPhaseComposer
+                phase={selectedPhase}
+                isSaving={savePlan.isPending}
+                isSubmitting={submitPlan.isPending}
+                onSavePlan={(body) => savePlan.mutate({ phaseId: selectedPhase.id, body })}
+                onSubmitPlan={(body) =>
+                  submitPlan.mutate({
+                    phaseId: selectedPhase.id,
+                    body,
+                    persistedBody: selectedPhase.planDocument?.latestBody ?? "",
+                  })
+                }
+              />
+            ) : (
+              <EmptyState icon={FileText} message="Select a phase to review its plan." />
+            )}
+          </div>
         </div>
       )}
     </div>

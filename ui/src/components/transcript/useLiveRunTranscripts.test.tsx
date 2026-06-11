@@ -163,7 +163,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       const { isInitialHydrating } = useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local" }],
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", hasStoredOutput: true }],
       });
       latestIsInitialHydrating = isInitialHydrating;
       return null;
@@ -193,6 +193,77 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("does not request persisted logs for active runs without stored output", async () => {
+    let latestIsInitialHydrating = true;
+
+    function Harness() {
+      const { isInitialHydrating } = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{
+          id: "run-empty",
+          status: "running",
+          adapterType: "codex_local",
+          hasStoredOutput: false,
+          logBytes: 0,
+          lastOutputBytes: 0,
+        }],
+      });
+      latestIsInitialHydrating = isInitialHydrating;
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+    expect(latestIsInitialHydrating).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("does not request persisted logs for terminal runs without stored output", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{
+          id: "run-empty-terminal",
+          status: "cancelled",
+          adapterType: "codex_local",
+          hasStoredOutput: false,
+          logBytes: null,
+          lastOutputBytes: null,
+        }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("stops retrying terminal runs whose persisted log never existed", async () => {
     logMock.mockReset();
     logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
@@ -200,7 +271,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local" }],
+        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local", hasStoredOutput: true }],
       });
       return null;
     }
@@ -233,7 +304,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", hasStoredOutput: true }],
         enableRealtimeUpdates: false,
         logReadLimitBytes: 64_000,
       });
@@ -279,6 +350,52 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(logMock).toHaveBeenCalledWith("run-1", 36_000, 64_000);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("deduplicates matching persisted-log reads across mounted transcript surfaces", async () => {
+    type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
+    let resolveLog: ((value: RunLogResult | PromiseLike<RunLogResult>) => void) | null = null;
+    logMock.mockImplementation(
+      () =>
+        new Promise<RunLogResult>((resolve) => {
+          resolveLog = resolve;
+        }),
+    );
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", hasStoredOutput: true }],
+        enableRealtimeUpdates: false,
+      });
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", hasStoredOutput: true }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    await Promise.resolve();
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveLog?.({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 });
+      await Promise.resolve();
+    });
 
     act(() => {
       root.unmount();

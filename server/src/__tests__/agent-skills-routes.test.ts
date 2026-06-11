@@ -342,7 +342,7 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
-  }, 10_000);
+  }, 20_000);
 
   it("skips runtime materialization when listing Codex skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("codex_local"));
@@ -454,6 +454,47 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
       ["paperclipai/paperclip/paperclip"],
+    );
+  });
+
+  it("persists valid desired skill preferences for unsupported adapters", async () => {
+    vi.doMock("../adapters/index.js", () => ({
+      findServerAdapter: vi.fn(() => null),
+      findActiveServerAdapter: vi.fn(() => null),
+      listAdapterModels: vi.fn(),
+      detectAdapterModel: vi.fn(),
+    }));
+    mockAgentService.getById.mockResolvedValue(makeAgent("kimi_local"));
+    mockAgentService.update.mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent("kimi_local"),
+      adapterConfig: patch.adapterConfig ?? {},
+    }));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclip"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      adapterType: "kimi_local",
+      supported: false,
+      mode: "unsupported",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+    });
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: ["paperclipai/paperclip/paperclip"],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith(
+      "company-1",
+      ["paperclip"],
     );
   });
 

@@ -208,6 +208,7 @@ export {
   agentMeetingExpectedOutputSchema,
   agentMeetingPayloadSchema,
   agentMeetingResultSchema,
+  meetingContributionPayloadSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,

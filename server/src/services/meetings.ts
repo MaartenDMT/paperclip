@@ -6,6 +6,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueThreadInteractions,
+  meetingContributions,
   meetingIssueLinks,
   meetingParticipants,
   meetings,
@@ -16,11 +17,13 @@ import type {
   AgentMeetingExpectedOutput,
   AgentMeetingResult,
   IssueThreadInteractionStatus,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
   MeetingWorkflowRecommendation,
   WorkMeetingSummary,
 } from "@paperclipai/shared";
-import { agentMeetingResultSchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { agentMeetingResultSchema, meetingContributionPayloadSchema } from "@paperclipai/shared";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import {
   countUnlinkedMeetingOutcomes,
@@ -33,6 +36,12 @@ import {
 type MeetingActor = {
   agentId?: string | null;
   userId?: string | null;
+};
+
+type MeetingRespondInput = {
+  meetingResult?: AgentMeetingResult;
+  overrideMissingContributions?: boolean;
+  overrideReason?: string | null;
 };
 
 export type MeetingWakeTarget = {
@@ -85,7 +94,7 @@ export function meetingService(db: Db) {
       .where(and(
         eq(agents.companyId, companyId),
         inArray(agents.id, uniqueIds),
-        sql`${agents.status} <> 'terminated'`,
+        sql`${agents.status} not in ('paused', 'pending_approval', 'terminated')`,
       ));
     const runnableIds = new Set(rows.map((row) => row.id));
     return uniqueIds.filter((agentId) => runnableIds.has(agentId));
@@ -253,6 +262,69 @@ export function meetingService(db: Db) {
     return { participantAgentIds: repairedParticipantIds, repaired: true, cancelledRunIds };
   }
 
+  async function pruneUnrunnablePendingWorkflowMeetingParticipants(input: {
+    companyId: string;
+    meeting: typeof meetings.$inferSelect;
+    participantAgentIds: string[];
+    runnableParticipantIds: string[];
+    chairAgentId: string | null;
+    activeRuns: ActiveMeetingRun[];
+  }) {
+    const runnableSet = new Set(input.runnableParticipantIds);
+    const unrunnableParticipantIds = input.participantAgentIds.filter((agentId) => !runnableSet.has(agentId));
+    const queuedRunIds = input.activeRuns
+      .filter((run) => run.status === "queued" && unrunnableParticipantIds.includes(run.agentId))
+      .map((run) => run.id);
+    if (unrunnableParticipantIds.length === 0 && input.chairAgentId === input.meeting.chairAgentId) {
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      if (unrunnableParticipantIds.length > 0) {
+        await txDb
+          .delete(meetingParticipants)
+          .where(and(
+            eq(meetingParticipants.meetingId, input.meeting.id),
+            inArray(meetingParticipants.agentId, unrunnableParticipantIds),
+          ));
+      }
+      if (queuedRunIds.length > 0) {
+        await txDb
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+            error: "Cancelled because meeting participant is no longer runnable",
+            errorCode: "meeting_participant_unrunnable",
+          })
+          .where(inArray(heartbeatRuns.id, queuedRunIds));
+      }
+      if (input.chairAgentId !== input.meeting.chairAgentId) {
+        await txDb
+          .update(meetings)
+          .set({ chairAgentId: input.chairAgentId, updatedAt: new Date() })
+          .where(eq(meetings.id, input.meeting.id));
+      }
+    });
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "meeting_workflow",
+      action: "meeting.participants_pruned",
+      entityType: "meeting",
+      entityId: input.meeting.id,
+      details: {
+        reason: "participant_not_runnable",
+        removedAgentIds: unrunnableParticipantIds,
+        cancelledRunIds: queuedRunIds,
+        chairAgentId: input.chairAgentId,
+      },
+    });
+  }
+
   async function validateCompanyIssueIds(txDb: Db, companyId: string, issueIds: string[]) {
     const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
     if (uniqueIssueIds.length === 0) return [];
@@ -289,6 +361,59 @@ export function meetingService(db: Db) {
       .onConflictDoNothing()
       .returning({ id: meetingIssueLinks.id });
     return inserted.length;
+  }
+
+  function contributionSummary(row: {
+    id: string;
+    meetingId: string;
+    agentId: string;
+    agentName: string | null;
+    agentRole: string | null;
+    summaryMarkdown: string;
+    progress: string[] | null;
+    blockers: string[] | null;
+    risks: string[] | null;
+    nextActions: string[] | null;
+    proposedDecisions: string[] | null;
+    betterAlternatives: string[] | null;
+    createdAt: Date | string;
+    updatedAt: Date | string;
+  }): MeetingContributionSummary {
+    return {
+      id: row.id,
+      meetingId: row.meetingId,
+      agentId: row.agentId,
+      agentName: row.agentName,
+      agentRole: row.agentRole,
+      summaryMarkdown: row.summaryMarkdown,
+      progress: row.progress ?? [],
+      blockers: row.blockers ?? [],
+      risks: row.risks ?? [],
+      nextActions: row.nextActions ?? [],
+      proposedDecisions: row.proposedDecisions ?? [],
+      betterAlternatives: row.betterAlternatives ?? [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  function pendingParticipantIdsForMeeting(input: {
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+    contributedAgentIds: string[];
+    status: string;
+  }) {
+    if (input.status !== "pending") return [];
+    const contributed = new Set(input.contributedAgentIds);
+    const chairAgentId = input.chairAgentId;
+    const missingNonChairIds = input.participantAgentIds.filter(
+      (agentId) => agentId !== chairAgentId && !contributed.has(agentId),
+    );
+    if (missingNonChairIds.length > 0) return missingNonChairIds;
+    if (chairAgentId && input.participantAgentIds.includes(chairAgentId) && !contributed.has(chairAgentId)) {
+      return [chairAgentId];
+    }
+    return input.participantAgentIds.filter((agentId) => !contributed.has(agentId));
   }
 
   async function readDefaultCompanyGoalId(companyId: string) {
@@ -413,7 +538,11 @@ export function meetingService(db: Db) {
       contextMarkdown: string;
     },
   ): Promise<MeetingWakeTarget | null> {
-    if (recommendation.participantAgentIds.length === 0) return null;
+    const participantAgentIds = await listRunnableParticipantIds(companyId, recommendation.participantAgentIds);
+    if (participantAgentIds.length === 0) return null;
+    const chairAgentId = participantAgentIds.includes(recommendation.suggestedHeadAgentId ?? "")
+      ? recommendation.suggestedHeadAgentId
+      : participantAgentIds[0] ?? null;
     const baseIdempotencyKey = `meeting-workflow:${recommendation.id}`;
     const existingMeetings = await db
       .select({ id: meetings.id, status: meetings.status, idempotencyKey: meetings.idempotencyKey })
@@ -451,7 +580,7 @@ export function meetingService(db: Db) {
           title: input.title,
           purpose: recommendation.reason,
           status: "pending",
-          chairAgentId: recommendation.suggestedHeadAgentId,
+          chairAgentId,
           idempotencyKey,
           agenda: input.agenda,
           expectedOutputs: input.expectedOutputs,
@@ -460,11 +589,11 @@ export function meetingService(db: Db) {
           updatedAt: now,
         })
         .returning();
-      await txDb.insert(meetingParticipants).values(recommendation.participantAgentIds.map((agentId) => ({
+      await txDb.insert(meetingParticipants).values(participantAgentIds.map((agentId) => ({
         companyId,
         meetingId: meeting.id,
         agentId,
-        role: agentId === recommendation.suggestedHeadAgentId ? "chair" : "participant",
+        role: agentId === chairAgentId ? "chair" : "participant",
       }))).onConflictDoNothing();
       if (recommendation.issueId) {
         await txDb.insert(meetingIssueLinks).values({
@@ -490,26 +619,113 @@ export function meetingService(db: Db) {
       details: {
         sourceIssueId: recommendation.issueId ?? null,
         trigger: recommendation.trigger,
-        participantAgentIds: recommendation.participantAgentIds,
-        chairAgentId: recommendation.suggestedHeadAgentId,
+        participantAgentIds,
+        chairAgentId,
       },
     });
     return {
       id: created.id,
       issueId: recommendation.issueId ?? null,
-      participantAgentIds: recommendation.participantAgentIds,
-      chairAgentId: recommendation.suggestedHeadAgentId,
+      participantAgentIds: recommendation.issueId && participantAgentIds.filter((agentId) => agentId !== chairAgentId).length > 0
+        ? participantAgentIds.filter((agentId) => agentId !== chairAgentId)
+        : participantAgentIds,
+      chairAgentId,
     };
+  }
+
+  async function contribute(
+    meetingId: string,
+    input: MeetingContributionPayload,
+    actor: MeetingActor,
+  ): Promise<MeetingContributionSummary> {
+    if (!actor.agentId) throw forbidden("Only meeting participants can contribute to this meeting");
+    const meeting = await getMeetingById(meetingId);
+    if (!meeting) throw notFound("Meeting not found");
+    if (meeting.status !== "pending") throw conflict("Meeting has already been resolved");
+    if (!(await isParticipant(meetingId, actor.agentId))) {
+      throw forbidden("Only meeting participants can contribute to this meeting");
+    }
+    const payload = meetingContributionPayloadSchema.parse(input);
+    const now = new Date();
+    const row = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [contribution] = await txDb
+        .insert(meetingContributions)
+        .values({
+          companyId: meeting.companyId,
+          meetingId,
+          agentId: actor.agentId!,
+          summaryMarkdown: payload.summaryMarkdown,
+          progress: payload.progress,
+          blockers: payload.blockers,
+          risks: payload.risks,
+          nextActions: payload.nextActions,
+          proposedDecisions: payload.proposedDecisions,
+          betterAlternatives: payload.betterAlternatives,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [meetingContributions.meetingId, meetingContributions.agentId],
+          set: {
+            summaryMarkdown: payload.summaryMarkdown,
+            progress: payload.progress,
+            blockers: payload.blockers,
+            risks: payload.risks,
+            nextActions: payload.nextActions,
+            proposedDecisions: payload.proposedDecisions,
+            betterAlternatives: payload.betterAlternatives,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      await txDb
+        .update(meetingParticipants)
+        .set({ status: "contributed", updatedAt: now })
+        .where(and(
+          eq(meetingParticipants.meetingId, meetingId),
+          eq(meetingParticipants.agentId, actor.agentId!),
+        ));
+      return contribution;
+    });
+    if (!row) throw unprocessable("Meeting contribution could not be recorded");
+    await logActivity(db, {
+      companyId: meeting.companyId,
+      actorType: "agent",
+      actorId: actor.agentId,
+      agentId: actor.agentId,
+      action: "meeting.contributed",
+      entityType: "meeting",
+      entityId: meetingId,
+      details: {
+        progressCount: payload.progress.length,
+        blockerCount: payload.blockers.length,
+        riskCount: payload.risks.length,
+        nextActionCount: payload.nextActions.length,
+      },
+    });
+    const [agent] = await db
+      .select({ name: agents.name, role: agents.role })
+      .from(agents)
+      .where(and(eq(agents.companyId, meeting.companyId), eq(agents.id, actor.agentId)))
+      .limit(1);
+    return contributionSummary({
+      ...row,
+      agentName: agent?.name ?? null,
+      agentRole: agent?.role ?? null,
+    });
   }
 
   async function listForCompany(companyId: string, options: {
     limit?: number;
+    offset?: number;
     status?: string | null;
     agentId?: string | null;
     expectedOutput?: string | null;
     q?: string | null;
   } = {}): Promise<WorkMeetingSummary[]> {
     const limit = Math.min(Math.max(Math.floor(options.limit ?? 50), 1), 200);
+    const offset = Math.max(Math.floor(options.offset ?? 0), 0);
     const filters = [eq(meetings.companyId, companyId)];
     if (options.status) filters.push(eq(meetings.status, options.status));
     if (options.expectedOutput) {
@@ -535,7 +751,8 @@ export function meetingService(db: Db) {
       .from(meetings)
       .where(and(...filters))
       .orderBy(desc(meetings.createdAt), desc(meetings.id))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
 
     const meetingIds = rows.map((row) => row.id);
     const participantRows = meetingIds.length > 0
@@ -557,6 +774,39 @@ export function meetingService(db: Db) {
       const list = participantsByMeetingId.get(row.meetingId) ?? [];
       list.push({ id: row.id, name: row.name, role: row.role, title: row.title, status: row.status });
       participantsByMeetingId.set(row.meetingId, list);
+    }
+
+    const contributionRows = meetingIds.length > 0
+      ? await db
+          .select({
+            id: meetingContributions.id,
+            meetingId: meetingContributions.meetingId,
+            agentId: meetingContributions.agentId,
+            agentName: agents.name,
+            agentRole: agents.role,
+            summaryMarkdown: meetingContributions.summaryMarkdown,
+            progress: meetingContributions.progress,
+            blockers: meetingContributions.blockers,
+            risks: meetingContributions.risks,
+            nextActions: meetingContributions.nextActions,
+            proposedDecisions: meetingContributions.proposedDecisions,
+            betterAlternatives: meetingContributions.betterAlternatives,
+            createdAt: meetingContributions.createdAt,
+            updatedAt: meetingContributions.updatedAt,
+          })
+          .from(meetingContributions)
+          .innerJoin(agents, eq(agents.id, meetingContributions.agentId))
+          .where(and(
+            eq(meetingContributions.companyId, companyId),
+            inArray(meetingContributions.meetingId, meetingIds),
+          ))
+          .orderBy(asc(meetingContributions.createdAt), asc(meetingContributions.id))
+      : [];
+    const contributionsByMeetingId = new Map<string, MeetingContributionSummary[]>();
+    for (const row of contributionRows) {
+      const list = contributionsByMeetingId.get(row.meetingId) ?? [];
+      list.push(contributionSummary(row));
+      contributionsByMeetingId.set(row.meetingId, list);
     }
 
     const issueLinkRows = meetingIds.length > 0
@@ -596,6 +846,9 @@ export function meetingService(db: Db) {
       const result = row.result ? agentMeetingResultSchema.parse(row.result) : null;
       const unlinked = countUnlinkedMeetingOutcomes(result);
       const linkedIssues = linkedIssuesByMeetingId.get(row.id) ?? [];
+      const participants = participantsByMeetingId.get(row.id) ?? [];
+      const contributions = contributionsByMeetingId.get(row.id) ?? [];
+      const contributedAgentIds = contributions.map((contribution) => contribution.agentId);
       const primaryIssue =
         linkedIssues.find((issue) => issue.issueId === row.sourceIssueId) ??
         linkedIssues.find((issue) => issue.linkKind === "source") ??
@@ -619,8 +872,16 @@ export function meetingService(db: Db) {
         status: rowStatus(row.status),
         purpose: row.purpose,
         agenda: row.agenda ?? [],
-        participantAgentIds: (participantsByMeetingId.get(row.id) ?? []).map((agent) => agent.id),
-        participants: participantsByMeetingId.get(row.id) ?? [],
+        participantAgentIds: participants.map((agent) => agent.id),
+        participants,
+        contributions,
+        contributedAgentIds,
+        pendingParticipantAgentIds: pendingParticipantIdsForMeeting({
+          participantAgentIds: participants.map((agent) => agent.id),
+          chairAgentId: row.chairAgentId,
+          contributedAgentIds,
+          status: row.status,
+        }),
         expectedOutputs: row.expectedOutputs ?? [],
         result,
         resultSummaryMarkdown: result?.summaryMarkdown ?? null,
@@ -634,7 +895,7 @@ export function meetingService(db: Db) {
     });
   }
 
-  async function respond(meetingId: string, input: { meetingResult?: AgentMeetingResult }, actor: MeetingActor) {
+  async function respond(meetingId: string, input: MeetingRespondInput, actor: MeetingActor) {
     const meeting = await getMeetingById(meetingId);
     if (!meeting) throw notFound("Meeting not found");
     if (meeting.status !== "pending") throw conflict("Meeting has already been resolved");
@@ -649,11 +910,42 @@ export function meetingService(db: Db) {
       expectedOutputs: meeting.expectedOutputs ?? [],
       participantAgentIds: participantRows.map((row) => row.agentId),
     });
-    const now = new Date();
     const linkedOutcomeIssueIds = readIssueIdsFromMeetingResult(result);
+    await validateCompanyIssueIds(db, meeting.companyId, linkedOutcomeIssueIds);
+    const nonChairParticipantIds = participantRows
+      .map((row) => row.agentId)
+      .filter((agentId) => agentId !== meeting.chairAgentId);
+    let missingContributorIds: string[] = [];
+    let contributionOverride: { boardUserId: string; reason: string } | null = null;
+    if (nonChairParticipantIds.length > 0) {
+      const contributionRows = await db
+        .select({ agentId: meetingContributions.agentId })
+        .from(meetingContributions)
+        .where(and(
+          eq(meetingContributions.companyId, meeting.companyId),
+          eq(meetingContributions.meetingId, meetingId),
+          inArray(meetingContributions.agentId, nonChairParticipantIds),
+        ));
+      const contributedIds = new Set(contributionRows.map((row) => row.agentId));
+      missingContributorIds = nonChairParticipantIds.filter((agentId) => !contributedIds.has(agentId));
+      if (missingContributorIds.length > 0) {
+        if (!input.overrideMissingContributions) {
+          throw conflict("Meeting is waiting on participant contributions", { missingContributorIds });
+        }
+        const boardUserId = actor.userId;
+        if (!boardUserId) {
+          throw forbidden("Only board users can override missing meeting contributions");
+        }
+        const overrideReason = input.overrideReason?.trim() ?? "";
+        if (!overrideReason) {
+          throw unprocessable("overrideReason is required when overriding missing meeting contributions");
+        }
+        contributionOverride = { boardUserId, reason: overrideReason };
+      }
+    }
+    const now = new Date();
     const updated = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await validateCompanyIssueIds(txDb, meeting.companyId, linkedOutcomeIssueIds);
       const [row] = await txDb
         .update(meetings)
         .set({
@@ -680,6 +972,21 @@ export function meetingService(db: Db) {
       return row;
     });
     if (!updated) throw conflict("Meeting has already been resolved");
+    if (contributionOverride) {
+      await logActivity(db, {
+        companyId: meeting.companyId,
+        actorType: "user",
+        actorId: contributionOverride.boardUserId,
+        action: "meeting.contribution_override",
+        entityType: "meeting",
+        entityId: meetingId,
+        details: {
+          sourceIssueId: meeting.sourceIssueId,
+          missingContributorIds,
+          overrideReason: contributionOverride.reason,
+        },
+      });
+    }
     await logActivity(db, {
       companyId: meeting.companyId,
       actorType: actor.agentId ? "agent" : "user",
@@ -930,6 +1237,26 @@ export function meetingService(db: Db) {
       participantsByMeetingId.set(participant.meetingId, list);
     }
 
+    const contributionRows = meetingIds.length > 0
+      ? await db
+          .select({
+            meetingId: meetingContributions.meetingId,
+            agentId: meetingContributions.agentId,
+            updatedAt: meetingContributions.updatedAt,
+          })
+          .from(meetingContributions)
+          .where(and(
+            eq(meetingContributions.companyId, companyId),
+            inArray(meetingContributions.meetingId, meetingIds),
+          ))
+      : [];
+    const contributionsByMeetingId = new Map<string, Array<{ agentId: string; updatedAt: Date }>>();
+    for (const contribution of contributionRows) {
+      const list = contributionsByMeetingId.get(contribution.meetingId) ?? [];
+      list.push({ agentId: contribution.agentId, updatedAt: contribution.updatedAt });
+      contributionsByMeetingId.set(contribution.meetingId, list);
+    }
+
     const wakeTargets: MeetingWakeTarget[] = [];
     let cancelledUnrunnable = 0;
     for (const meeting of rows) {
@@ -941,7 +1268,6 @@ export function meetingService(db: Db) {
         participantsByMeetingId.get(meeting.id) ?? [],
         activeRuns,
       );
-      if (!repairResult.repaired && meeting.updatedAt > cutoff) continue;
       const runnableIds = await listRunnableParticipantIds(
         companyId,
         repairResult.participantAgentIds,
@@ -955,19 +1281,43 @@ export function meetingService(db: Db) {
         if (updated) cancelledUnrunnable += 1;
         continue;
       }
+      const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
+        ? meeting.chairAgentId
+        : runnableIds[0] ?? null;
+      await pruneUnrunnablePendingWorkflowMeetingParticipants({
+        companyId,
+        meeting,
+        participantAgentIds: repairResult.participantAgentIds,
+        runnableParticipantIds: runnableIds,
+        chairAgentId,
+        activeRuns,
+      });
+      const contributionRowsForMeeting = contributionsByMeetingId.get(meeting.id) ?? [];
+      const contributedIds = new Set(contributionRowsForMeeting.map((contribution) => contribution.agentId));
+      const missingContributorIds = runnableIds.filter(
+        (agentId) => agentId !== chairAgentId && !contributedIds.has(agentId),
+      );
+      const hasFreshContribution = contributionRowsForMeeting.some(
+        (contribution) => toTimeMillis(contribution.updatedAt) >= toTimeMillis(meeting.updatedAt),
+      );
+      if (!repairResult.repaired && meeting.updatedAt > cutoff && !(missingContributorIds.length === 0 && hasFreshContribution)) {
+        continue;
+      }
       const [updated] = await db
         .update(meetings)
         .set({ updatedAt: new Date() })
         .where(and(eq(meetings.id, meeting.id), eq(meetings.status, "pending")))
         .returning();
       if (!updated) continue;
-      const chairAgentId = runnableIds.includes(meeting.chairAgentId ?? "")
-        ? meeting.chairAgentId
-        : runnableIds[0] ?? null;
+      const wakeParticipantIds = missingContributorIds.length > 0
+        ? missingContributorIds
+        : chairAgentId
+          ? [chairAgentId]
+          : runnableIds.slice(0, 1);
       wakeTargets.push({
         id: meeting.id,
         issueId: meeting.sourceIssueId,
-        participantAgentIds: runnableIds,
+        participantAgentIds: wakeParticipantIds,
         chairAgentId,
       });
     }
@@ -978,6 +1328,7 @@ export function meetingService(db: Db) {
     getById: getMeetingById,
     isParticipant,
     createFromRecommendation,
+    contribute,
     listForCompany,
     respond,
     linkOutcomeIssue,

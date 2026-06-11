@@ -381,7 +381,7 @@ describe("opencode remote execution", () => {
     expect(logs.join("")).toContain("`opencode models` timed out");
   });
 
-  it("includes Paperclip task context in the OpenCode stdin prompt", async () => {
+  it("passes Paperclip task context as the OpenCode run message argument", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-task-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -438,8 +438,10 @@ describe("opencode remote execution", () => {
     ) as
       | [string, unknown, string, string[], { stdin?: string }]
       | undefined;
-    expect(runCall?.[4].stdin).toContain("# Paperclip Assignment");
-    expect(runCall?.[4].stdin).toContain("REA-850");
+    const messageArg = runCall?.[3].at(-1);
+    expect(messageArg).toContain("# Paperclip Assignment");
+    expect(messageArg).toContain("REA-850");
+    expect(runCall?.[4].stdin).toBeUndefined();
   });
 
   it("treats a terminal OpenCode result as success even when the wrapper exits nonzero", async () => {

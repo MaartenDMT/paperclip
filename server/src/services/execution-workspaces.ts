@@ -399,6 +399,7 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
@@ -425,13 +426,17 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      const query = db
         .select()
         .from(executionWorkspaces)
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+      const rows = typeof filters?.limit === "number"
+        ? await query.limit(filters.limit)
+        : await query;
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
       return rows.map((row) =>
         toExecutionWorkspace(
@@ -447,9 +452,10 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      const query = db
         .select({
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
@@ -459,6 +465,9 @@ export function executionWorkspaceService(db: Db) {
         .from(executionWorkspaces)
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+      const rows = typeof filters?.limit === "number"
+        ? await query.limit(filters.limit)
+        : await query;
       return rows.map((row) => toExecutionWorkspaceSummary(row));
     },
 

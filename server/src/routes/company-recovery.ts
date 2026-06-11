@@ -38,7 +38,15 @@ export function companyRecoveryRoutes(db: Db) {
       await assertCanRunCompanyRecovery(req, db, companyId);
       const actor = getActorInfo(req);
 
-      const [silentActiveRuns, strandedAssignedIssues, issueGraphLiveness] = await Promise.all([
+      const [
+        persistedHeartbeatRuntimeState,
+        orphanedHeartbeatRuns,
+        silentActiveRuns,
+        strandedAssignedIssues,
+        issueGraphLiveness,
+      ] = await Promise.all([
+        heartbeat.reconcilePersistedHeartbeatRuntimeState({ companyId }),
+        heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }),
         heartbeat.scanSilentActiveRuns({ companyId }),
         heartbeat.reconcileStrandedAssignedIssues({ companyId }),
         heartbeat.reconcileIssueGraphLiveness({
@@ -59,6 +67,8 @@ export function companyRecoveryRoutes(db: Db) {
         entityType: "company",
         entityId: companyId,
         details: {
+          persistedHeartbeatRuntimeState,
+          orphanedHeartbeatRuns,
           silentActiveRuns,
           strandedAssignedIssues,
           issueGraphLiveness: {
@@ -81,6 +91,8 @@ export function companyRecoveryRoutes(db: Db) {
         actor: actor.actorType === "agent"
           ? { type: "agent", agentId: actor.agentId }
           : { type: "board", userId: actor.actorId },
+        persistedHeartbeatRuntimeState,
+        orphanedHeartbeatRuns,
         silentActiveRuns,
         strandedAssignedIssues,
         issueGraphLiveness,

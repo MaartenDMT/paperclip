@@ -143,6 +143,64 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(svc.update(issue.id, { parentId: otherCompanyParentId })).rejects.toMatchObject({ status: 422 });
   });
 
+  it("orders campaign execution issues below critical and above ordinary high priority issues", async () => {
+    const companyId = randomUUID();
+    const criticalId = randomUUID();
+    const campaignId = randomUUID();
+    const highId = randomUUID();
+    const mediumId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: mediumId,
+        companyId,
+        title: "Ordinary medium",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "ORD-1",
+      },
+      {
+        id: highId,
+        companyId,
+        title: "Ordinary high",
+        status: "todo",
+        priority: "high",
+        issueNumber: 2,
+        identifier: "ORD-2",
+      },
+      {
+        id: campaignId,
+        companyId,
+        title: "Campaign execution",
+        status: "todo",
+        priority: "high",
+        originKind: "campaign_phase_execution",
+        originId: randomUUID(),
+        issueNumber: 3,
+        identifier: "ORD-3",
+      },
+      {
+        id: criticalId,
+        companyId,
+        title: "Critical incident",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 4,
+        identifier: "ORD-4",
+      },
+    ]);
+
+    const result = await svc.list(companyId);
+
+    expect(result.map((issue) => issue.id)).toEqual([criticalId, campaignId, highId, mediumId]);
+  });
+
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

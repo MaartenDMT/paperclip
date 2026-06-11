@@ -64,6 +64,31 @@ describe("GET /health", () => {
     });
   });
 
+  it("uses a dedicated database probe when provided", async () => {
+    const db = {
+      execute: vi.fn(() => new Promise(() => {})),
+    } as unknown as Db;
+    const databaseProbe = vi.fn().mockResolvedValue(undefined);
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        databaseProbe,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(databaseProbe).toHaveBeenCalledTimes(1);
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+  });
+
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

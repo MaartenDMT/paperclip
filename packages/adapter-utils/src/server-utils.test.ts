@@ -9,10 +9,12 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   MAX_CAPTURE_BYTES,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolveCommandForLogs,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -176,6 +178,39 @@ describe("sanitizeSshRemoteEnv", () => {
         },
       ),
     ).toEqual({ PATH: "/explicit/remote/bin" });
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it("adds user-local CLI install directories so local adapters can resolve tool shims", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cli-path-"));
+    try {
+      const userLocalBin = path.join(root, ".local", "bin");
+      await fs.mkdir(userLocalBin, { recursive: true });
+      const commandPath =
+        process.platform === "win32"
+          ? path.join(userLocalBin, "kimi.cmd")
+          : path.join(userLocalBin, "kimi");
+      await fs.writeFile(commandPath, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", "utf8");
+      if (process.platform !== "win32") await fs.chmod(commandPath, 0o755);
+
+      const env = ensurePathInEnv({
+        PATH: process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin:/bin",
+        HOME: root,
+        USERPROFILE: root,
+        APPDATA: path.join(root, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(root, "AppData", "Local"),
+      });
+
+      const resolved = await resolveCommandForLogs("kimi", root, env);
+      if (process.platform === "win32") {
+        expect(resolved.toLowerCase()).toBe(commandPath.toLowerCase());
+      } else {
+        expect(resolved).toBe(commandPath);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -525,6 +560,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Do not report product facts from stale memory when a fresh check failed");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
@@ -561,6 +597,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+    expect(prompt).toContain("treat that as an access/runtime blocker");
     expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
     expect(prompt).toContain("named unblock owner/action");
   });

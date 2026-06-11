@@ -338,6 +338,15 @@ function areAnyPidsAlive(pids: number[]) {
   return pids.some((pid) => isPidAlive(pid));
 }
 
+export function isLocalServiceRecordAlive(
+  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> & {
+    metadata?: Record<string, unknown> | null;
+  },
+) {
+  if (isProcessGroupAlive(record.processGroupId)) return true;
+  return areAnyPidsAlive(uniquePositiveIntegers([record.pid, getLocalServiceChildPid(record)]));
+}
+
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
   if (process.platform === "win32") {
     try {
