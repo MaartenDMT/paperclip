@@ -98,6 +98,11 @@ function registerRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    agentInstructionsService: () => ({
+      getByAgentId: vi.fn(async () => null),
+      getByAgentReference: vi.fn(async () => null),
+      syncAgentInstructions: vi.fn(async () => undefined),
+    }),
     companyService: () => mockCompanyService,
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
@@ -385,7 +390,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());

@@ -713,9 +713,15 @@ function resolveBundledSkillsRoot() {
   return [
     path.resolve(moduleDir, "../../skills"),
     path.resolve(process.cwd(), "skills"),
+    path.resolve(process.cwd(), "..", "..", "skills"),
     path.resolve(moduleDir, "../../../skills"),
   ];
 }
+
+const REQUIRED_RUNTIME_SKILLS = [
+  "karpathy-obsidian-memory",
+  "para-memory-files",
+] as const;
 
 function matchesRequestedSkill(relativeSkillPath: string, requestedSkillSlug: string | null) {
   if (!requestedSkillSlug) return true;
@@ -1550,6 +1556,12 @@ export function companySkillService(db: Db) {
   const projects = projectService(db);
 
   async function ensureBundledSkills(companyId: string, options: { missingOnly?: boolean } = {}) {
+    const imported: CompanySkill[] = [];
+    const existingKeys = options.missingOnly
+      ? new Set(
+        await listFullFromStore(companyId).then((skills) => skills.map((skill) => skill.key)),
+      )
+      : null;
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
       if (!stats?.isDirectory()) continue;
@@ -1571,15 +1583,16 @@ export function companySkillService(db: Db) {
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
       if (options.missingOnly) {
-        const existingKeys = new Set(
-          await listFullFromStore(companyId).then((skills) => skills.map((skill) => skill.key)),
-        );
-        bundledSkills = bundledSkills.filter((skill) => !existingKeys.has(skill.key));
+        bundledSkills = bundledSkills.filter((skill) => !existingKeys?.has(skill.key));
       }
-      if (bundledSkills.length === 0) return [];
-      return upsertImportedSkills(companyId, bundledSkills);
+      if (bundledSkills.length === 0) continue;
+      const result = await upsertImportedSkills(companyId, bundledSkills);
+      imported.push(...result);
+      if (existingKeys) {
+        for (const item of bundledSkills) existingKeys.add(item.key);
+      }
     }
-    return [];
+    return imported;
   }
 
   async function pruneMissingLocalPathSkills(companyId: string) {
@@ -2206,6 +2219,19 @@ export function companySkillService(db: Db) {
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
+      });
+    }
+
+    const existingKeys = new Set(out.map((entry) => entry.key));
+    for (const runtimeName of REQUIRED_RUNTIME_SKILLS) {
+      const key = `paperclipai/paperclip/${runtimeName}`;
+      if (existingKeys.has(key)) continue;
+      out.push({
+        key,
+        runtimeName,
+        source: path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__", runtimeName),
+        required: true,
+        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
       });
     }
 

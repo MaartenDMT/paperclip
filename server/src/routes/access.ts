@@ -151,6 +151,9 @@ function readSkillMarkdown(skillName: string): string | null {
   const candidates = [
     path.resolve(moduleDir, "../../skills", normalized, "SKILL.md"), // published: dist/routes/ -> <pkg>/skills/
     path.resolve(process.cwd(), "skills", normalized, "SKILL.md"), // cwd (e.g. monorepo root)
+    path.resolve(process.cwd(), "..", "skills", normalized, "SKILL.md"), // package cwd (e.g. <repo>/server)
+    path.resolve(process.cwd(), "..", "..", "skills", normalized, "SKILL.md"), // git worktree -> repo root
+    path.resolve(process.cwd(), "..", "..", "..", "skills", normalized, "SKILL.md"), // nested cwd inside worktree packages/server
     path.resolve(moduleDir, "../../../skills", normalized, "SKILL.md") // dev: src/routes/ -> repo root/skills/
   ];
   for (const skillPath of candidates) {
@@ -159,6 +162,18 @@ function readSkillMarkdown(skillName: string): string | null {
     } catch {
       // Continue to next candidate.
     }
+  }
+  if (normalized === "paperclip") {
+    return [
+      "---",
+      'description: Paperclip managed skill stub used when repo checkout skills are unavailable.',
+      "---",
+      "",
+      "# Paperclip Skill",
+      "",
+      "This skill is served from the running application when the checkout does not include a bundled `skills/` tree.",
+      "",
+    ].join("\n");
   }
   return null;
 }
@@ -169,6 +184,8 @@ function resolvePaperclipSkillsDir(): string | null {
   const candidates = [
     path.resolve(moduleDir, "../../skills"),         // published
     path.resolve(process.cwd(), "skills"),           // cwd (monorepo root)
+    path.resolve(process.cwd(), "..", "skills"),     // package cwd (e.g. <repo>/server)
+    path.resolve(process.cwd(), "..", "..", "..", "skills"), // nested cwd inside worktree packages/server
     path.resolve(moduleDir, "../../../skills"),       // dev
   ];
   for (const candidate of candidates) {

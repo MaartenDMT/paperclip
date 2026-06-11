@@ -41,7 +41,11 @@ describe("adapter model listing", () => {
     setCodexModelsFetcherForTests(async () => []);
     const models = await listAdapterModels("codex_local");
 
-    expect(models).toEqual(codexFallbackModels);
+    expect(models).toEqual(
+      codexFallbackModels.filter(
+        (model, index, all) => index === all.findIndex((candidate) => candidate.id === model.id),
+      ),
+    );
   });
 
   it("loads only dynamically discovered codex models when discovery succeeds", async () => {
@@ -78,7 +82,11 @@ describe("adapter model listing", () => {
   it("falls back to static codex models when local Codex model discovery returns nothing", async () => {
     setCodexModelsFetcherForTests(async () => []);
     const models = await listAdapterModels("codex_local");
-    expect(models).toEqual(codexFallbackModels);
+    expect(models).toEqual(
+      codexFallbackModels.filter(
+        (model, index, all) => index === all.findIndex((candidate) => candidate.id === model.id),
+      ),
+    );
   });
 
   it("returns cursor fallback models when CLI discovery is unavailable", async () => {

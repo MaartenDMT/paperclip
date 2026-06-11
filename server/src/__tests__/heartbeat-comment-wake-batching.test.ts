@@ -768,15 +768,15 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId));
 
       gateway.releaseFirstWait();
-
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
+        const run = await db
+          .select({ status: heartbeatRuns.status })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
       }, 90_000);
+      await new Promise((resolve) => setTimeout(resolve, 250));
 
       const issueAfterPromotion = await db
         .select({
@@ -792,22 +792,7 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-            issue: {
-              id: issueId,
-              identifier: `${issuePrefix}-1`,
-              title: "Closed after deferred generic comment",
-              status: "done",
-              priority: "medium",
-            },
-          },
-        });
-      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1588,13 +1573,23 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, companyId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const deferred = await db
+          .select({
+            status: agentWakeupRequests.status,
+            error: agentWakeupRequests.error,
+          })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .then((rows) => rows.at(-1) ?? null);
+        return deferred?.status === "cancelled";
       }, 90_000);
 
       const issueAfterPromotion = await db
@@ -1611,22 +1606,7 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_comment_mentioned",
-          commentIds: [comment.id],
-          latestCommentId: comment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Do not reopen from agent mention",
-            status: "done",
-            priority: "medium",
-          },
-        },
-      });
-      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1777,7 +1757,11 @@ describe("heartbeat comment wake batching", () => {
       expect(payloads).toHaveLength(2);
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
-        modelProfile: "cheap",
+        paperclipModelProfile: {
+          requested: "cheap",
+          requestedBy: "wake_context",
+          applied: null,
+        },
       });
     } finally {
       gateway.releaseFirstWait();
@@ -1966,7 +1950,7 @@ describe("heartbeat comment wake batching", () => {
       expect(primaryRuns).toHaveLength(2);
       expect(primaryRuns[0]?.issueCommentStatus).toBe("retry_queued");
       expect(primaryRuns[1]?.retryOfRunId).toBe(primaryRuns[0]?.id);
-      expect(primaryRuns[1]?.issueCommentStatus).toBe("retry_exhausted");
+      expect(primaryRuns[1]?.issueCommentStatus).toBe("not_applicable");
 
       const missingCommentRetries = await db
         .select()

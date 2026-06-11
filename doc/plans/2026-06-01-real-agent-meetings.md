@@ -79,7 +79,6 @@ Add a Zod schema with trimmed strings, `summaryMarkdown` min 1/max 10000, and ea
 Run: `pnpm --filter @paperclipai/shared test -- issue-thread-interactions.test.ts`
 
 Expected: PASS.
-
 ### Task 2: Meeting Contributions Persistence
 
 **Files:**
@@ -283,4 +282,3 @@ pnpm --filter @paperclipai/ui typecheck
 ```
 
 Expected: PASS.
-

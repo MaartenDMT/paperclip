@@ -80,6 +80,10 @@ vi.mock("../services/index.js", () => ({
     listApprovalsForIssue: vi.fn(),
     unlink: vi.fn(),
   }),
+  agentInstructionsService: () => ({
+    getBundleConfigForAgent: vi.fn(),
+    syncBundleConfigFromFilePath: vi.fn(),
+  }),
   documentService: () => ({}),
   routineService: () => ({}),
   workProductService: () => ({}),

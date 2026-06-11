@@ -9,6 +9,10 @@ const repoRoot = resolve(__dirname, "..");
 const manifestPath = join(repoRoot, "scripts", "release-package-manifest.json");
 const roots = ["packages", "server", "ui", "cli"];
 
+function normalizeDir(dir) {
+  return dir.replaceAll("\\", "/").replace(/\/+/g, "/").replace(/\/$/, "");
+}
+
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
@@ -17,7 +21,8 @@ function discoverPublicPackages() {
   const packages = [];
 
   function walk(relDir) {
-    const absDir = join(repoRoot, relDir);
+    const normalizedDir = normalizeDir(relDir);
+    const absDir = join(repoRoot, normalizedDir);
     if (!existsSync(absDir)) return;
 
     const pkgPath = join(absDir, "package.json");
@@ -25,7 +30,7 @@ function discoverPublicPackages() {
       const pkg = readJson(pkgPath);
       if (!pkg.private) {
         packages.push({
-          dir: relDir,
+          dir: normalizedDir,
           pkgPath,
           name: pkg.name,
           version: pkg.version,
@@ -75,7 +80,10 @@ function loadReleaseManifest() {
       );
     }
 
-    return entry;
+    return {
+      ...entry,
+      dir: normalizeDir(entry.dir),
+    };
   });
 }
 

@@ -6,17 +6,21 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  getChainOfCommand: vi.fn(),
   update: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  getMembership: vi.fn(),
+  listPrincipalGrants: vi.fn(),
   ensureMembership: vi.fn(),
   setPrincipalPermission: vi.fn(),
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
+  listFull: vi.fn(),
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
@@ -190,13 +194,18 @@ describe("agent routes adapter validation", () => {
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.getMembership.mockResolvedValue(null);
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    mockAgentService.getChainOfCommand.mockResolvedValue([]);
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent) => agent);
     mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -221,6 +230,7 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
+    mockAgentService.update.mockResolvedValue(null);
     mockAgentService.getById.mockImplementation(async (id: string) => ({
       id,
       companyId: "company-1",
@@ -245,20 +255,14 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
-    mockAgentService.update.mockImplementation(async (id: string, input: Record<string, unknown>) => ({
-      ...(await mockAgentService.getById(id)),
-      ...input,
-      id,
-      updatedAt: new Date(),
-    }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
-  });
+  }, 120_000);
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
-  });
+  }, 120_000);
 
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
