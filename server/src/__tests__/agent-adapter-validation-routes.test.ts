@@ -203,6 +203,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent) => agent);
     mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -227,6 +228,7 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
+    mockAgentService.update.mockResolvedValue(null);
     mockAgentService.getById.mockImplementation(async (id: string) => ({
       id,
       companyId: "company-1",
@@ -249,12 +251,6 @@ describe("agent routes adapter validation", () => {
       lastHeartbeatAt: null,
       metadata: null,
       createdAt: new Date(),
-      updatedAt: new Date(),
-    }));
-    mockAgentService.update.mockImplementation(async (id: string, input: Record<string, unknown>) => ({
-      ...(await mockAgentService.getById(id)),
-      ...input,
-      id,
       updatedAt: new Date(),
     }));
     await unregisterTestAdapter("external_test");
