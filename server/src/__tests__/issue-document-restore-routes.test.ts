@@ -23,6 +23,16 @@ const mockAccessService = vi.hoisted(() => ({
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  getBundle: vi.fn(),
+  readFile: vi.fn(),
+  updateBundle: vi.fn(),
+  writeFile: vi.fn(),
+  deleteFile: vi.fn(),
+  exportFiles: vi.fn(),
+  ensureManagedBundle: vi.fn(),
+  materializeManagedBundle: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -113,6 +123,7 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    agentInstructionsService: () => mockAgentInstructionsService,
     documentService: () => mockDocumentsService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
