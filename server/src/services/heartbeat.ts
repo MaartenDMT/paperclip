@@ -104,7 +104,14 @@ export {
   mergeExecutionWorkspaceMetadataForPersistence,
   stripWorkspaceRuntimeFromExecutionRunConfig,
 };
-import { PAPERCLIP_WAKE_PAYLOAD_KEY, truncateDisplayId } from "./heartbeat/shared.js";
+import { HEARTBEAT_RUN_TERMINAL_STATUSES, PAPERCLIP_WAKE_PAYLOAD_KEY, truncateDisplayId } from "./heartbeat/shared.js";
+import {
+  isHeartbeatRunTerminalStatus,
+  isSameTaskScope,
+  isTrackedLocalChildProcessAdapter,
+  normalizeAgentNameKey,
+  runTaskKey,
+} from "./heartbeat/run-predicates.js";
 import {
   normalizeBilledCostCents,
   normalizeLedgerBillingType,
@@ -326,7 +333,6 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -400,18 +406,6 @@ interface MaxTurnContinuationPolicy {
 }
 
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
-const SESSIONED_LOCAL_ADAPTERS = new Set([
-  "claude_local",
-  "codex_local",
-  "cursor",
-  "gemini_local",
-  "hermes_local",
-  "kimi_local",
-  "minimax_local",
-  "opencode_local",
-  "pi_local",
-  "zai_local",
-]);
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -1247,31 +1241,6 @@ async function buildPaperclipWakePayload(input: {
   };
 }
 
-function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
-  return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
-}
-
-function isSameTaskScope(left: string | null, right: string | null) {
-  return (left ?? null) === (right ?? null);
-}
-
-function isTrackedLocalChildProcessAdapter(adapterType: string) {
-  return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
-}
-
-function isHeartbeatRunTerminalStatus(
-  status: string | null | undefined,
-): status is (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number] {
-  return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-    status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-  );
-}
-
-function normalizeAgentNameKey(value: string | null | undefined) {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : null;
-}
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 

@@ -15,3 +15,7 @@ export function truncateDisplayId(value: string | null | undefined, max = 128) {
 // stored. Shared by heartbeat.ts (which builds the payload) and the wake-context
 // helpers (which clear it once comment ids are normalized).
 export const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+
+// Terminal heartbeat-run statuses. Shared by heartbeat.ts and the run-predicate
+// helpers.
+export const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
