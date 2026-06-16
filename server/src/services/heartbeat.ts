@@ -58,7 +58,31 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber } from "../adapters/utils.js";
+import {
+  appendExcerpt,
+  boundHeartbeatRunEventPayloadForStorage,
+  compactRunLogChunk,
+} from "./heartbeat/run-log.js";
+import { readNonEmptyString } from "./heartbeat/shared.js";
+import {
+  consumeWakeContextModelProfile,
+  mergeModelProfileAdapterConfig,
+  mergeModelProfileRunMetadata,
+  modelProfileRunMetadata,
+  normalizeModelProfileWakeContext,
+  resolveModelProfileApplication,
+  type ModelProfileApplication,
+} from "./heartbeat/model-profile.js";
+// Re-exported for callers (and tests) that import these from the heartbeat module.
+export { boundHeartbeatRunEventPayloadForStorage, compactRunLogChunk };
+export {
+  consumeWakeContextModelProfile,
+  mergeModelProfileAdapterConfig,
+  normalizeModelProfileWakeContext,
+  resolveModelProfileApplication,
+};
+export type { ModelProfileApplication };
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -191,9 +215,6 @@ import { readBlockedCheckoutUnresolvedBlockerIssueIds } from "./heartbeat-checko
 import { effectiveMaxConcurrentRunsForQueuedBacklog } from "./heartbeat-backlog-concurrency.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
-const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
-const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -204,8 +225,6 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
 }
 
-const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
-const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
@@ -514,7 +533,6 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
   "zai_local",
 ]);
-const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -1051,100 +1069,6 @@ const heartbeatRunIssueSummaryColumns = {
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
-function appendExcerpt(prev: string, chunk: string) {
-  return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
-}
-
-function truncateRunEventString(value: string) {
-  if (value.length <= MAX_RUN_EVENT_PAYLOAD_STRING_CHARS) return value;
-  const omittedChars = value.length - MAX_RUN_EVENT_PAYLOAD_STRING_CHARS;
-  return `${value.slice(0, MAX_RUN_EVENT_PAYLOAD_STRING_CHARS)}\n[truncated ${omittedChars} chars]`;
-}
-
-function boundRunEventValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
-  if (typeof value === "string") {
-    return truncateRunEventString(value);
-  }
-  if (
-    value === null
-    || typeof value === "number"
-    || typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (Array.isArray(value)) {
-    if (depth >= MAX_RUN_EVENT_PAYLOAD_DEPTH) {
-      return {
-        _truncated: true,
-        type: "array",
-        originalLength: value.length,
-      };
-    }
-    const bounded = value
-      .slice(0, MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS)
-      .map((entry) => boundRunEventValue(entry, depth + 1, seen));
-    if (value.length > MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS) {
-      bounded.push({
-        _truncated: true,
-        omittedItems: value.length - MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS,
-      });
-    }
-    return bounded;
-  }
-  if (typeof value !== "object" || value === undefined) {
-    return null;
-  }
-  if (seen.has(value)) {
-    return "[Circular]";
-  }
-  seen.add(value);
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (depth >= MAX_RUN_EVENT_PAYLOAD_DEPTH) {
-    const bounded = {
-      _truncated: true,
-      type: "object",
-      keys: entries.map(([key]) => key).slice(0, 20),
-    };
-    seen.delete(value);
-    return bounded;
-  }
-
-  const out: Record<string, unknown> = {};
-  for (const [key, entryValue] of entries.slice(0, MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS)) {
-    out[key] = boundRunEventValue(entryValue, depth + 1, seen);
-  }
-  if (entries.length > MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS) {
-    out._truncated = true;
-    out._omittedKeys = entries.length - MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS;
-  }
-  seen.delete(value);
-  return out;
-}
-
-export function boundHeartbeatRunEventPayloadForStorage(payload: Record<string, unknown>): Record<string, unknown> {
-  const bounded = boundRunEventValue(payload, 0, new WeakSet());
-  return parseObject(bounded) ?? { _truncated: true };
-}
-
-function redactInlineBase64ImageData(chunk: string) {
-  return chunk.replace(INLINE_BASE64_IMAGE_DATA_RE, (_match, prefix: string, data: string, suffix: string) =>
-    `${prefix}[omitted base64 image data: ${data.length} chars]${suffix}`,
-  );
-}
-
-export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactInlineBase64ImageData(chunk);
-  if (normalized.length <= maxChars) return normalized;
-
-  const headChars = Math.max(0, Math.floor(maxChars * 0.6));
-  const tailChars = Math.max(0, Math.floor(maxChars * 0.25));
-  const omittedChars = Math.max(0, normalized.length - headChars - tailChars);
-  const marker = `\n[paperclip truncated run log chunk: omitted ${omittedChars} chars]\n`;
-  return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
-}
 
 function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
@@ -1182,19 +1106,6 @@ interface ParsedIssueAssigneeAdapterOverrides {
   useProjectWorkspace: boolean | null;
 }
 
-type ModelProfileRequestSource = "issue_override" | "wake_context";
-type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
-
-export interface ModelProfileApplication {
-  requested: ModelProfileKey | null;
-  requestedBy: ModelProfileRequestSource | null;
-  applied: ModelProfileKey | null;
-  configSource: AppliedModelProfileConfigSource | null;
-  fallbackReason: string | null;
-  adapterType: string | null;
-  adapterConfig: Record<string, unknown> | null;
-}
-
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -1223,169 +1134,6 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function readModelProfileKey(value: unknown): ModelProfileKey | null {
-  return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
-    ? (value as ModelProfileKey)
-    : null;
-}
-
-function readContextModelProfile(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-): ModelProfileKey | null {
-  return readModelProfileKey(contextSnapshot?.modelProfile);
-}
-
-export function consumeWakeContextModelProfile(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-  source: ModelProfileRequestSource | null,
-) {
-  if (!contextSnapshot || source !== "wake_context") return;
-  delete contextSnapshot.modelProfile;
-}
-
-export function normalizeModelProfileWakeContext(input: {
-  contextSnapshot: Record<string, unknown>;
-  payload: Record<string, unknown> | null | undefined;
-}): Record<string, unknown> {
-  const modelProfileFromPayload = readModelProfileKey(input.payload?.modelProfile);
-  if (!readContextModelProfile(input.contextSnapshot) && modelProfileFromPayload) {
-    input.contextSnapshot.modelProfile = modelProfileFromPayload;
-  }
-  return input.contextSnapshot;
-}
-
-function readAgentRuntimeModelProfile(
-  runtimeConfig: unknown,
-  key: ModelProfileKey,
-): { enabled: boolean; adapterConfig: Record<string, unknown>; configured: boolean } {
-  const modelProfiles = parseObject(parseObject(runtimeConfig).modelProfiles);
-  const profile = parseObject(modelProfiles[key]);
-  if (Object.keys(profile).length === 0) {
-    return { enabled: true, adapterConfig: {}, configured: false };
-  }
-  const adapterConfig = parseObject(profile.adapterConfig);
-
-  return {
-    enabled: profile.enabled !== false,
-    adapterConfig,
-    configured: Object.keys(adapterConfig).length > 0,
-  };
-}
-
-export function resolveModelProfileApplication(input: {
-  adapterModelProfiles: AdapterModelProfileDefinition[];
-  agentRuntimeConfig: unknown;
-  issueModelProfile: ModelProfileKey | null | undefined;
-  contextSnapshot: Record<string, unknown> | null | undefined;
-  profileResolutionFallbackReason?: string | null;
-}): ModelProfileApplication {
-  const issueModelProfile = input.issueModelProfile ?? null;
-  const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
-  const requestedBy: ModelProfileRequestSource | null = issueModelProfile
-    ? "issue_override"
-    : contextModelProfile
-      ? "wake_context"
-      : null;
-
-  if (!requested) {
-    return {
-      requested: null,
-      requestedBy: null,
-      applied: null,
-      configSource: null,
-      fallbackReason: null,
-      adapterType: null,
-      adapterConfig: null,
-    };
-  }
-
-  const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
-  const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
-  const runtimeAdapterType = readNonEmptyString(runtimeProfile.adapterConfig.adapterType);
-  if (!adapterProfile && !runtimeAdapterType) {
-    return {
-      requested,
-      requestedBy,
-      applied: null,
-      configSource: null,
-      fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
-      adapterType: null,
-      adapterConfig: null,
-    };
-  }
-
-  if (!runtimeProfile.enabled) {
-    return {
-      requested,
-      requestedBy,
-      applied: null,
-      configSource: null,
-      fallbackReason: "agent_runtime_profile_disabled",
-      adapterType: null,
-      adapterConfig: null,
-    };
-  }
-
-  const adapterConfig = {
-    ...parseObject(adapterProfile?.adapterConfig),
-    ...runtimeProfile.adapterConfig,
-  };
-  const profileAdapterType = readNonEmptyString(adapterConfig.adapterType);
-
-  return {
-    requested,
-    requestedBy,
-    applied: requested,
-    configSource: runtimeProfile.configured || runtimeAdapterType ? "agent_runtime" : "adapter_default",
-    fallbackReason: null,
-    adapterType: profileAdapterType,
-    adapterConfig,
-  };
-}
-
-export function mergeModelProfileAdapterConfig(input: {
-  baseConfig: Record<string, unknown>;
-  modelProfile: ModelProfileApplication;
-  issueAdapterConfig: Record<string, unknown> | null | undefined;
-}): Record<string, unknown> {
-  return {
-    ...input.baseConfig,
-    ...(input.modelProfile.adapterConfig ?? {}),
-    ...(input.issueAdapterConfig ?? {}),
-  };
-}
-
-function modelProfileRunMetadata(
-  modelProfile: ModelProfileApplication,
-): Record<string, unknown> | null {
-  if (!modelProfile.requested) return null;
-  return {
-    requested: modelProfile.requested,
-    requestedBy: modelProfile.requestedBy,
-    applied: modelProfile.applied,
-    configSource: modelProfile.configSource,
-    fallbackReason: modelProfile.fallbackReason,
-    adapterType: modelProfile.adapterType,
-  };
-}
-
-function mergeModelProfileRunMetadata(
-  resultJson: Record<string, unknown> | null,
-  modelProfile: ModelProfileApplication,
-): Record<string, unknown> | null {
-  const metadata = modelProfileRunMetadata(modelProfile);
-  if (!metadata) return resultJson;
-  return {
-    ...(resultJson ?? {}),
-    modelProfile: metadata,
-  };
 }
 
 export function summarizeHeartbeatRunContextSnapshot(
