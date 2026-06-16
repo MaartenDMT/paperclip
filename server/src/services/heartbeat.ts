@@ -112,6 +112,18 @@ import {
   resolveLedgerScopeForRun,
 } from "./heartbeat/ledger.js";
 import {
+  didAutomaticRecoveryFail,
+  summarizeHeartbeatRunContextSnapshot,
+  summarizeHeartbeatRunListResultJson,
+  summarizeRunFailureForIssueComment,
+} from "./heartbeat/run-summary.js";
+export {
+  didAutomaticRecoveryFail,
+  summarizeHeartbeatRunContextSnapshot,
+  summarizeHeartbeatRunListResultJson,
+  summarizeRunFailureForIssueComment,
+};
+import {
   getAdapterSessionCodec,
   normalizeSessionParams,
   resolveNextSessionState,
@@ -313,7 +325,6 @@ const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
-const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -680,104 +691,6 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
-}
-
-export function summarizeHeartbeatRunContextSnapshot(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null {
-  const summary: Record<string, unknown> = {};
-  const allowedKeys = [
-    "issueId",
-    "taskId",
-    "taskKey",
-    "commentId",
-    "wakeCommentId",
-    "wakeReason",
-    "wakeSource",
-    "wakeTriggerDetail",
-    "modelProfile",
-  ] as const;
-
-  for (const key of allowedKeys) {
-    const value = readNonEmptyString(contextSnapshot?.[key]);
-    if (value) summary[key] = value;
-  }
-
-  return Object.keys(summary).length > 0 ? summary : null;
-}
-
-export function summarizeHeartbeatRunListResultJson(input: {
-  summary?: string | null;
-  result?: string | null;
-  message?: string | null;
-  error?: string | null;
-  totalCostUsd?: string | null;
-  costUsd?: string | null;
-  costUsdCamel?: string | null;
-}): Record<string, unknown> | null {
-  const summary: Record<string, unknown> = {};
-  for (const [key, value] of [
-    ["summary", input.summary],
-    ["result", input.result],
-    ["message", input.message],
-    ["error", input.error],
-  ] as const) {
-    const normalized = readNonEmptyString(value);
-    if (normalized) summary[key] = normalized;
-  }
-
-  for (const [key, value] of [
-    ["total_cost_usd", input.totalCostUsd],
-    ["cost_usd", input.costUsd],
-    ["costUsd", input.costUsdCamel],
-  ] as const) {
-    const normalized = readNonEmptyString(value);
-    if (!normalized) continue;
-    const parsed = Number(normalized);
-    if (Number.isFinite(parsed)) summary[key] = parsed;
-  }
-
-  return Object.keys(summary).length > 0 ? summary : null;
-}
-
-function summarizeRunFailureForIssueComment(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined,
-) {
-  if (!run) return null;
-
-  const errorCode = readNonEmptyString(run.errorCode)?.trim() ?? null;
-  const rawError = readNonEmptyString(run.error)?.trim() ?? null;
-  const apiMessageMatch = rawError?.match(/"message"\s*:\s*"([^"]+)"/);
-  const firstLine = rawError
-    ?.split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean) ?? null;
-  const summarySource = apiMessageMatch?.[1] ?? firstLine;
-  const summary =
-    summarySource && summarySource.length > 240
-      ? `${summarySource.slice(0, 237)}...`
-      : summarySource;
-
-  if (errorCode && summary) return ` Latest retry failure: \`${errorCode}\` - ${summary}.`;
-  if (errorCode) return ` Latest retry failure: \`${errorCode}\`.`;
-  if (summary) return ` Latest retry failure: ${summary}.`;
-  return null;
-}
-
-function didAutomaticRecoveryFail(
-  latestRun: Pick<typeof heartbeatRuns.$inferSelect, "status" | "contextSnapshot"> | null,
-  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
-) {
-  if (!latestRun) return false;
-
-  const latestContext = parseObject(latestRun.contextSnapshot);
-  const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-  return (
-    latestRetryReason === expectedRetryReason &&
-    UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-      latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-    )
-  );
 }
 
 type ResumeSessionRow = {
