@@ -1,0 +1,9 @@
+{
+  "videoFile": "C:/path/to/readersbase/video.mp4",
+  "title": "Readersbase draft video title",
+  "description": "Draft description. This upload script forces privacyStatus to private.",
+  "tags": ["readersbase"],
+  "categoryId": "22",
+  "privacyStatus": "private",
+  "selfDeclaredMadeForKids": false
+}

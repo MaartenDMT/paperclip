@@ -1501,6 +1501,58 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
   });
+
+  it("routes fiction domain issues to the fiction director for approval", async () => {
+    const companyId = randomUUID();
+    const fictionDirectorId = randomUUID();
+    const plotArchitectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Story Studio",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: fictionDirectorId,
+        companyId,
+        name: "Fiction Director",
+        role: "creative_director",
+        status: "idle",
+      },
+      {
+        id: plotArchitectId,
+        companyId,
+        name: "Plot Architect",
+        role: "writer",
+        status: "idle",
+        reportsTo: fictionDirectorId,
+      },
+    ]);
+
+    const issue = await svc.create(companyId, {
+      title: "Resolve plot continuity before chapter approval",
+      description: "Check character motivation and world building consistency.",
+      status: "todo",
+      assigneeAgentId: plotArchitectId,
+    });
+
+    expect(issue.executionPolicy).toMatchObject({
+      stages: [
+        {
+          type: "approval",
+          participants: [
+            {
+              type: "agent",
+              agentId: fictionDirectorId,
+              userId: null,
+            },
+          ],
+        },
+      ],
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

@@ -19,8 +19,8 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 
-const MIN_DASHBOARD_RUNS = 4;
-const DASHBOARD_RUN_CARD_LIMIT = 4;
+const MIN_DASHBOARD_RUNS = 6;
+const DASHBOARD_RUN_CARD_LIMIT = 6;
 const DASHBOARD_LOG_POLL_INTERVAL_MS = 15_000;
 const DASHBOARD_LOG_READ_LIMIT_BYTES = 64_000;
 const DASHBOARD_MAX_CHUNKS_PER_RUN = 40;
@@ -137,7 +137,7 @@ export function ActiveAgentsPanel({
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         </div>
       ) : (
-        <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
+        <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6", gridClassName)}>
           {visibleRuns.map((run) => (
             <AgentRunCard
               key={run.id}

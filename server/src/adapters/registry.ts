@@ -78,6 +78,7 @@ import {
 import {
   detectModel as kimiDetectModel,
   execute as kimiExecute,
+  sessionCodec as kimiSessionCodec,
   testEnvironment as kimiTestEnvironment,
 } from "@paperclipai/adapter-kimi-local/server";
 import {
@@ -391,6 +392,8 @@ const kimiLocalAdapter: ServerAdapterModule = {
   type: "kimi_local",
   execute: kimiExecute,
   testEnvironment: kimiTestEnvironment,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
   models: kimiModels,
   modelProfiles: kimiModelProfiles,
   detectModel: kimiDetectModel,

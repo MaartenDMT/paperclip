@@ -808,6 +808,7 @@ export type MeetingWorkflowTrigger =
   | "failed_run_review"
   | "campaign_phase_review"
   | "productivity_review"
+  | "fiction_story_alignment"
   | "no_recent_meetings";
 
 export interface MeetingWorkflowPolicyTrigger {

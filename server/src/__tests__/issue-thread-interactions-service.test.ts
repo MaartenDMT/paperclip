@@ -1710,6 +1710,149 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(participantIds).not.toContain(ceoId);
   });
 
+  it("creates fiction story alignment meetings with research, draft, character, plot, and worldbuilding participants", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const fictionDirectorId = randomUUID();
+    const researchAgentId = randomUUID();
+    const draftAgentId = randomUUID();
+    const characterAgentId = randomUUID();
+    const plotAgentId = randomUUID();
+    const worldbuildingAgentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Story Studio",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: fictionDirectorId,
+        companyId,
+        name: "Fiction Director",
+        role: "fiction_director",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: researchAgentId,
+        companyId,
+        name: "Research Agent",
+        role: "research",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: draftAgentId,
+        companyId,
+        name: "Draft Writer",
+        role: "draft_writer",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: characterAgentId,
+        companyId,
+        name: "Character Architect",
+        role: "character_architect",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: plotAgentId,
+        companyId,
+        name: "Plot Architect",
+        role: "plot_architect",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: worldbuildingAgentId,
+        companyId,
+        name: "Worldbuilding Architect",
+        role: "worldbuilding_architect",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Draft chapter setup with character backstories and plot alignment",
+      description: "Coordinate research classification, family history, friends, enemies, lovers, worldbuilding, and plot changes before drafting.",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: draftAgentId,
+    });
+
+    const reconciled = await interactionsSvc.reconcileMeetingWorkflow(companyId);
+
+    expect(reconciled.created).toBe(1);
+    expect(reconciled.meetings[0]).toEqual(expect.objectContaining({
+      issueId,
+      chairAgentId: fictionDirectorId,
+    }));
+
+    const rows = await db.select().from(meetings).where(eq(meetings.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sourceIssueId: issueId,
+      status: "pending",
+      idempotencyKey: `meeting-workflow:fiction_story_alignment:${issueId}`,
+    });
+    expect(rows[0]!.title).toContain("Story alignment");
+    expect(rows[0]!.contextMarkdown).toContain("research classification");
+    expect(rows[0]!.contextMarkdown).toContain("character backstories");
+
+    const participants = await db.select().from(meetingParticipants).where(eq(meetingParticipants.meetingId, rows[0]!.id));
+    expect(participants.map((participant) => participant.agentId)).toEqual(expect.arrayContaining([
+      fictionDirectorId,
+      researchAgentId,
+      draftAgentId,
+      characterAgentId,
+      plotAgentId,
+      worldbuildingAgentId,
+    ]));
+    expect(participants.map((participant) => participant.agentId)).not.toContain(ceoId);
+  });
+
   it("keeps workflow meetings multi-agent and wakes contributors before the chair", async () => {
     const companyId = randomUUID();
     const ceoId = randomUUID();

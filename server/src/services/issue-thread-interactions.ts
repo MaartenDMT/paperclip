@@ -121,6 +121,14 @@ const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
 const OPERATING_SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_WORK_PRESSURE_RUNS = 3;
+const FICTION_STORY_ALIGNMENT_RE =
+  /\b(?:draft|chapter|scene|story|plot|character|backstor(?:y|ies)|family|familie|friends?|enemies|lovers?|world\s*building|worldbuilding|research|classification)\b/i;
+const FICTION_DIRECTOR_ROLE_KEYS = new Set(["fiction-director", "fiction_director", "creative-director", "creative_director"]);
+const FICTION_RESEARCH_ROLE_RE = /\b(?:research|researcher|research-agent|classification)\b/i;
+const FICTION_DRAFT_ROLE_RE = /\b(?:draft|writer|author|prose)\b/i;
+const FICTION_CHARACTER_ROLE_RE = /\bcharacter\b/i;
+const FICTION_PLOT_ROLE_RE = /\bplot\b/i;
+const FICTION_WORLDBUILDING_ROLE_RE = /\bworld\s*building|worldbuilding\b/i;
 
 async function listIssueIdsWithPendingNextActionPath(db: Db, companyId: string, issueIds: string[]) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
@@ -183,6 +191,7 @@ const MEETING_TRIGGER_OUTPUTS: Record<MeetingWorkflowTrigger, AgentMeetingExpect
   failed_run_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   campaign_phase_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
   productivity_review: BUSINESS_OPERATING_MEETING_OUTPUTS,
+  fiction_story_alignment: BUSINESS_OPERATING_MEETING_OUTPUTS,
   no_recent_meetings: BUSINESS_OPERATING_MEETING_OUTPUTS,
 };
 
@@ -235,6 +244,13 @@ const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
     "What decision is needed: continue, stop, reassign, split work, create follow-up, or change process?",
     "Name the exact issue to create, reassign, block, unblock, close, or move back to review.",
   ],
+  fiction_story_alignment: [
+    "Research/classification: what facts, references, constraints, and labels should the story team use?",
+    "Character: what backstories, history, family, friends, enemies, lovers, motivations, and contradictions need alignment?",
+    "Plot: what setup, reversals, causality, stakes, pacing, and continuity need to change?",
+    "Worldbuilding: what rules, places, factions, history, systems, and constraints need updating?",
+    "Draft: what concrete chapter/scene direction should the drafting agent write next, and what must not change?",
+  ],
   no_recent_meetings: [
     "Review company goals, near-term targets, KPIs, and open work health.",
     "Inspect finance signals: budget, spend trend, cost of delay, and expected return on the active work.",
@@ -252,6 +268,7 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
   failed_run_review: "Business review focus: minimal, precise operating review of failed/stale run impact, blocked work, agent performance, retry/reassignment decisions, cost/churn, and exact recovery issue operations.",
   campaign_phase_review: "Business review focus: minimal, precise operating review of campaign phase progress, plan/review/execution blockers, responsible agents, required decisions, and exact issue/document/approval operations.",
   productivity_review: "Business review focus: minimal, precise operating review of productivity evidence, churn, cost, missing comments, agent performance, required decisions, and exact follow-up issue operations.",
+  fiction_story_alignment: "Story alignment focus: research classification, character backstories and relationships, plot causality, worldbuilding rules, draft direction, contradictions, and exact issue/document updates needed before writing continues.",
   no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
@@ -263,6 +280,7 @@ const MEETING_TRIGGER_TITLE_PREFIX: Record<MeetingWorkflowTrigger, string> = {
   failed_run_review: "Run failure review",
   campaign_phase_review: "Campaign phase review",
   productivity_review: "Productivity review",
+  fiction_story_alignment: "Story alignment",
   no_recent_meetings: "Operating review",
 };
 
@@ -343,6 +361,13 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
         when: "Open productivity review issues show no-comment streaks, long-active work, churn, cost, or weak next actions.",
         chair: "Responsible manager or direct operating head.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.productivity_review,
+      },
+      {
+        id: "fiction_story_alignment",
+        label: "Fiction story alignment",
+        when: "Fiction setup or draft work touches research, characters, plot, or worldbuilding and needs coordinated story decisions before writing continues.",
+        chair: "Fiction Director with research, draft, character, plot, and worldbuilding participants.",
+        expectedOutputs: MEETING_TRIGGER_OUTPUTS.fiction_story_alignment,
       },
       {
         id: "no_recent_meetings",
@@ -1260,6 +1285,7 @@ export function issueThreadInteractionService(db: Db) {
           id: issues.id,
           identifier: issues.identifier,
           title: issues.title,
+          description: issues.description,
           status: issues.status,
           priority: issues.priority,
           originKind: issues.originKind,
@@ -1492,6 +1518,39 @@ export function issueThreadInteractionService(db: Db) {
         const status = agentId ? agentById.get(agentId)?.status : null;
         return Boolean(status && !["paused", "pending_approval", "terminated"].includes(status));
       };
+      const normalizeRoleText = (value: string | null | undefined) =>
+        (value ?? "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-+|-+$/g, "");
+      const agentSearchText = (agent: typeof companyAgentRows[number]) =>
+        [agent.name, agent.role, agent.title].filter(Boolean).join(" ").toLowerCase();
+      const fictionDirector = companyAgentRows.find((agent) =>
+        isMeetingRunnableAgentId(agent.id) &&
+        (
+          FICTION_DIRECTOR_ROLE_KEYS.has(normalizeRoleText(agent.role)) ||
+          FICTION_DIRECTOR_ROLE_KEYS.has(normalizeRoleText(agent.title)) ||
+          normalizeRoleText(agent.name) === "fiction-director"
+        ),
+      ) ?? null;
+      const findFictionAgent = (pattern: RegExp) =>
+        companyAgentRows.find((agent) =>
+          isMeetingRunnableAgentId(agent.id) &&
+          (!fictionDirector || agent.id === fictionDirector.id || agent.reportsTo === fictionDirector.id) &&
+          pattern.test(agentSearchText(agent)),
+        ) ?? null;
+      const isFictionStoryAlignmentIssue = (issue: typeof openIssueRows[number]) =>
+        FICTION_STORY_ALIGNMENT_RE.test([issue.title, issue.description ?? ""].join("\n"));
+      const fictionStoryParticipantIds = (issue: typeof openIssueRows[number]) => {
+        if (!fictionDirector || !isFictionStoryAlignmentIssue(issue)) return [];
+        const ids = [
+          fictionDirector.id,
+          findFictionAgent(FICTION_RESEARCH_ROLE_RE)?.id ?? null,
+          findFictionAgent(FICTION_DRAFT_ROLE_RE)?.id ?? null,
+          findFictionAgent(FICTION_CHARACTER_ROLE_RE)?.id ?? null,
+          findFictionAgent(FICTION_PLOT_ROLE_RE)?.id ?? null,
+          findFictionAgent(FICTION_WORLDBUILDING_ROLE_RE)?.id ?? null,
+          issue.assigneeAgentId,
+        ].filter((agentId): agentId is string => Boolean(agentId && isMeetingRunnableAgentId(agentId)));
+        return [...new Set(ids)].slice(0, 20);
+      };
       const companyOperatingParticipantIds = () => {
         const headIds = [...directHeadIds].filter((agentId) => isMeetingRunnableAgentId(agentId));
         return [...new Set([
@@ -1603,6 +1662,26 @@ export function issueThreadInteractionService(db: Db) {
           expectedOutputs: MEETING_TRIGGER_OUTPUTS[trigger],
         };
       };
+      const buildFictionStoryAlignmentRecommendation = (
+        issue: typeof openIssueRows[number],
+      ): MeetingWorkflowRecommendation | null => {
+        const participantIds = fictionStoryParticipantIds(issue);
+        if (!fictionDirector || participantIds.length < 2) return null;
+        return {
+          ...buildRecommendation(
+            "fiction_story_alignment",
+            issue,
+            "Fiction setup/draft work needs research, character, plot, worldbuilding, and drafting alignment before continuing.",
+          ),
+          suggestedHeadAgentId: fictionDirector.id,
+          suggestedHeadName: fictionDirector.name ?? null,
+          participantAgentIds: participantIds,
+          participantNames: participantIds
+            .map((agentId) => agentById.get(agentId)?.name ?? null)
+            .filter((name): name is string => Boolean(name)),
+          expectedOutputs: MEETING_TRIGGER_OUTPUTS.fiction_story_alignment,
+        };
+      };
       const hasExplicitWaitingPath = (issue: typeof openIssueRows[number]) => (
         Boolean(issue.assigneeUserId) ||
         Boolean(issue.executionState) ||
@@ -1613,6 +1692,11 @@ export function issueThreadInteractionService(db: Db) {
       const recommendations: MeetingWorkflowRecommendation[] = [];
       for (const issue of openIssueRows) {
         if (hasMeetingCoverage(issue.id)) continue;
+        const fictionStoryRecommendation = buildFictionStoryAlignmentRecommendation(issue);
+        if (fictionStoryRecommendation) {
+          recommendations.push(fictionStoryRecommendation);
+          continue;
+        }
         const ageMs = now - issue.updatedAt.getTime();
         if (issue.status === "blocked" && !blockerEdgeIssueIds.has(issue.id) && !hasExplicitWaitingPath(issue)) {
           recommendations.push(buildRecommendation(

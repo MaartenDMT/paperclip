@@ -128,7 +128,7 @@ describe("ActiveAgentsPanel", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5, 6, 7].map(createRun));
     mockHeartbeatsApi.cancel.mockResolvedValue({});
     mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
   });
@@ -155,9 +155,13 @@ describe("ActiveAgentsPanel", () => {
     await flushReact();
 
     expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
-      minCount: 4,
+      minCount: 6,
       limit: undefined,
     });
+
+    expect(container.textContent).toContain("Agent 6");
+    expect(container.textContent).not.toContain("Agent 7");
+    expect(container.querySelector(".grid")?.className).toContain("xl:grid-cols-6");
 
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
       anchor.textContent?.includes("more active/recent"),

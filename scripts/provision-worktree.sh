@@ -411,6 +411,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
+        export npm_config_confirm_modules_purge=false
         pnpm install "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
@@ -422,7 +423,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
       local exit_code=$?
       cat "$stdout_path"
       cat "$stderr_path" >&2
-      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+      if grep -Eq "ERR_PNPM_(OUTDATED_LOCKFILE|LOCKFILE_CONFIG_MISMATCH)" "$stdout_path" "$stderr_path"; then
         rm -f "$stdout_path" "$stderr_path"
         return 90
       fi
@@ -436,7 +437,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     else
       install_exit_code=$?
       if [[ "$install_exit_code" -eq 90 ]]; then
-        echo "pnpm-lock.yaml is out of date in this execution workspace; retrying install without --frozen-lockfile." >&2
+        echo "pnpm-lock.yaml is not compatible with frozen install in this execution workspace; retrying install without --frozen-lockfile." >&2
         run_pnpm_install --no-frozen-lockfile || {
           restore_moved_symlinks
           exit 1

@@ -51,6 +51,7 @@ describe("kimi_local server adapter", () => {
       model: "kimi-k2-0711-preview",
       extraArgs: ["--debug"],
       config: { dangerouslySkipPermissions: true },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
     })).toEqual([
       "--output-format",
       "stream-json",
@@ -60,6 +61,47 @@ describe("kimi_local server adapter", () => {
       "--prompt",
       "do work",
     ]);
+  });
+
+  it("resumes the saved Kimi session in non-interactive prompt mode", () => {
+    expect(kimiDefinition.buildArgs({
+      prompt: "continue work",
+      model: "auto",
+      extraArgs: [],
+      config: {},
+      runtime: {
+        sessionId: "session_123",
+        sessionParams: { sessionId: "session_123" },
+        sessionDisplayId: "session_123",
+        taskKey: "task-1",
+      },
+    })).toEqual([
+      "--output-format",
+      "stream-json",
+      "--session",
+      "session_123",
+      "--prompt",
+      "continue work",
+    ]);
+  });
+
+  it("extracts Kimi session resume hints from stdout", async () => {
+    const result = await kimiDefinition.extractSessionParams?.({
+      stdout: [
+        JSON.stringify({ role: "assistant", content: "done" }),
+        JSON.stringify({
+          role: "meta",
+          type: "session.resume_hint",
+          session_id: "session_abc",
+          command: "kimi -r session_abc",
+        }),
+      ].join("\n"),
+      stderr: "",
+      cwd: "/repo",
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+    });
+
+    expect(result).toEqual({ sessionId: "session_abc", cwd: "/repo" });
   });
 
   it("lists the local coding model detected by current Kimi config", () => {

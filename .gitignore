@@ -48,6 +48,7 @@ server/ui-dist/
 *.tmp
 /.tmp-*.log
 **/.tmp-*.log
+.paperclip-dev.log
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
@@ -77,7 +78,11 @@ tests/release-smoke/playwright-report/
 create_content_writer.json
 graphify-db/
 graphify-extract.log
+graphify-out/
 graphify-server/
 packages/db/src/graphify-out/
 raw/
 server/src/graphify-out/
+.codex/
+.codex-run-logs/
+logs/

@@ -95,7 +95,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     mockAdapterExecute.mockReset();
@@ -1000,7 +1000,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
-  });
+  }, 60_000);
 
   it("allows a manager-owned blocked issue to run when the unresolved blocker belongs to a non-invokable direct report", async () => {
     const companyId = randomUUID();

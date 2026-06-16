@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -32,6 +33,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
+  IssueExecutionPolicy,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
@@ -317,6 +319,81 @@ function isCheckoutRunnableStatus(
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
+const FICTION_DOMAIN_ISSUE_RE = /\b(plot|character|world\s*building|worldbuilding)\b/i;
+const FICTION_DIRECTOR_NAME_KEYS = new Set(["fiction-director", "fiction-director-agent"]);
+const FICTION_DIRECTOR_ROLE_KEYS = new Set(["fiction_director", "fiction-director", "creative_director", "creative-director"]);
+
+function normalizeAgentRoleKey(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function normalizeAgentNameKey(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function isFictionDomainIssueText(input: { title?: string | null; description?: string | null }) {
+  return FICTION_DOMAIN_ISSUE_RE.test([input.title ?? "", input.description ?? ""].join("\n"));
+}
+
+function hasApprovalStage(policy: IssueExecutionPolicy | null) {
+  return Boolean(policy?.stages.some((stage) => stage.type === "approval"));
+}
+
+function withFictionDirectorApprovalStage(
+  policy: IssueExecutionPolicy | null,
+  fictionDirectorAgentId: string,
+): IssueExecutionPolicy {
+  return {
+    mode: policy?.mode ?? "normal",
+    commentRequired: true,
+    stages: [
+      ...(policy?.stages ?? []),
+      {
+        id: randomUUID(),
+        type: "approval",
+        approvalsNeeded: 1,
+        participants: [
+          {
+            id: randomUUID(),
+            type: "agent",
+            agentId: fictionDirectorAgentId,
+            userId: null,
+          },
+        ],
+      },
+    ],
+    ...(policy?.monitor ? { monitor: policy.monitor } : {}),
+  };
+}
+
+async function resolveFictionDirectorAgentId(
+  dbOrTx: DbReader,
+  companyId: string,
+): Promise<string | null> {
+  const rows = await dbOrTx
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      title: agents.title,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(eq(agents.companyId, companyId));
+
+  const candidates = rows.filter((agent) => {
+    if (agent.status === "pending_approval" || agent.status === "terminated") return false;
+    const nameKey = normalizeAgentNameKey(agent.name);
+    const titleKey = normalizeAgentNameKey(agent.title);
+    const roleKey = normalizeAgentRoleKey(agent.role);
+    return (
+      FICTION_DIRECTOR_NAME_KEYS.has(nameKey) ||
+      FICTION_DIRECTOR_NAME_KEYS.has(titleKey) ||
+      FICTION_DIRECTOR_ROLE_KEYS.has(roleKey)
+    );
+  });
+  return candidates[0]?.id ?? null;
+}
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -3189,11 +3266,19 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        let executionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+        if (!hasApprovalStage(executionPolicy) && isFictionDomainIssueText(issueData)) {
+          const fictionDirectorAgentId = await resolveFictionDirectorAgentId(tx, companyId);
+          if (fictionDirectorAgentId) {
+            executionPolicy = withFictionDirectorApprovalStage(executionPolicy, fictionDirectorAgentId);
+          }
+        }
 
         const values = {
           ...issueData,
           title: sanitizeTextForPostgres(issueData.title),
           description: sanitizeNullableTextForPostgres(issueData.description),
+          executionPolicy: executionPolicy as Record<string, unknown> | null,
           projectId: resolvedProjectId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
@@ -3237,7 +3322,7 @@ export function issueService(db: Db) {
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
-            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+            policy: executionPolicy,
             status: values.status ?? "backlog",
             assigneeAgentId: values.assigneeAgentId ?? null,
             assigneeUserId: values.assigneeUserId ?? null,

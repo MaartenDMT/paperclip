@@ -22,6 +22,11 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
+}));
+
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  pruneStaleIssueScopedFiles: vi.fn(),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -95,6 +100,7 @@ function registerRouteMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    agentInstructionsService: () => mockAgentInstructionsService,
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => mockFeedbackService,
@@ -162,6 +168,10 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue workspace command authorization", () => {
+  const managerAgentId = "11111111-1111-4111-8111-111111111111";
+  const directReportAgentId = "22222222-2222-4222-8222-222222222222";
+  const outsideAgentId = "33333333-3333-4333-8333-333333333333";
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
@@ -191,7 +201,45 @@ describe("issue workspace command authorization", () => {
     mockIssueService.update.mockResolvedValue(makeIssue());
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(true);
-    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === managerAgentId) {
+        return {
+          id: managerAgentId,
+          companyId: "company-1",
+          role: "pm",
+          reportsTo: null,
+          permissions: null,
+        };
+      }
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: managerAgentId,
+        companyId: "company-1",
+        role: "pm",
+        reportsTo: null,
+        permissions: null,
+      },
+      {
+        id: directReportAgentId,
+        companyId: "company-1",
+        role: "writer",
+        reportsTo: managerAgentId,
+        permissions: null,
+      },
+      {
+        id: outsideAgentId,
+        companyId: "company-1",
+        role: "engineer",
+        reportsTo: null,
+        permissions: null,
+      },
+    ]);
+    mockAgentInstructionsService.pruneStaleIssueScopedFiles.mockResolvedValue({
+      removed: [],
+      skipped: [],
+    });
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
@@ -268,5 +316,55 @@ describe("issue workspace command authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent assignment to agents outside the caller reporting tree", async () => {
+    mockAccessService.hasPermission.mockImplementation(async (_companyId, _principalType, _principalId, permission) =>
+      permission === "tasks:assign"
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Cross-department assignment",
+        assigneeAgentId: outsideAgentId,
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("reporting tree");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows agent assignment to direct reports", async () => {
+    mockAccessService.hasPermission.mockImplementation(async (_companyId, _principalType, _principalId, permission) =>
+      permission === "tasks:assign"
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "In-department assignment",
+        assigneeAgentId: directReportAgentId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ assigneeAgentId: directReportAgentId }),
+    );
   });
 });

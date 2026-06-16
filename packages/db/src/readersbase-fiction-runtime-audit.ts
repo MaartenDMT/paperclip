@@ -12,14 +12,15 @@ import { resolveMigrationConnection } from "./migration-runtime.js";
 const APPLY = process.argv.includes("--apply");
 const FIX_UNSTABLE = process.argv.includes("--fix-unstable-runtime");
 const FICTION_PRIORITY_ONLY = process.argv.includes("--fiction-priority-only");
+const FICTION_CREATE_ONLY = process.argv.includes("--fiction-create-only");
 const COMPANY_ARG = readArg("--company");
 
 const SITE_QA_RE = /(qa|quality|ux|check|monitor|production|website|catalog qa|author experience|interaction design)/i;
-const FICTION_RE = /(fiction|storybook|story book|novel|novella|writer|editor|narrative|creative|lore|world|manuscript|plot|character|graphic novel|series|fantasy|sci-fi|science fiction|genre[- ]?mix)/i;
+const FICTION_RE = /(fiction|storybook|story book|novel|novella|writer|editor|narrative|creative|lore|world|manuscript|plot|character|research|classification|graphic novel|series|fantasy|sci-fi|science fiction|genre[- ]?mix)/i;
 const SITE_QA_AGENT_NAME_RE =
   /^(UXDesigner|QA Engineer|Catalog QA Analyst|UX Optimization Analyst|Interaction Design Optimizer|Admin Operations QA Analyst|Author Experience QA Analyst)$/i;
 const FICTION_AGENT_NAME_RE =
-  /^(Fiction Director|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer|Novella Writer|Series Architect|Genre-Mix Architect|Sci-Fi Architect|Fantasy Architect)$/i;
+  /^(Fiction Director|Research & Classification Agent|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer|Novella Writer|Series Architect|Genre-Mix Architect|Sci-Fi Architect|Fantasy Architect)$/i;
 const PAUSED_FICTION_AGENT_NAME_RE = /^(Short Fiction Writer|Novella Writer)$/i;
 
 const CODEX_MODEL = "gpt-5.3-codex";
@@ -27,8 +28,10 @@ const STRATEGY_MODEL = "o3";
 const CREATIVE_MODEL = "gpt-5.3-codex";
 export const READERSBASE_CURRENT_FICTION_PRIORITY_NOTE =
   "Current ReadersBase fiction priority: prioritize full-length novels and series development, especially fantasy, genre-mix, and sci-fi lanes. Standalone short-story and novella production is paused for now unless the board explicitly reactivates it.";
+export const READERSBASE_FICTION_DEPARTMENT_NOTE =
+  "ReadersBase codebase and live website are the source of truth for product behavior, catalog surfaces, reader experience, author experience, and existing story-world commitments. Research & Classification Agent owns story research, source classification, backstory/history/family/friends/enemies/lovers dossiers, and evidence handoff before draft work expands the canon. Draft, research, character, plot, and worldbuilding agents should use story alignment meetings to discuss setup changes, reconcile plot/world/character/research conflicts, and update the story plan before major drafting or continuity decisions.";
 const CREATIVE_SYSTEM_NOTE =
-  `Production fiction quality bar: storybook work is not children-only. Create full-length normal or interactive novels and connected series with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Treat fantasy, genre-mix, and sci-fi as priority shelves. Images are occasional supporting assets, not the product. Target length is story-driven long-form fiction: do not initiate short stories or novellas under the current priority.\n\n${READERSBASE_CURRENT_FICTION_PRIORITY_NOTE}`;
+  `Production fiction quality bar: storybook work is not children-only. Create full-length normal or interactive novels and connected series with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Treat fantasy, genre-mix, and sci-fi as priority shelves. Images are occasional supporting assets, not the product. Target length is story-driven long-form fiction: do not initiate short stories or novellas under the current priority.\n\n${READERSBASE_CURRENT_FICTION_PRIORITY_NOTE}\n\n${READERSBASE_FICTION_DEPARTMENT_NOTE}`;
 const SITE_QA_SYSTEM_NOTE =
   "Production ReadersBase QA bar: inspect the live site critically, reproduce issues, create or update concrete tasks for every defect, and do not mark work done until the site behavior is verified or a blocker/recovery issue owns the next action.";
 const UNSTABLE_RUNTIME_NOTE =
@@ -45,7 +48,20 @@ export type ReadersbaseFictionAuditAgent = {
   recentFailures: number;
 };
 
+export type ReadersbaseFictionAgentCreatePlan = {
+  name: string;
+  role: string;
+  title: string;
+  icon: string;
+  reportsTo: string;
+  capabilities: string;
+  adapterType: "codex_local";
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig: Record<string, unknown>;
+};
+
 export type ReadersbaseFictionAgentPlan = {
+  creates: ReadersbaseFictionAgentCreatePlan[];
   upgrades: Array<{
     agent: ReadersbaseFictionAuditAgent;
     nextConfig: Record<string, unknown>;
@@ -58,6 +74,49 @@ export type ReadersbaseFictionAgentPlan = {
     reason: string;
   }>;
 };
+
+const READERSBASE_FICTION_REQUIRED_AGENT_DEFS = [
+  {
+    name: "Research & Classification Agent",
+    role: "research_classification",
+    title: "Research & Classification Agent",
+    icon: "search",
+    capabilities:
+      `Owns ReadersBase fiction research and classification before drafting expands canon. ${READERSBASE_FICTION_DEPARTMENT_NOTE}`,
+  },
+  {
+    name: "Series Architect",
+    role: "series_architect",
+    title: "Series Architect",
+    icon: "library",
+    capabilities:
+      `Owns connected novel and series structure, continuity, season/book arcs, and long-form franchise planning. ${READERSBASE_FICTION_DEPARTMENT_NOTE}`,
+  },
+  {
+    name: "Genre-Mix Architect",
+    role: "genre_mix_architect",
+    title: "Genre-Mix Architect",
+    icon: "sparkles",
+    capabilities:
+      `Owns genre-blend strategy, trope compatibility, reader promise, and cross-genre shelf positioning for ReadersBase fiction. ${READERSBASE_FICTION_DEPARTMENT_NOTE}`,
+  },
+  {
+    name: "Sci-Fi Architect",
+    role: "sci_fi_architect",
+    title: "Sci-Fi Architect",
+    icon: "rocket",
+    capabilities:
+      `Owns science-fiction systems, speculative logic, technology constraints, future history, and continuity for ReadersBase fiction. ${READERSBASE_FICTION_DEPARTMENT_NOTE}`,
+  },
+  {
+    name: "Fantasy Architect",
+    role: "fantasy_architect",
+    title: "Fantasy Architect",
+    icon: "wand",
+    capabilities:
+      `Owns fantasy worlds, magic or myth systems, factions, setting history, lore continuity, and reader-facing fantasy promise. ${READERSBASE_FICTION_DEPARTMENT_NOTE}`,
+  },
+] as const;
 
 function readArg(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -112,9 +171,36 @@ function buildCodexConfig(
   return appendPromptNote(next, options.note);
 }
 
+function normalizeAgentName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 export function buildReadersbaseFictionAgentPlan(
   agents: ReadersbaseFictionAuditAgent[],
 ): ReadersbaseFictionAgentPlan {
+  const fictionDirector = agents.find((agent) => normalizeAgentName(agent.name) === "fiction-director" && agent.status !== "terminated") ?? null;
+  const existingNames = new Set(agents.filter((agent) => agent.status !== "terminated").map((agent) => normalizeAgentName(agent.name)));
+  const creates: ReadersbaseFictionAgentCreatePlan[] = fictionDirector
+    ? READERSBASE_FICTION_REQUIRED_AGENT_DEFS
+      .filter((definition) => !existingNames.has(normalizeAgentName(definition.name)))
+      .map((definition) => ({
+        ...definition,
+        reportsTo: fictionDirector.id,
+        adapterType: "codex_local",
+        adapterConfig: buildCodexConfig({}, {
+          model: CREATIVE_MODEL,
+          effort: "xhigh",
+          note: CREATIVE_SYSTEM_NOTE,
+        }),
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            wakeOnDemand: true,
+          },
+        },
+      }))
+    : [];
+
   const pauses = agents
     .filter((agent) => PAUSED_FICTION_AGENT_NAME_RE.test(agent.name) && agent.status !== "terminated")
     .map((agent) => ({ agent, reason: PAUSED_FICTION_REASON }));
@@ -139,7 +225,7 @@ export function buildReadersbaseFictionAgentPlan(
     .filter((agent) => agent.status === "paused")
     .map((agent) => ({ agent }));
 
-  return { upgrades, resumes, pauses };
+  return { creates, upgrades, resumes, pauses };
 }
 
 async function main() {
@@ -147,7 +233,7 @@ async function main() {
   const sql = postgres(r.connectionString, { max: 1 });
   try {
     console.log(
-      `mode: ${APPLY ? "APPLY" : "DRY-RUN"}${COMPANY_ARG ? `, company=${COMPANY_ARG}` : ""}${FICTION_PRIORITY_ONLY ? ", fiction-priority-only" : ""}\n`,
+      `mode: ${APPLY ? "APPLY" : "DRY-RUN"}${COMPANY_ARG ? `, company=${COMPANY_ARG}` : ""}${FICTION_PRIORITY_ONLY ? ", fiction-priority-only" : ""}${FICTION_CREATE_ONLY ? ", fiction-create-only" : ""}\n`,
     );
 
     const companies = await sql<Array<{ id: string; name: string; description: string | null }>>`
@@ -254,7 +340,7 @@ async function main() {
       console.log(`  ${issue.fails.toString().padStart(3)} fails | ${issue.identifier ?? issue.id.slice(0, 8)} | [${issue.status}] ${issue.title}`);
     }
 
-    const siteQaUpgrades = FICTION_PRIORITY_ONLY
+    const siteQaUpgrades = FICTION_PRIORITY_ONLY || FICTION_CREATE_ONLY
       ? []
       : relevant.filter((agent) => {
           if (agent.status === "terminated") return false;
@@ -271,7 +357,7 @@ async function main() {
       })),
     );
 
-    const unstableRuntime = FIX_UNSTABLE && !FICTION_PRIORITY_ONLY
+    const unstableRuntime = FIX_UNSTABLE && !FICTION_PRIORITY_ONLY && !FICTION_CREATE_ONLY
       ? agents.filter((agent) => {
           if (agent.status === "terminated") return false;
           if (PAUSED_FICTION_AGENT_NAME_RE.test(agent.name)) return false;
@@ -321,75 +407,107 @@ async function main() {
         WHERE id = ${agent.id}`;
     }
 
-    console.log(`\nPlanned fiction priority upgrades: ${fictionPlan.upgrades.length}`);
-    for (const upgrade of fictionPlan.upgrades) {
-      const agent = agents.find((candidate) => candidate.id === upgrade.agent.id);
-      if (!agent) continue;
-      const next = upgrade.nextConfig;
-      if (!configNeedsUpdate({ adapterType: agent.adapter_type, adapterConfig: asRecord(agent.adapter_config) }, next)) {
-        console.log(`  ${agent.name}: already codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
-        continue;
+    if (!FICTION_CREATE_ONLY) {
+      console.log(`\nPlanned fiction priority upgrades: ${fictionPlan.upgrades.length}`);
+      for (const upgrade of fictionPlan.upgrades) {
+        const agent = agents.find((candidate) => candidate.id === upgrade.agent.id);
+        if (!agent) continue;
+        const next = upgrade.nextConfig;
+        if (!configNeedsUpdate({ adapterType: agent.adapter_type, adapterConfig: asRecord(agent.adapter_config) }, next)) {
+          console.log(`  ${agent.name}: already codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
+          continue;
+        }
+        console.log(`  ${agent.name}: ${agent.adapter_type} -> codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
+        if (!APPLY) continue;
+        await sql`
+          INSERT INTO agent_config_revisions (
+            id, company_id, agent_id, source, changed_keys, before_config, after_config, created_at
+          )
+          VALUES (
+            gen_random_uuid(),
+            ${company.id},
+            ${agent.id},
+            'readersbase-fiction-runtime-audit',
+            ${["adapter_type", "adapter_config"] as unknown as string},
+            ${{ adapterType: agent.adapter_type, adapterConfig: agent.adapter_config } as unknown as string},
+            ${{ adapterType: "codex_local", adapterConfig: next } as unknown as string},
+            now()
+          )`;
+        await sql`
+          UPDATE agents
+          SET adapter_type = 'codex_local',
+              adapter_config = ${next as unknown as string},
+              status = CASE WHEN status = 'error' THEN 'idle' ELSE status END,
+              pause_reason = NULL,
+              paused_at = NULL,
+              updated_at = now()
+          WHERE id = ${agent.id}`;
       }
-      console.log(`  ${agent.name}: ${agent.adapter_type} -> codex_local (${next.model}, effort=${next.modelReasoningEffort})`);
+    }
+
+    console.log(`\nPlanned fiction agent creates: ${fictionPlan.creates.length}`);
+    for (const create of fictionPlan.creates) {
+      console.log(`  ${create.name}: new ${create.role} reporting to ${create.reportsTo}`);
       if (!APPLY) continue;
       await sql`
-        INSERT INTO agent_config_revisions (
-          id, company_id, agent_id, source, changed_keys, before_config, after_config, created_at
+        INSERT INTO agents (
+          id, company_id, name, role, title, icon, status, reports_to, capabilities,
+          adapter_type, adapter_config, runtime_config, permissions, created_at, updated_at
         )
         VALUES (
           gen_random_uuid(),
           ${company.id},
-          ${agent.id},
-          'readersbase-fiction-runtime-audit',
-          ${["adapter_type", "adapter_config"] as unknown as string},
-          ${{ adapterType: agent.adapter_type, adapterConfig: agent.adapter_config } as unknown as string},
-          ${{ adapterType: "codex_local", adapterConfig: next } as unknown as string},
+          ${create.name},
+          ${create.role},
+          ${create.title},
+          ${create.icon},
+          'idle',
+          ${create.reportsTo},
+          ${create.capabilities},
+          ${create.adapterType},
+          ${create.adapterConfig as unknown as string},
+          ${create.runtimeConfig as unknown as string},
+          ${{} as unknown as string},
+          now(),
           now()
         )`;
-      await sql`
-        UPDATE agents
-        SET adapter_type = 'codex_local',
-            adapter_config = ${next as unknown as string},
-            status = CASE WHEN status = 'error' THEN 'idle' ELSE status END,
-            pause_reason = NULL,
-            paused_at = NULL,
-            updated_at = now()
-        WHERE id = ${agent.id}`;
     }
 
-    console.log(`\nPlanned fiction resumes: ${fictionPlan.resumes.length}`);
-    for (const resume of fictionPlan.resumes) {
-      const agent = agents.find((candidate) => candidate.id === resume.agent.id);
-      if (!agent) continue;
-      console.log(`  ${agent.name}: ${agent.status} -> idle`);
-      if (!APPLY) continue;
-      await sql`
-        UPDATE agents
-        SET status = 'idle',
-            pause_reason = NULL,
-            paused_at = NULL,
-            updated_at = now()
-        WHERE id = ${agent.id}
-          AND status = 'paused'`;
-    }
-
-    console.log(`\nPlanned fiction pauses: ${fictionPlan.pauses.length}`);
-    for (const pause of fictionPlan.pauses) {
-      const agent = agents.find((candidate) => candidate.id === pause.agent.id);
-      if (!agent) continue;
-      if (agent.status === "paused" && agent.pause_reason === pause.reason) {
-        console.log(`  ${agent.name}: already paused`);
-        continue;
+    if (!FICTION_CREATE_ONLY) {
+      console.log(`\nPlanned fiction resumes: ${fictionPlan.resumes.length}`);
+      for (const resume of fictionPlan.resumes) {
+        const agent = agents.find((candidate) => candidate.id === resume.agent.id);
+        if (!agent) continue;
+        console.log(`  ${agent.name}: ${agent.status} -> idle`);
+        if (!APPLY) continue;
+        await sql`
+          UPDATE agents
+          SET status = 'idle',
+              pause_reason = NULL,
+              paused_at = NULL,
+              updated_at = now()
+          WHERE id = ${agent.id}
+            AND status = 'paused'`;
       }
-      console.log(`  ${agent.name}: ${agent.status} -> paused`);
-      if (!APPLY) continue;
-      await sql`
-        UPDATE agents
-        SET status = 'paused',
-            pause_reason = ${pause.reason},
-            paused_at = COALESCE(paused_at, now()),
-            updated_at = now()
-        WHERE id = ${agent.id}`;
+
+      console.log(`\nPlanned fiction pauses: ${fictionPlan.pauses.length}`);
+      for (const pause of fictionPlan.pauses) {
+        const agent = agents.find((candidate) => candidate.id === pause.agent.id);
+        if (!agent) continue;
+        if (agent.status === "paused" && agent.pause_reason === pause.reason) {
+          console.log(`  ${agent.name}: already paused`);
+          continue;
+        }
+        console.log(`  ${agent.name}: ${agent.status} -> paused`);
+        if (!APPLY) continue;
+        await sql`
+          UPDATE agents
+          SET status = 'paused',
+              pause_reason = ${pause.reason},
+              paused_at = COALESCE(paused_at, now()),
+              updated_at = now()
+          WHERE id = ${agent.id}`;
+      }
     }
 
     if (FIX_UNSTABLE) {

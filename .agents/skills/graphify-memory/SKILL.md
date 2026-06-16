@@ -54,6 +54,10 @@ graphify query "<your question>" \
 Returns the best neighborhood of nodes matching your question, with the
 [[wikilinks]] of the markdown files that backed each node. Use `--budget N`
 to cap tokens. Use `--dfs` to trace one specific path instead of fanning out.
+For issue lookups, start with the exact identifier first, for example
+`graphify query "REA-4459" ...`, then broaden with title/status/agent terms if
+needed. The Paperclip hook adds deterministic `vault-issue-*` and `vault-agent-*`
+anchors so exact REA ids remain findable even when semantic extraction is sparse.
 
 ### Trace shortest path between two concepts
 ```bash
@@ -69,7 +73,9 @@ graphify explain "<node-id-or-label>" \
   --graph A:\Programming\paperclip\memory\obsidian\graphify-out\graph.json
 ```
 Plain-language summary of one node and its closest neighbors. Good when you
-already know the issue ID or agent slug and want to understand its context.
+already know a concept label and want to understand its context. Prefer
+`graphify query "REA-####"` for exact issue-id lookup; current Graphify releases
+resolve issue ids more reliably through `query`/`path` than through `explain`.
 
 ## Workflow on heartbeat wake
 
@@ -119,12 +125,12 @@ The server-side hook reads these env vars:
 - `PAPERCLIP_MEMORY_VAULT` — vault root (default: `A:/Programming/paperclip/memory/obsidian`)
 - `PAPERCLIP_GRAPHIFY_BIN` — graphify CLI shim (default: `graphify`)
 - `PAPERCLIP_GRAPHIFY_BACKEND` — LLM backend for extraction (default: `ollama`)
-- `PAPERCLIP_GRAPHIFY_MODEL` — model name (default: `gemma3:4b` for `ollama`, `qwen3.5:9b` otherwise)
+- `PAPERCLIP_GRAPHIFY_MODEL` — model name (default: `qwen3.5:9b` for `ollama`)
 - `PAPERCLIP_GRAPHIFY_CORPUS_MODE` — `compact` indexes a bounded generated corpus, `vault` indexes raw vault files (default: `compact`)
 - `PAPERCLIP_GRAPHIFY_MAX_DOC_BYTES` — max bytes per markdown file in compact corpus before trimming/summarizing (default: `12000`)
 - `PAPERCLIP_GRAPHIFY_MAX_ISSUE_FILES` — max recent issue-note files kept in the compact corpus by mtime; `0` means all active issue pages (default: `0`)
 - `PAPERCLIP_GRAPHIFY_MAX_AGENT_FILES` — max recent agent role pages kept in the compact corpus by mtime; `0` means all active agent pages (default: `0`)
-- `PAPERCLIP_GRAPHIFY_TOKEN_BUDGET` — Graphify semantic extraction token budget (default: `12000` for ollama, `60000` otherwise)
+- `PAPERCLIP_GRAPHIFY_TOKEN_BUDGET` — Graphify semantic extraction token budget (default: `4096` for ollama, `60000` otherwise)
 - `PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS` — per-request LLM timeout passed to Graphify (default: `900`)
 - `PAPERCLIP_GRAPHIFY_INTERVAL_MS` — ms between refreshes (default: 900000 = 15 min)
 - `PAPERCLIP_GRAPHIFY_LOCK_DIR` — cross-process lock directory for extraction ownership (default: `<vault>/.graphify-extract.lock`)
@@ -132,9 +138,18 @@ The server-side hook reads these env vars:
 - `PAPERCLIP_GRAPHIFY_DISABLE=1` — disables automatic graphify refresh
 
 Troubleshooting:
+- Keep the CLI and assistant skill aligned. The verified local target is
+  `graphify 0.8.37` from the official PyPI package `graphifyy`; after upgrading,
+  run `graphify install --platform codex` so the active skill version matches
+  the package version.
 - On Windows, multiple `graphify.exe` shims can exist on PATH. If `graphify query`
   fails from the shell but another shim works, set `PAPERCLIP_GRAPHIFY_BIN` to
   the working executable so the refresh hook and agent commands use the same CLI.
+- `gemma4:12b-it-q4_K_M` is installed locally and can return simple JSON through
+  `ollama run --think=false`, but a Graphify smoke extraction through the
+  OpenAI-compatible Ollama path produced `0 nodes, 0 edges` with truncation
+  warnings. Treat it as experimental for this hook unless Graphify gains a way
+  to disable thinking for that model path.
 - Compact mode intentionally keeps high-signal vault classes: active issue
   pages, agent pages, and durable note classes such as `decisions/`, `comments/`,
   and `projects/`. It excludes noisy classes like `daily/`, `deliverables/`,

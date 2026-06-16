@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  augmentGraphifyGraphWithVaultAnchors,
   collectTouchedIssueIds,
   ensureParaDailyPage,
   ensureVaultDailyPage,
@@ -74,7 +75,7 @@ describe("vault memory output sanitation", () => {
     );
   });
 
-  it("keeps generated community links when matching Obsidian notes exist", async () => {
+  it("de-links generated community links even when graphify report artifacts exist", async () => {
     const vault = await tempVault();
     await fs.mkdir(path.join(vault, "graphify-out", "obsidian"), { recursive: true });
     await fs.writeFile(
@@ -85,8 +86,8 @@ describe("vault memory output sanitation", () => {
     const report = path.join(vault, "graphify-out", "GRAPH_REPORT.md");
     await fs.writeFile(report, "- [[_COMMUNITY_Community 0|Community 0]]\n", "utf8");
 
-    expect(sanitizeGraphReportWikilinks(vault)).toBe(0);
-    await expect(fs.readFile(report, "utf8")).resolves.toBe("- [[_COMMUNITY_Community 0|Community 0]]\n");
+    expect(sanitizeGraphReportWikilinks(vault)).toBe(1);
+    await expect(fs.readFile(report, "utf8")).resolves.toBe("- Community 0\n");
   });
 });
 
@@ -330,6 +331,80 @@ describe("graphify extraction lock", () => {
 });
 
 describe("graphify graph output validation", () => {
+  it("adds deterministic vault anchors for issue queries that extraction misses", async () => {
+    const vault = await tempVault();
+    await fs.mkdir(path.join(vault, "agents"), { recursive: true });
+    await fs.writeFile(
+      path.join(vault, "issues", "REA-4459.md"),
+      [
+        "---",
+        "title: Plot packet review",
+        "status: in_review",
+        "---",
+        "",
+        "# REA-4459",
+        "",
+        "Waiting on [[cto]] after [[plot-architect]] handoff.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(path.join(vault, "agents", "cto.md"), "# CTO\n", "utf8");
+    await fs.writeFile(path.join(vault, "agents", "plot-architect.md"), "# Plot Architect\n", "utf8");
+    await fs.writeFile(
+      path.join(vault, "graphify-out", "graph.json"),
+      JSON.stringify({
+        nodes: [
+          {
+            id: "extracted_review_state",
+            label: "Review state",
+            source_file: "issues/REA-4459.md",
+          },
+        ],
+        edges: [],
+      }),
+      "utf8",
+    );
+
+    expect(augmentGraphifyGraphWithVaultAnchors(vault)).toMatchObject({
+      nodesAdded: 3,
+      edgesAdded: 3,
+    });
+
+    const graph = JSON.parse(await fs.readFile(path.join(vault, "graphify-out", "graph.json"), "utf8")) as {
+      nodes: Array<{ id: string; label: string; source_file: string }>;
+      edges: Array<{ source: string; target: string; relation: string }>;
+    };
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "vault-issue-rea-4459",
+          label: "rea-4459 issue Plot packet review status in_review",
+          source_file: "issues/rea-4459.md",
+        }),
+      ]),
+    );
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "vault-issue-rea-4459",
+          target: "extracted_review_state",
+          relation: "contains_extracted_node",
+        }),
+        expect.objectContaining({
+          source: "vault-issue-rea-4459",
+          target: "vault-agent-cto",
+          relation: "wikilinks_to",
+        }),
+        expect.objectContaining({
+          source: "vault-issue-rea-4459",
+          target: "vault-agent-plot-architect",
+          relation: "wikilinks_to",
+        }),
+      ]),
+    );
+  });
+
   it("restores the last useful graph when extraction leaves an empty graph over a non-empty corpus", async () => {
     const vault = await tempVault();
     await fs.writeFile(path.join(vault, "issues", "REA-1.md"), "# REA-1\n", "utf8");
@@ -337,14 +412,14 @@ describe("graphify graph output validation", () => {
     await fs.writeFile(
       graphFile,
       JSON.stringify({
-        nodes: [{ id: "rea-1", label: "REA-1" }],
+        nodes: [{ id: "rea-1", label: "REA-1", source_file: "issues/REA-1.md" }],
         edges: [],
       }),
       "utf8",
     );
 
     expect(validateGraphifyGraphOutput(vault)).toMatchObject({
-      nodeCount: 1,
+      nodeCount: 2,
       sourceFiles: 1,
       restoredBackup: false,
     });
@@ -356,10 +431,10 @@ describe("graphify graph output validation", () => {
       sourceFiles: 1,
       restoredBackup: true,
     });
-    await expect(fs.readFile(graphFile, "utf8")).resolves.toContain("rea-1");
+    await expect(fs.readFile(graphFile, "utf8")).resolves.toContain("vault-issue-rea-1");
   });
 
-  it("marks trivially small graphs as degraded when the corpus is much larger", async () => {
+  it("treats deterministic anchors as a usable floor when semantic extraction is sparse", async () => {
     const vault = await tempVault();
     for (let i = 0; i < 120; i += 1) {
       await fs.writeFile(path.join(vault, "issues", `REA-${i}.md`), `# REA-${i}\n`, "utf8");
@@ -368,16 +443,16 @@ describe("graphify graph output validation", () => {
     await fs.writeFile(
       graphFile,
       JSON.stringify({
-        nodes: [{ id: "rea-1", label: "REA-1" }],
+        nodes: [{ id: "rea-1", label: "REA-1", source_file: "issues/REA-1.md" }],
         edges: [],
       }),
       "utf8",
     );
 
     expect(validateGraphifyGraphOutput(vault)).toMatchObject({
-      nodeCount: 1,
-      sourceFiles: 120,
-      isDegraded: true,
+      nodeCount: 2,
+      sourceFiles: 1,
+      isDegraded: false,
       restoredBackup: false,
     });
   });

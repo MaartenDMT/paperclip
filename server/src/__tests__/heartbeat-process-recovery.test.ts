@@ -397,6 +397,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
     runStatus?: "running" | "queued" | "failed";
+    runtimeConfig?: Record<string, unknown>;
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
@@ -429,7 +430,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: input?.runtimeConfig ?? {},
       permissions: {},
     });
 
@@ -999,9 +1000,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("queues exactly one retry when the recorded local pid is dead", async () => {
+  it("queues exactly one same-adapter retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "kimi_local",
       processPid: 999_999_999,
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              command: "codex",
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
     });
     const heartbeat = heartbeatService(db);
 
@@ -1029,7 +1043,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("queued");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_retry",
+      retryReason: "process_lost",
+      retryOfRunId: runId,
+    });
+    expect(retryRun?.contextSnapshot).not.toMatchObject({ modelProfile: expect.any(String) });
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.payload).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+    });
+    expect(retryWakeup?.payload).not.toMatchObject({ modelProfile: expect.any(String) });
 
     const issue = await db
       .select()

@@ -408,7 +408,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
-  it("allows meeting workflow wakeups for non-assignee chairs on blocked issues", async () => {
+  it("cancels meeting workflow wakeups when the issue belongs to another assignee", async () => {
     const { companyId, agentId: issueAssigneeId } = await seedCompanyAndAgent({
       agentName: "Interaction Design Optimizer",
     });
@@ -463,7 +463,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
+      return run?.status === "cancelled";
     });
 
     const [run, wakeup, issue] = await Promise.all([
@@ -489,13 +489,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     ]);
 
     expect(run).toMatchObject({
-      status: "succeeded",
-      errorCode: null,
-      error: null,
+      status: "cancelled",
+      errorCode: "issue_assignee_changed",
     });
-    expect(wakeup?.status).not.toBe("skipped");
+    expect(run?.error).toContain("assignee changed");
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("assignee changed");
     expect(issue?.executionRunId).toBeNull();
-    expect(countExecuteCallsForRun(runId)).toBe(1);
+    expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
   it("promotes a deferred wake for the new assignee after cancelling a stale reassigned run", async () => {

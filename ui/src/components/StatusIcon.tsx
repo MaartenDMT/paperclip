@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
+import { Hand } from "lucide-react";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -50,7 +51,7 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
 
   if (blockerAttention.reason === "attention_required") {
     const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
-    const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} attention`;
+    const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} human action`;
     const coveredCount = blockerAttention.coveredBlockerCount;
     if (coveredCount > 0) {
       return `Blocked · ${attentionCopy}; ${coveredCount} covered by active work`;
@@ -105,6 +106,13 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       )}
       {isStalledBlocked && (
         <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />
+      )}
+      {isAttentionBlocked && (
+        <Hand
+          className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-background text-red-600 dark:text-red-400"
+          aria-hidden="true"
+          strokeWidth={2.5}
+        />
       )}
     </span>
   );

@@ -227,6 +227,13 @@ describe("server adapter registry", () => {
     ]);
   });
 
+  it("built-in kimi_local adapter declares session resume support", () => {
+    const adapter = findActiveServerAdapter("kimi_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.sessionCodec).toBeDefined();
+    expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({

@@ -37,7 +37,7 @@ const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
 const GRAPHIFY_MODEL =
   process.env.PAPERCLIP_GRAPHIFY_MODEL ||
-  (GRAPHIFY_BACKEND === "ollama" ? "gemma3:4b" : "qwen3.5:9b");
+  (GRAPHIFY_BACKEND === "ollama" ? "qwen3.5:9b" : "qwen3.5:9b");
 const GRAPHIFY_CORPUS_MODE = process.env.PAPERCLIP_GRAPHIFY_CORPUS_MODE || "compact";
 const GRAPHIFY_CORPUS_DIR =
   process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
@@ -53,7 +53,7 @@ const GRAPHIFY_MAX_ISSUE_FILES = Number(
 );
 const GRAPHIFY_TOKEN_BUDGET = Number(
   process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
-    (GRAPHIFY_BACKEND === "ollama" ? 12_000 : 60_000),
+    (GRAPHIFY_BACKEND === "ollama" ? 4_096 : 60_000),
 );
 const GRAPHIFY_API_TIMEOUT_SECONDS = Number(
   process.env.PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS || 900,
@@ -74,6 +74,12 @@ const GRAPHIFY_LOCK_DIR =
 const GRAPHIFY_GRAPH_FILE = "graph.json";
 const GRAPHIFY_GRAPH_BACKUP_FILE = "graph.last-good.json";
 const GRAPHIFY_EXTRACT_LOG_FILE = "graphify-extract.last.log";
+const GRAPHIFY_MAX_ANCHOR_SOURCE_FILES = Number(
+  process.env.PAPERCLIP_GRAPHIFY_MAX_ANCHOR_SOURCE_FILES || 250,
+);
+const GRAPHIFY_MAX_ANCHOR_WIKILINKS = Number(
+  process.env.PAPERCLIP_GRAPHIFY_MAX_ANCHOR_WIKILINKS || 500,
+);
 
 /**
  * Resolve the graphify executable to an absolute path ONCE at module load.
@@ -217,7 +223,7 @@ function buildMarkdownIndexes(vaultRoot: string): {
   const pathIndex = new Set<string>();
   const basenameIndex = new Set<string>();
 
-  for (const file of walkMarkdownFiles(vaultRoot)) {
+  for (const file of walkGraphifySourceMarkdownFiles(vaultRoot)) {
     const relPath = slash(path.relative(vaultRoot, file));
     pathIndex.add(stripMd(relPath));
     basenameIndex.add(stripMd(path.posix.basename(relPath)));
@@ -311,6 +317,406 @@ function readGraphNodeCount(file: string): number | null {
   }
 }
 
+type GraphifyNode = {
+  id: string;
+  label: string;
+  file_type?: string;
+  source_file?: string | null;
+  source_location?: string | null;
+  source_url?: string | null;
+  captured_at?: string | null;
+  author?: string | null;
+  contributor?: string | null;
+};
+
+type GraphifyEdge = {
+  source: string;
+  target: string;
+  relation: string;
+  confidence?: string;
+  confidence_score?: number;
+  source_file?: string | null;
+  source_location?: string | null;
+  weight?: number;
+};
+
+type GraphifyGraph = {
+  nodes?: GraphifyNode[];
+  edges?: GraphifyEdge[];
+  hyperedges?: unknown[];
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  [key: string]: unknown;
+};
+
+function stableGraphId(prefix: string, value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/\.md$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `vault-${prefix}-${normalized || "note"}`;
+}
+
+function parseFrontmatter(markdown: string): Record<string, string> {
+  if (!markdown.startsWith("---\n")) return {};
+  const end = markdown.indexOf("\n---", 4);
+  if (end < 0) return {};
+  const values: Record<string, string> = {};
+  for (const line of markdown.slice(4, end).split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!match) continue;
+    values[match[1]!.toLowerCase()] = match[2]!.trim().replace(/^["']|["']$/g, "");
+  }
+  return values;
+}
+
+function firstMarkdownHeading(markdown: string): string | null {
+  const match = markdown.match(/^#\s+(.+)$/m);
+  return match?.[1]?.trim() || null;
+}
+
+function compactLabel(value: string, maxLength = 180): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+const ISSUE_STATUS_RE =
+  /\bstatus\b\s*(?:[:=]|showed|is|still showed)?\s*(?:[`"']|REA-\d+\s+status\s+[`"']?)?\b(backlog|todo|in_progress|in_review|done|blocked|cancelled)\b/gi;
+
+function latestIssueStatusMention(markdown: string): string | null {
+  const tail = markdown.slice(-8_000);
+  let latest: string | null = null;
+  for (const match of tail.matchAll(ISSUE_STATUS_RE)) {
+    latest = match[1] ?? latest;
+  }
+  return latest;
+}
+
+function buildAnchorLabel(relPath: string, markdown: string): string {
+  const normalized = slash(relPath);
+  const basename = path.posix.basename(normalized, ".md");
+  const frontmatter = parseFrontmatter(markdown);
+  const title = frontmatter.title || firstMarkdownHeading(markdown) || basename;
+  if (normalized.startsWith("issues/")) {
+    const issueId = basename.match(ISSUE_RE)?.[0] ?? basename;
+    const issueStatus = latestIssueStatusMention(markdown) ?? frontmatter.status;
+    const status = issueStatus ? ` status ${issueStatus}` : "";
+    return compactLabel(`${issueId} issue ${title}${status}`);
+  }
+  const status = frontmatter.status ? ` status ${frontmatter.status}` : "";
+  if (normalized.startsWith("agents/")) {
+    return compactLabel(`${basename} agent ${title}${status}`);
+  }
+  return compactLabel(`${basename} note ${title}${status}`);
+}
+
+function normalizeGraphSourceFile(value: string | null | undefined): string {
+  return slash(value ?? "").replace(/^\.?\//, "").toLowerCase();
+}
+
+function readGraphifyAnchorSourceFiles(vaultRoot: string, relPaths?: Iterable<string>): Array<{
+  file: string;
+  relPath: string;
+  markdown: string;
+}> {
+  const files: Array<{ file: string; relPath: string; markdown: string }> = [];
+  const candidates = relPaths
+    ? [...new Set([...relPaths].map((relPath) => slash(relPath)).filter((relPath) => relPath.endsWith(".md")))]
+    : [];
+  for (const relPath of candidates) {
+    if (relPath.startsWith("../") || path.isAbsolute(relPath)) continue;
+    if (!relPath.includes("/")) {
+      if (!GRAPHIFY_ALLOWED_TOP_LEVEL_FILES.has(relPath.toLowerCase())) continue;
+    } else {
+      const [topLevel] = relPath.split("/", 1);
+      if (!GRAPHIFY_ALLOWED_TOP_LEVEL_DIRS.has(topLevel ?? "")) continue;
+    }
+    const file = path.join(vaultRoot, relPath);
+    try {
+      files.push({ file, relPath, markdown: fs.readFileSync(file, "utf8") });
+    } catch {
+      // Best-effort anchor generation; unreadable notes are skipped.
+    }
+  }
+  return files;
+}
+
+function collectGraphSourceRelPaths(graph: GraphifyGraph): string[] {
+  const relPaths = new Set<string>();
+  for (const node of Array.isArray(graph.nodes) ? graph.nodes : []) {
+    const source = normalizeGraphSourceFile(node.source_file);
+    if (source.endsWith(".md")) relPaths.add(source);
+  }
+  for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
+    const source = normalizeGraphSourceFile(edge.source_file);
+    if (source.endsWith(".md")) relPaths.add(source);
+  }
+  return [...relPaths];
+}
+
+function hasAnyGraphifySourceMarkdownFile(vaultRoot: string): boolean {
+  for (const file of GRAPHIFY_ALLOWED_TOP_LEVEL_FILES) {
+    if (fs.existsSync(path.join(vaultRoot, file))) return true;
+  }
+  for (const dir of GRAPHIFY_ALLOWED_TOP_LEVEL_DIRS) {
+    const fullDir = path.join(vaultRoot, dir);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(fullDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    if (entries.some((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveWikilinkTargetRelPath(vaultRoot: string, target: string): string | null {
+  const clean = target.split("#")[0]?.trim() ?? "";
+  if (!clean || /^[a-z]+:/i.test(clean)) return null;
+  const normalized = stripMd(slash(clean).replace(/^\/+/, ""));
+  const candidates = normalized.includes("/")
+    ? [`${normalized}.md`]
+    : [
+        `issues/${normalized}.md`,
+        `agents/${normalized}.md`,
+        `decisions/${normalized}.md`,
+        `comments/${normalized}.md`,
+        `projects/${normalized}.md`,
+        `${normalized}.md`,
+      ];
+  for (const candidate of candidates) {
+    const relPath = slash(candidate);
+    if (fs.existsSync(path.join(vaultRoot, relPath))) return relPath;
+  }
+  return null;
+}
+
+function addGraphNode(nodes: GraphifyNode[], byId: Map<string, GraphifyNode>, node: GraphifyNode): boolean {
+  const existing = byId.get(node.id);
+  if (existing) {
+    const before = JSON.stringify(existing);
+    Object.assign(existing, node);
+    return JSON.stringify(existing) !== before;
+  }
+  nodes.push(node);
+  byId.set(node.id, node);
+  return true;
+}
+
+function edgeKey(edge: Pick<GraphifyEdge, "source" | "target" | "relation">): string {
+  return `${edge.source}\n${edge.target}\n${edge.relation}`;
+}
+
+function addGraphEdge(edges: GraphifyEdge[], edgeKeys: Set<string>, edge: GraphifyEdge): boolean {
+  const key = edgeKey(edge);
+  if (edgeKeys.has(key)) return false;
+  edges.push(edge);
+  edgeKeys.add(key);
+  return true;
+}
+
+function dedupeGraphInPlace(nodes: GraphifyNode[], edges: GraphifyEdge[]): void {
+  const seenNodeIds = new Set<string>();
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const id = nodes[index]?.id;
+    if (!id) {
+      nodes.splice(index, 1);
+      continue;
+    }
+    if (seenNodeIds.has(id)) nodes.splice(index, 1);
+    else seenNodeIds.add(id);
+  }
+
+  const seenEdges = new Set<string>();
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    const edge = edges[index];
+    if (!edge?.source || !edge.target || !edge.relation) {
+      edges.splice(index, 1);
+      continue;
+    }
+    const key = edgeKey(edge);
+    if (seenEdges.has(key)) edges.splice(index, 1);
+    else seenEdges.add(key);
+  }
+}
+
+export function augmentGraphifyGraphWithVaultAnchors(vaultRoot: string, relPaths?: Iterable<string>): {
+  nodesAdded: number;
+  nodesUpdated: number;
+  edgesAdded: number;
+} {
+  const graphFile = graphifyGraphFile(vaultRoot);
+  let graph: GraphifyGraph;
+  try {
+    graph = JSON.parse(fs.readFileSync(graphFile, "utf8")) as GraphifyGraph;
+  } catch {
+    return { nodesAdded: 0, nodesUpdated: 0, edgesAdded: 0 };
+  }
+
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  graph.nodes = nodes;
+  graph.edges = edges;
+  const originalNodeCount = nodes.length;
+  const originalEdgeCount = edges.length;
+  dedupeGraphInPlace(nodes, edges);
+  const dedupedNodes = originalNodeCount - nodes.length;
+  const dedupedEdges = originalEdgeCount - edges.length;
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edgeKeys = new Set(edges.map(edgeKey));
+  const anchorsByRelPath = new Map<string, string>();
+  const anchorsByBasename = new Map<string, string>();
+  const existingNodeIdsBySource = new Map<string, string[]>();
+
+  for (const node of nodes) {
+    const source = normalizeGraphSourceFile(node.source_file);
+    if (!source) continue;
+    const list = existingNodeIdsBySource.get(source) ?? [];
+    list.push(node.id);
+    existingNodeIdsBySource.set(source, list);
+  }
+
+  let nodesAdded = 0;
+  let nodesUpdated = 0;
+  let edgesAdded = 0;
+  const maxAnchorSourceFiles = Math.max(
+    0,
+    Math.floor(
+      Number.isFinite(GRAPHIFY_MAX_ANCHOR_SOURCE_FILES)
+        ? GRAPHIFY_MAX_ANCHOR_SOURCE_FILES
+        : 250,
+    ),
+  );
+  const sourceFiles = readGraphifyAnchorSourceFiles(
+    vaultRoot,
+    relPaths ?? collectGraphSourceRelPaths(graph),
+  ).slice(0, maxAnchorSourceFiles);
+  for (const source of sourceFiles) {
+    const normalizedRelPath = normalizeGraphSourceFile(source.relPath);
+    const basename = path.posix.basename(slash(source.relPath), ".md");
+    const prefix = normalizedRelPath.startsWith("issues/")
+      ? "issue"
+      : normalizedRelPath.startsWith("agents/")
+        ? "agent"
+        : "note";
+    const id = stableGraphId(prefix, basename);
+    anchorsByRelPath.set(normalizedRelPath, id);
+    anchorsByBasename.set(stripMd(basename).toLowerCase(), id);
+    const beforeExists = byId.has(id);
+    const changed = addGraphNode(nodes, byId, {
+      id,
+      label: buildAnchorLabel(source.relPath, source.markdown),
+      file_type: prefix === "issue" ? "issue" : prefix === "agent" ? "agent" : "document",
+      source_file: source.relPath,
+      source_location: null,
+      source_url: null,
+      captured_at: null,
+      author: null,
+      contributor: null,
+    });
+    if (!beforeExists) nodesAdded += 1;
+    else if (changed) nodesUpdated += 1;
+  }
+
+  for (const [sourceRelPath, anchorId] of anchorsByRelPath) {
+    const sameSourceIds = existingNodeIdsBySource.get(sourceRelPath) ?? [];
+    for (const nodeId of sameSourceIds) {
+      if (nodeId === anchorId) continue;
+      if (
+        addGraphEdge(edges, edgeKeys, {
+          source: anchorId,
+          target: nodeId,
+          relation: "contains_extracted_node",
+          confidence: "DETERMINISTIC",
+          confidence_score: 1,
+          source_file: sourceRelPath,
+          source_location: null,
+          weight: 1,
+        })
+      ) {
+        edgesAdded += 1;
+      }
+    }
+  }
+
+  let followedWikilinks = 0;
+  const maxFollowedWikilinks = Math.max(
+    0,
+    Math.floor(Number.isFinite(GRAPHIFY_MAX_ANCHOR_WIKILINKS) ? GRAPHIFY_MAX_ANCHOR_WIKILINKS : 500),
+  );
+  for (const source of sourceFiles) {
+    const sourceRelPath = normalizeGraphSourceFile(source.relPath);
+    const anchorId = anchorsByRelPath.get(sourceRelPath);
+    if (!anchorId) continue;
+    for (const match of source.markdown.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      if (followedWikilinks >= maxFollowedWikilinks) break;
+      const body = match[1] ?? "";
+      const target = body.split("|")[0]?.split("#")[0]?.trim() ?? "";
+      const resolvedTarget = resolveWikilinkTargetRelPath(vaultRoot, target);
+      if (!resolvedTarget) continue;
+      followedWikilinks += 1;
+      if (!anchorsByRelPath.has(normalizeGraphSourceFile(resolvedTarget))) {
+        for (const targetSource of readGraphifyAnchorSourceFiles(vaultRoot, [resolvedTarget])) {
+          const targetRelPath = normalizeGraphSourceFile(targetSource.relPath);
+          const targetBasename = path.posix.basename(slash(targetSource.relPath), ".md");
+          const targetPrefix = targetRelPath.startsWith("issues/")
+            ? "issue"
+            : targetRelPath.startsWith("agents/")
+              ? "agent"
+              : "note";
+          const targetId = stableGraphId(targetPrefix, targetBasename);
+          anchorsByRelPath.set(targetRelPath, targetId);
+          anchorsByBasename.set(stripMd(targetBasename).toLowerCase(), targetId);
+          const beforeExists = byId.has(targetId);
+          const changed = addGraphNode(nodes, byId, {
+            id: targetId,
+            label: buildAnchorLabel(targetSource.relPath, targetSource.markdown),
+            file_type: targetPrefix === "issue" ? "issue" : targetPrefix === "agent" ? "agent" : "document",
+            source_file: targetSource.relPath,
+            source_location: null,
+            source_url: null,
+            captured_at: null,
+            author: null,
+            contributor: null,
+          });
+          if (!beforeExists) nodesAdded += 1;
+          else if (changed) nodesUpdated += 1;
+        }
+      }
+      const normalizedTarget = normalizeGraphSourceFile(resolvedTarget);
+      const targetAnchorId =
+        anchorsByRelPath.get(normalizedTarget) ??
+        anchorsByRelPath.get(normalizeGraphSourceFile(target)) ??
+        anchorsByBasename.get(stripMd(slash(target)).toLowerCase());
+      if (!targetAnchorId || targetAnchorId === anchorId) continue;
+      if (
+        addGraphEdge(edges, edgeKeys, {
+          source: anchorId,
+          target: targetAnchorId,
+          relation: "wikilinks_to",
+          confidence: "DETERMINISTIC",
+          confidence_score: 1,
+          source_file: sourceRelPath,
+          source_location: null,
+          weight: 1,
+        })
+      ) {
+        edgesAdded += 1;
+      }
+    }
+  }
+
+  if (nodesAdded > 0 || nodesUpdated > 0 || edgesAdded > 0 || dedupedNodes > 0 || dedupedEdges > 0) {
+    fs.writeFileSync(graphFile, JSON.stringify(graph, null, 2), "utf8");
+  }
+  return { nodesAdded, nodesUpdated: nodesUpdated + dedupedNodes, edgesAdded };
+}
+
 function backupGraphifyGraphIfUseful(vaultRoot: string): boolean {
   const graphFile = graphifyGraphFile(vaultRoot);
   const nodeCount = readGraphNodeCount(graphFile);
@@ -335,8 +741,19 @@ export function validateGraphifyGraphOutput(vaultRoot: string): {
   restoredBackup: boolean;
 } {
   const graphFile = graphifyGraphFile(vaultRoot);
+  augmentGraphifyGraphWithVaultAnchors(vaultRoot);
   const nodeCount = readGraphNodeCount(graphFile);
-  const sourceFiles = walkGraphifySourceMarkdownFiles(vaultRoot).length;
+  let sourceFiles = 0;
+  try {
+    sourceFiles = collectGraphSourceRelPaths(
+      JSON.parse(fs.readFileSync(graphFile, "utf8")) as GraphifyGraph,
+    ).length;
+  } catch {
+    sourceFiles = 0;
+  }
+  if (sourceFiles === 0 && hasAnyGraphifySourceMarkdownFile(vaultRoot)) {
+    sourceFiles = 1;
+  }
   const minimumExpectedNodes =
     sourceFiles >= 100 ? Math.max(10, Math.floor(sourceFiles * 0.005)) : 1;
   const isDegraded = nodeCount == null || nodeCount < minimumExpectedNodes;
@@ -1133,6 +1550,15 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
   for (const id of touched) {
     ensureIssuePage(id);
     if (!issuePageUpdatedSince(id, startedAt)) missed.push(id);
+  }
+
+  try {
+    augmentGraphifyGraphWithVaultAnchors(VAULT, [
+      `agents/${slug}.md`,
+      ...touched.map((id) => `issues/${id}.md`),
+    ]);
+  } catch {
+    // Best-effort graph search repair; heartbeat memory writes remain authoritative.
   }
 
   // Fallback: agent didn't update touched issue pages — write a hook-authored

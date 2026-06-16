@@ -53,7 +53,7 @@ describe("StatusIcon", () => {
     expect(html).not.toContain("border-dashed");
   });
 
-  it("keeps normal blocked issues on the attention-required visual", () => {
+  it("marks attention-required blocked issues with a human-action hand", () => {
     const html = renderToStaticMarkup(
       <StatusIcon
         status="blocked"
@@ -72,8 +72,9 @@ describe("StatusIcon", () => {
 
     expect(html).not.toContain('data-blocker-attention-state="covered"');
     expect(html).toContain('data-blocker-attention-state="needs_attention"');
-    expect(html).toContain('aria-label="Blocked · 1 blocker needs attention"');
+    expect(html).toContain('aria-label="Blocked · 1 blocker needs human action"');
     expect(html).toContain("border-red-600");
+    expect(html).toContain("lucide-hand");
     expect(html).not.toContain("border-dashed");
   });
 
@@ -95,10 +96,11 @@ describe("StatusIcon", () => {
     );
 
     expect(html).toContain('data-blocker-attention-state="needs_attention"');
-    expect(html).toContain('aria-label="Blocked · 3 blockers need attention; 2 covered by active work"');
+    expect(html).toContain('aria-label="Blocked · 3 blockers need human action; 2 covered by active work"');
     expect(html).toContain("border-red-600");
     expect(html).not.toContain("border-cyan-600");
     expect(html).toContain("bg-cyan-600");
+    expect(html).toContain("lucide-hand");
   });
 
   it("renders stalled review chains with amber visual and stalled-leaf copy", () => {

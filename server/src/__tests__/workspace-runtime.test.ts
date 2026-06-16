@@ -1316,11 +1316,89 @@ describe("realizeExecutionWorkspace", () => {
         },
       });
 
-      expect(result.stderr).toContain("retrying install without --frozen-lockfile");
+      expect(result.stderr).toContain("not compatible with frozen install");
       await expect(fs.readFile(path.join(worktreeRoot, "node_modules", ".retry-success"), "utf8")).resolves.toBe("");
       await expect(fs.readFile(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8")).resolves.toContain(
         "\"database\"",
       );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  itPosixProvisionScript("does not override pnpm lockfile install settings during worktree provisioning", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-pnpm-env-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+
+    try {
+      await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(worktreeRoot, { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(worktreeRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: "workspace-root",
+            private: true,
+            packageManager: "pnpm@9.15.4",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "pnpm-lock.yaml"),
+        [
+          "lockfileVersion: '9.0'",
+          "",
+          "settings:",
+          "  autoInstallPeers: false",
+          "  nodeLinker: isolated",
+          "",
+          "importers:",
+          "  .: {}",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ]; then",
+          "  printf '%s\\n' \"auto=${npm_config_auto_install_peers-}\" > \"$PWD/pnpm-env.log\"",
+          "  printf '%s\\n' \"linker=${npm_config_node_linker-}\" >> \"$PWD/pnpm-env.log\"",
+          "  mkdir -p \"$PWD/node_modules\"",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      await execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      await expect(fs.readFile(path.join(worktreeRoot, "pnpm-env.log"), "utf8")).resolves.toBe("auto=\nlinker=\n");
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }

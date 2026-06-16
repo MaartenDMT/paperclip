@@ -1054,7 +1054,48 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  type AgentAssignmentScopeInput = {
+    targetAssigneeAgentId?: string | null;
+  };
+
+  function isAgentInReportingTree(
+    agentsById: Map<string, { reportsTo: string | null }>,
+    managerAgentId: string,
+    targetAgentId: string,
+  ) {
+    let cursor: string | null = targetAgentId;
+    for (let depth = 0; cursor && depth < 50; depth += 1) {
+      const target = agentsById.get(cursor);
+      if (!target) return false;
+      if (target.reportsTo === managerAgentId) return true;
+      cursor = target.reportsTo;
+    }
+    return false;
+  }
+
+  async function assertAgentAssignmentTargetInScope(
+    companyId: string,
+    actorAgent: { id: string; companyId: string; role: string; reportsTo?: string | null; permissions: Record<string, unknown> | null | undefined },
+    targetAssigneeAgentId: string | null | undefined,
+  ) {
+    if (!targetAssigneeAgentId || targetAssigneeAgentId === actorAgent.id) return;
+    if (canCreateAgentsLegacy(actorAgent)) return;
+
+    const hasCrossScopeGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "tasks:assign_scope");
+    if (hasCrossScopeGrant) return;
+
+    const companyAgents = await agentsSvc.list(companyId);
+    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
+    const targetAgent = agentsById.get(targetAssigneeAgentId);
+    if (!targetAgent || targetAgent.companyId !== companyId) {
+      throw forbidden("Assigned agent is not in this company");
+    }
+    if (isAgentInReportingTree(agentsById, actorAgent.id, targetAssigneeAgentId)) return;
+
+    throw forbidden("Agents can only assign issues to themselves or agents in their reporting tree");
+  }
+
+  async function assertCanAssignTasks(req: Request, companyId: string, scope: AgentAssignmentScopeInput = {}) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -1065,16 +1106,16 @@ export function issueRoutes(
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (
-        actorAgent &&
-        actorAgent.companyId === companyId &&
-        (canCreateAgentsLegacy(actorAgent) || agentRoleCanAssignTasks(actorAgent.role))
+        !actorAgent ||
+        actorAgent.companyId !== companyId ||
+        (!allowedByGrant && !canCreateAgentsLegacy(actorAgent) && !agentRoleCanAssignTasks(actorAgent.role))
       ) {
-        return;
+        throw forbidden("Missing permission: tasks:assign");
       }
-      throw forbidden("Missing permission: tasks:assign");
+      await assertAgentAssignmentTargetInScope(companyId, actorAgent, scope.targetAssigneeAgentId);
+      return;
     }
     throw unauthorized();
   }
@@ -1108,15 +1149,7 @@ export function issueRoutes(
 
     // Reporting-chain managers may intervene in an agent's active checkout
     // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    return isAgentInReportingTree(agentsById, actorAgentId, assigneeAgentId);
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -1222,7 +1255,7 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, { targetAssigneeAgentId: req.body.assigneeAgentId ?? null });
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -2532,7 +2565,7 @@ export function issueRoutes(
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId);
+      await assertCanAssignTasks(req, parent.companyId, { targetAssigneeAgentId: req.body.assigneeAgentId ?? null });
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -2888,7 +2921,7 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, { targetAssigneeAgentId: nextAssigneeAgentId });
       }
     }
 

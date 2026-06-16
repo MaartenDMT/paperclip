@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
+import { Routines, buildRoutineGroups, selectDepartmentRoutineProject, sortRoutines } from "./Routines";
 
 let currentSearch = "";
 
@@ -415,6 +415,37 @@ describe("Routines page", () => {
       "routine-2",
     ]);
     expect(routines.map((routine) => routine.id)).toEqual(["routine-1", "routine-2"]);
+  });
+
+  it("selects a non-archived active project for generated department routines", () => {
+    const project = selectDepartmentRoutineProject([
+      {
+        id: "archived-onboarding",
+        goalId: null,
+        status: "in_progress",
+        archivedAt: "2026-05-03T17:00:16.024Z",
+      },
+      {
+        id: "active-production",
+        goalId: "goal-1",
+        status: "in_progress",
+        archivedAt: null,
+      },
+    ]);
+
+    expect(project?.id).toBe("active-production");
+    expect(project?.goalId).toBe("goal-1");
+  });
+
+  it("falls back to a non-archived project only when no active project exists", () => {
+    expect(selectDepartmentRoutineProject([
+      { id: "completed", goalId: null, status: "completed", archivedAt: null },
+      { id: "planned", goalId: null, status: "planned", archivedAt: null },
+    ])?.id).toBe("planned");
+
+    expect(selectDepartmentRoutineProject([
+      { id: "archived", goalId: null, status: "planned", archivedAt: "2026-05-03T17:00:16.024Z" },
+    ])).toBeNull();
   });
 
   it("renders the routines sort control before the group control", async () => {

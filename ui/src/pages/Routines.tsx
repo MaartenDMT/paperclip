@@ -91,6 +91,13 @@ type RoutineGroup = {
   items: RoutineListItem[];
 };
 
+type DepartmentRoutineProjectCandidate = {
+  id: string;
+  goalId?: string | null;
+  status: string;
+  archivedAt?: Date | string | null;
+};
+
 const defaultRoutineViewState: RoutineViewState = {
   sortField: "updated",
   sortDir: "desc",
@@ -202,6 +209,15 @@ export function sortRoutines(
     if (result !== 0) return result * direction;
     return compareNullableText(left.title, right.title);
   });
+}
+
+export function selectDepartmentRoutineProject(
+  projects: DepartmentRoutineProjectCandidate[] | undefined,
+): DepartmentRoutineProjectCandidate | null {
+  const candidates = (projects ?? []).filter((project) => !project.archivedAt);
+  return candidates.find((project) => project.status !== "completed" && project.status !== "cancelled")
+    ?? candidates[0]
+    ?? null;
 }
 
 function buildRoutinesTabHref(tab: RoutinesTab) {
@@ -396,9 +412,7 @@ export function Routines() {
 
   const createDepartmentRoutines = useMutation({
     mutationFn: async () => {
-      const project = (projects ?? []).find((entry) => entry.status !== "completed" && entry.status !== "cancelled")
-        ?? projects?.[0]
-        ?? null;
+      const project = selectDepartmentRoutineProject(projects);
       const plans = buildMissingDepartmentRoutinePlans({
         agents: agents ?? [],
         existingRoutines: routines ?? [],

@@ -30,6 +30,7 @@ describe("copilot_local server adapter", () => {
       model: "gpt-5.2",
       extraArgs: ["--no-color"],
       config: { dangerouslySkipPermissions: true },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
     })).toEqual([
       "--output-format",
       "json",

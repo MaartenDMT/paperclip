@@ -50,7 +50,14 @@ export interface SimpleCliAdapterDefinition {
     model: string;
     extraArgs: string[];
     config: Record<string, unknown>;
+    runtime: AdapterExecutionContext["runtime"];
   }) => string[];
+  extractSessionParams?: (input: {
+    stdout: string;
+    stderr: string;
+    runtime: AdapterExecutionContext["runtime"];
+    cwd: string;
+  }) => Record<string, unknown> | null;
   authEnvKeys?: string[];
   biller?: string;
   terminalResultCleanup?: TerminalResultCleanupOptions;
@@ -345,7 +352,7 @@ export async function executeSimpleCliAdapter(
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const extraArgs = asStringArray(config.extraArgs).length > 0 ? asStringArray(config.extraArgs) : asStringArray(config.args);
   const promptData = await buildPrompt({ cwd, config, context, agent, runId });
-  const args = def.buildArgs({ prompt: promptData.prompt, model, extraArgs, config });
+  const args = def.buildArgs({ prompt: promptData.prompt, model, extraArgs, config, runtime: ctx.runtime });
   const stdin = config.promptViaStdin === true ? promptData.prompt : undefined;
 
   if (onMeta) {
@@ -374,6 +381,16 @@ export async function executeSimpleCliAdapter(
   });
   const stdoutSummary = summarizeSimpleCliOutput(proc.stdout);
   const stderrSummary = summarizeSimpleCliOutput(proc.stderr);
+  const sessionParams = def.extractSessionParams?.({
+    stdout: proc.stdout,
+    stderr: proc.stderr,
+    runtime: ctx.runtime,
+    cwd,
+  }) ?? undefined;
+  const sessionId =
+    typeof sessionParams?.sessionId === "string" && sessionParams.sessionId.trim().length > 0
+      ? sessionParams.sessionId.trim()
+      : undefined;
   const errorMessage =
     proc.timedOut
       ? `Timed out after ${timeoutSec}s`
@@ -389,6 +406,8 @@ export async function executeSimpleCliAdapter(
     biller: def.biller ?? "unknown",
     model: model || null,
     billingType: "unknown",
+    ...(sessionParams !== undefined ? { sessionParams } : {}),
+    ...(sessionId !== undefined ? { sessionId, sessionDisplayId: sessionId } : {}),
     resultJson: { stdout: proc.stdout, stderr: proc.stderr },
     summary: stdoutSummary || stderrSummary || firstNonEmptyLine(proc.stdout) || firstNonEmptyLine(proc.stderr) || null,
   };

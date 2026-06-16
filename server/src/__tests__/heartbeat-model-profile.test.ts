@@ -119,6 +119,46 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it("preserves adapter default adapterType when runtime profile stub is empty", () => {
+    const adapterFallbackProfile: AdapterModelProfileDefinition = {
+      key: "fallback",
+      label: "Fallback",
+      adapterConfig: {
+        adapterType: "codex_local",
+        command: "codex",
+        provider: "openai",
+        model: "gpt-5.4-mini",
+      },
+      source: "adapter_default",
+    };
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [adapterFallbackProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {},
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "fallback" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "fallback",
+      applied: "fallback",
+      configSource: "adapter_default",
+      adapterType: "codex_local",
+      adapterConfig: {
+        adapterType: "codex_local",
+        command: "codex",
+        provider: "openai",
+        model: "gpt-5.4-mini",
+      },
+    });
+  });
+
   it("falls back to the primary config when the adapter does not support the requested profile", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [],

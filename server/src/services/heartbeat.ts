@@ -168,7 +168,11 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { computeLocalActiveRunExecutionsMax } from "./heartbeat-capacity.js";
+import {
+  computeLocalActiveRunExecutionsMax,
+  computeLocalAvailableRunExecutionSlots,
+  computeLocalQueuedRunsMax,
+} from "./heartbeat-capacity.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -286,6 +290,9 @@ const LOCAL_ACTIVE_RUN_EXECUTIONS_MAX = computeLocalActiveRunExecutionsMax(
   process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
   undefined,
   HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX,
+);
+const LOCAL_QUEUED_RUNS_MAX = computeLocalQueuedRunsMax(
+  process.env.PAPERCLIP_LOCAL_QUEUED_RUNS_MAX,
 );
 
 type ActiveRunExecution = {
@@ -1330,6 +1337,7 @@ export function resolveModelProfileApplication(input: {
     ...parseObject(adapterProfile?.adapterConfig),
     ...runtimeProfile.adapterConfig,
   };
+  const profileAdapterType = readNonEmptyString(adapterConfig.adapterType);
 
   return {
     requested,
@@ -1337,7 +1345,7 @@ export function resolveModelProfileApplication(input: {
     applied: requested,
     configSource: runtimeProfile.configured || runtimeAdapterType ? "agent_runtime" : "adapter_default",
     fallbackReason: null,
-    adapterType: runtimeAdapterType,
+    adapterType: profileAdapterType,
     adapterConfig,
   };
 }
@@ -5323,12 +5331,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
+    const retryContextSnapshot = {
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
-    });
+    };
 
     const queued = await db.transaction(async (tx) => {
       const wakeupRequest = await tx
@@ -5339,10 +5347,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
-          payload: withRecoveryModelProfileHint({
+          payload: {
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
-          }),
+          },
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -6696,6 +6704,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countQueuedRuns(client: Pick<Db, "select"> = db) {
+    const [{ count }] = await client
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"));
+    return Number(count ?? 0);
+  }
+
   async function countQueuedOrRunningRuns() {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -6861,9 +6877,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, {
-        allowNonAssigneeIssueWake: isMeetingWorkflowWake,
-      });
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
         const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         if (cancelled) pruned += 1;
@@ -6946,9 +6960,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, {
-        allowNonAssigneeIssueWake: isMeetingWorkflowWake,
-      });
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
         const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         if (cancelled) staleQueuedRuns += 1;
@@ -7186,9 +7198,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, {
-        allowNonAssigneeIssueWake: isMeetingWorkflowWake,
-      });
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -8297,12 +8307,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return [];
       }
-      const localActiveRunExecutions = activeRunExecutions.size;
-      if (localActiveRunExecutions >= LOCAL_ACTIVE_RUN_EXECUTIONS_MAX) {
+      const localAvailableRunExecutionSlots = computeLocalAvailableRunExecutionSlots({
+        maxLocalActiveRunExecutions: LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+        inMemoryActiveRunExecutions: activeRunExecutions.size,
+        persistedRunningRuns: globalRunningCount,
+      });
+      if (localAvailableRunExecutionSlots <= 0) {
         logger.debug(
           {
             agentId,
-            localActiveRunExecutions,
+            localActiveRunExecutions: activeRunExecutions.size,
+            persistedRunningRuns: globalRunningCount,
             maxLocalActiveRunExecutions: LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
           },
           "skipping queued-run start because local heartbeat launch capacity is full",
@@ -8319,7 +8334,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         Math.min(
           effectiveMaxConcurrentRuns - runningCount,
           maxGlobalRunningRuns - globalRunningCount,
-          LOCAL_ACTIVE_RUN_EXECUTIONS_MAX - localActiveRunExecutions,
+          localAvailableRunExecutionSlots,
         ),
       );
       if (availableSlots <= 0) return [];
@@ -11010,6 +11025,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        if (await countQueuedRuns(tx) >= LOCAL_QUEUED_RUNS_MAX) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "local_queued_run_cap_reached",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -11141,6 +11173,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (await shouldSkipForManagementQueueCap(agent)) {
       await writeSkippedRequest("management_queue_cap_reached");
+      return null;
+    }
+
+    if (await countQueuedRuns() >= LOCAL_QUEUED_RUNS_MAX) {
+      await writeSkippedRequest("local_queued_run_cap_reached");
       return null;
     }
 
