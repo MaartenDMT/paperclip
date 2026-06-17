@@ -19,3 +19,8 @@ export const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 // Terminal heartbeat-run statuses. Shared by heartbeat.ts and the run-predicate
 // helpers.
 export const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+
+// Retry reason marking a max-turn continuation retry. Shared by heartbeat.ts
+// (which schedules the retry) and the wake-gating helpers (which treat it as an
+// in-progress auto-checkout trigger).
+export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";

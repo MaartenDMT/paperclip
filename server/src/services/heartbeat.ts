@@ -106,7 +106,23 @@ export {
   mergeExecutionWorkspaceMetadataForPersistence,
   stripWorkspaceRuntimeFromExecutionRunConfig,
 };
-import { HEARTBEAT_RUN_TERMINAL_STATUSES, PAPERCLIP_WAKE_PAYLOAD_KEY, truncateDisplayId } from "./heartbeat/shared.js";
+import {
+  HEARTBEAT_RUN_TERMINAL_STATUSES,
+  MAX_TURN_CONTINUATION_RETRY_REASON,
+  PAPERCLIP_WAKE_PAYLOAD_KEY,
+  truncateDisplayId,
+} from "./heartbeat/shared.js";
+export { MAX_TURN_CONTINUATION_RETRY_REASON };
+import {
+  allowsInProgressAutoCheckoutForWake,
+  allowsIssueInteractionWake,
+  autoCheckoutExpectedStatusesForWake,
+  describeSessionResetReason,
+  isCheckoutConflictError,
+  shouldAutoCheckoutIssueForWake,
+  shouldQueueFollowupForRunningIssueWake,
+  shouldRequireIssueCommentForWake,
+} from "./heartbeat/wake-gating.js";
 import {
   isHeartbeatRunTerminalStatus,
   isSameTaskScope,
@@ -379,7 +395,6 @@ const HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX = Math.max(
   0,
   Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX ?? 1)),
 );
-export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
@@ -410,7 +425,6 @@ interface MaxTurnContinuationPolicy {
   delayMs: number;
 }
 
-const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -756,26 +770,6 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
-function shouldRequireIssueCommentForWake(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-) {
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  return (
-    wakeReason === "issue_assigned" ||
-    wakeReason === "execution_review_requested" ||
-    wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested"
-  );
-}
-
-function allowsIssueInteractionWake(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-) {
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
-  return Boolean(deriveCommentId(contextSnapshot, null));
-}
-
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -814,85 +808,6 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
-function describeSessionResetReason(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-) {
-  if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
-
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
-  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
-  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
-  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
-  return null;
-}
-
-function shouldAutoCheckoutIssueForWake(input: {
-  contextSnapshot: Record<string, unknown> | null | undefined;
-  issueStatus: string | null;
-  issueAssigneeAgentId: string | null;
-  isDependencyReady: boolean;
-  agentId: string;
-}) {
-  if (input.issueAssigneeAgentId !== input.agentId) return false;
-  if (!input.isDependencyReady) return false;
-
-  const issueStatus = readNonEmptyString(input.issueStatus);
-  if (
-    issueStatus !== "todo" &&
-    issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
-    issueStatus !== "in_progress"
-  ) {
-    return false;
-  }
-
-  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
-  if (!wakeReason) return false;
-  // Comment-driven interaction wakes are allowed to run against blocked issues for
-  // triage/response, but they must not implicitly take the issue out of `blocked`
-  // via auto-checkout (which transitions to `in_progress` + stamps locks).
-  if (issueStatus === "blocked" && ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
-  if (wakeReason === "issue_comment_mentioned") return false;
-  if (wakeReason.startsWith("execution_")) return false;
-  if (issueStatus === "in_progress" && !allowsInProgressAutoCheckoutForWake(input.contextSnapshot)) return false;
-
-  return true;
-}
-
-function allowsInProgressAutoCheckoutForWake(contextSnapshot: Record<string, unknown> | null | undefined) {
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  const retryReason = readNonEmptyString(contextSnapshot?.retryReason);
-  return (
-    contextSnapshot?.resumeIntent === true ||
-    contextSnapshot?.followUpRequested === true ||
-    wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON ||
-    wakeReason === "issue_continuation_needed" ||
-    retryReason === "issue_continuation_needed" ||
-    retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
-    contextSnapshot?.handoffRequired === true ||
-    readNonEmptyString(contextSnapshot?.handoffReason) === SUCCESSFUL_RUN_MISSING_STATE_REASON
-  );
-}
-
-function autoCheckoutExpectedStatusesForWake(contextSnapshot: Record<string, unknown> | null | undefined) {
-  const statuses = ["todo", "backlog", "blocked"];
-  if (allowsInProgressAutoCheckoutForWake(contextSnapshot)) statuses.push("in_progress");
-  return statuses;
-}
-
-function shouldQueueFollowupForRunningIssueWake(input: {
-  contextSnapshot: Record<string, unknown> | null | undefined;
-  wakeCommentId: string | null;
-}) {
-  if (input.wakeCommentId) return true;
-  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
-  return Boolean(wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason));
-}
-
-function isCheckoutConflictError(error: unknown): boolean {
-  return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
-}
 
 async function countOpenIssuesForAgent(db: Db, companyId: string, agentId: string) {
   const row = await db
