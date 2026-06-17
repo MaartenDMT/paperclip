@@ -181,3 +181,34 @@ export function mergeModelProfileRunMetadata(
     modelProfile: metadata,
   };
 }
+
+interface ParsedIssueAssigneeAdapterOverrides {
+  modelProfile: ModelProfileKey | null;
+  adapterConfig: Record<string, unknown> | null;
+  useProjectWorkspace: boolean | null;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
+  raw: unknown,
+): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseObject(raw);
+  const modelProfile = MODEL_PROFILE_KEYS.includes(parsed.modelProfile as ModelProfileKey)
+    ? parsed.modelProfile as ModelProfileKey
+    : null;
+  const parsedAdapterConfig = parseObject(parsed.adapterConfig);
+  // Prevent stale issue-level adapter/model pins from overriding current agent config.
+  delete parsedAdapterConfig.model;
+  delete parsedAdapterConfig.adapterType;
+  const adapterConfig =
+    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const useProjectWorkspace =
+    typeof parsed.useProjectWorkspace === "boolean"
+      ? parsed.useProjectWorkspace
+      : null;
+  if (!modelProfile && !adapterConfig && useProjectWorkspace === null) return null;
+  return {
+    modelProfile,
+    adapterConfig,
+    useProjectWorkspace,
+  };
+}

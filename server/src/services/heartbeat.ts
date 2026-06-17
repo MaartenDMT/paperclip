@@ -71,6 +71,7 @@ import {
   mergeModelProfileRunMetadata,
   modelProfileRunMetadata,
   normalizeModelProfileWakeContext,
+  parseIssueAssigneeAdapterOverrides,
   resolveModelProfileApplication,
   type ModelProfileApplication,
 } from "./heartbeat/model-profile.js";
@@ -80,6 +81,7 @@ export {
   consumeWakeContextModelProfile,
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
+  parseIssueAssigneeAdapterOverrides,
   resolveModelProfileApplication,
 };
 export type { ModelProfileApplication };
@@ -656,12 +658,6 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
-interface ParsedIssueAssigneeAdapterOverrides {
-  modelProfile: ModelProfileKey | null;
-  adapterConfig: Record<string, unknown> | null;
-  useProjectWorkspace: boolean | null;
-}
-
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -760,37 +756,6 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
-export function parseIssueAssigneeAdapterOverrides(
-  raw: unknown,
-): ParsedIssueAssigneeAdapterOverrides | null {
-  const parsed = parseObject(raw);
-  const modelProfile = MODEL_PROFILE_KEYS.includes(parsed.modelProfile as ModelProfileKey)
-    ? parsed.modelProfile as ModelProfileKey
-    : null;
-  const parsedAdapterConfig = parseObject(parsed.adapterConfig);
-  // Prevent stale issue-level adapter/model pins from overriding current agent config.
-  delete parsedAdapterConfig.model;
-  delete parsedAdapterConfig.adapterType;
-  const adapterConfig =
-    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
-  const useProjectWorkspace =
-    typeof parsed.useProjectWorkspace === "boolean"
-      ? parsed.useProjectWorkspace
-      : null;
-  if (!modelProfile && !adapterConfig && useProjectWorkspace === null) return null;
-  return {
-    modelProfile,
-    adapterConfig,
-    useProjectWorkspace,
-  };
-}
-
-/**
- * Synthetic task key for timer/heartbeat wakes that have no issue context.
- * This allows timer wakes to participate in the `agentTaskSessions` system
- * and benefit from robust session resume, instead of relying solely on the
- * simpler `agentRuntimeState.sessionId` fallback.
- */
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
