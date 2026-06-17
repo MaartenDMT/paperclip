@@ -12,7 +12,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
-import { resolveManagedProjectWorkspaceDir } from "../../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../../home-paths.js";
 import { mergeExecutionWorkspaceConfig } from "../execution-workspaces.js";
 import { resolveExecutionWorkspaceMode } from "../execution-workspace-policy.js";
 import {
@@ -21,6 +21,104 @@ import {
   type RealizedExecutionWorkspace,
 } from "../workspace-runtime.js";
 import { readNonEmptyString } from "./shared.js";
+
+export type ResolvedWorkspaceForRun = {
+  cwd: string;
+  source: "project_primary" | "task_session" | "agent_home";
+  projectId: string | null;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+  workspaceHints: Array<{
+    workspaceId: string;
+    cwd: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
+  warnings: string[];
+};
+
+type ProjectWorkspaceCandidate = {
+  id: string;
+};
+
+export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWorkspaceCandidate>(
+  rows: T[],
+  preferredWorkspaceId: string | null | undefined,
+): T[] {
+  if (!preferredWorkspaceId) return rows;
+  const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
+  if (preferredIndex <= 0) return rows;
+  return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
+
+export function resolveRuntimeSessionParamsForWorkspace(input: {
+  agentId: string;
+  previousSessionParams: Record<string, unknown> | null;
+  resolvedWorkspace: ResolvedWorkspaceForRun;
+}) {
+  const { agentId, previousSessionParams, resolvedWorkspace } = input;
+  const previousSessionId = readNonEmptyString(previousSessionParams?.sessionId);
+  const previousCwd = readNonEmptyString(previousSessionParams?.cwd);
+  if (!previousSessionId || !previousCwd) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+  if (resolvedWorkspace.source !== "project_primary") {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+  const projectCwd = readNonEmptyString(resolvedWorkspace.cwd);
+  if (!projectCwd) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+  const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
+  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+  if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+  const previousWorkspaceId = readNonEmptyString(previousSessionParams?.workspaceId);
+  if (
+    previousWorkspaceId &&
+    resolvedWorkspace.workspaceId &&
+    previousWorkspaceId !== resolvedWorkspace.workspaceId
+  ) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null as string | null,
+    };
+  }
+
+  const migratedSessionParams: Record<string, unknown> = {
+    ...(previousSessionParams ?? {}),
+    cwd: projectCwd,
+  };
+  if (resolvedWorkspace.workspaceId) migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
+  if (resolvedWorkspace.repoUrl) migratedSessionParams.repoUrl = resolvedWorkspace.repoUrl;
+  if (resolvedWorkspace.repoRef) migratedSessionParams.repoRef = resolvedWorkspace.repoRef;
+
+  return {
+    sessionParams: migratedSessionParams,
+    warning:
+      `Project workspace "${projectCwd}" is now available. ` +
+      `Attempting to resume session "${previousSessionId}" that was previously saved in fallback workspace "${previousCwd}".`,
+  };
+}
 
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
