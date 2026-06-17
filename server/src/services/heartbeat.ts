@@ -63,7 +63,10 @@ import {
   appendExcerpt,
   boundHeartbeatRunEventPayloadForStorage,
   compactRunLogChunk,
+  formatRuntimeWorkspaceWarningLog,
 } from "./heartbeat/run-log.js";
+export { formatRuntimeWorkspaceWarningLog };
+import { listUnresolvedBlockerSummaries } from "./heartbeat/blocker-summaries.js";
 import { readNonEmptyString } from "./heartbeat/shared.js";
 import {
   consumeWakeContextModelProfile,
@@ -146,6 +149,7 @@ import {
   isHeartbeatRunTerminalStatus,
   isSameTaskScope,
   isTrackedLocalChildProcessAdapter,
+  leaseReleaseStatusForRunStatus,
   normalizeAgentNameKey,
   runTaskKey,
 } from "./heartbeat/run-predicates.js";
@@ -503,13 +507,6 @@ export async function resolveExecutionRunAdapterConfig(input: {
 }
 
 
-function leaseReleaseStatusForRunStatus(
-  status: string | null | undefined,
-): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
-  return status === "failed" || status === "timed_out" ? "failed" : "released";
-}
-
-
 function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
@@ -523,43 +520,6 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
-async function listUnresolvedBlockerSummaries(
-  dbOrTx: Pick<Db, "select">,
-  companyId: string,
-  issueId: string,
-  unresolvedBlockerIssueIds: string[],
-) {
-  const ids = [...new Set(unresolvedBlockerIssueIds.filter(Boolean))];
-  if (ids.length === 0) return [];
-  return dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeAgentId: issues.assigneeAgentId,
-      assigneeUserId: issues.assigneeUserId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        eq(issueRelations.relatedIssueId, issueId),
-        inArray(issues.id, ids),
-      ),
-    )
-    .orderBy(asc(issues.title));
-}
-
-export function formatRuntimeWorkspaceWarningLog(warning: string) {
-  return {
-    stream: "stdout" as const,
-    chunk: `[paperclip] ${warning}\n`,
-  };
-}
 
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;

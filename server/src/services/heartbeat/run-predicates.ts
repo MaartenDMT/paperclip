@@ -5,6 +5,7 @@
 // status to a terminal heartbeat-run status, and normalize an agent name key.
 
 import { heartbeatRuns } from "@paperclipai/db";
+import type { EnvironmentLeaseStatus } from "@paperclipai/shared";
 import { deriveTaskKey } from "./wake-context.js";
 import { HEARTBEAT_RUN_TERMINAL_STATUSES } from "./shared.js";
 
@@ -45,4 +46,10 @@ export function normalizeAgentNameKey(value: string | null | undefined) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+export function leaseReleaseStatusForRunStatus(
+  status: string | null | undefined,
+): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
+  return status === "failed" || status === "timed_out" ? "failed" : "released";
 }

@@ -97,6 +97,13 @@ function redactInlineBase64ImageData(chunk: string) {
   );
 }
 
+export function formatRuntimeWorkspaceWarningLog(warning: string) {
+  return {
+    stream: "stdout" as const,
+    chunk: `[paperclip] ${warning}\n`,
+  };
+}
+
 export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
   const normalized = redactInlineBase64ImageData(chunk);
   if (normalized.length <= maxChars) return normalized;
