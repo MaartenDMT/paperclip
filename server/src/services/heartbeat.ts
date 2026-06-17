@@ -67,6 +67,8 @@ import {
 } from "./heartbeat/run-log.js";
 export { formatRuntimeWorkspaceWarningLog };
 import { listUnresolvedBlockerSummaries } from "./heartbeat/blocker-summaries.js";
+import { resolveExecutionRunAdapterConfig } from "./heartbeat/adapter-config.js";
+export { resolveExecutionRunAdapterConfig };
 import { readNonEmptyString } from "./heartbeat/shared.js";
 import {
   consumeWakeContextModelProfile,
@@ -444,67 +446,6 @@ interface MaxTurnContinuationPolicy {
   delayMs: number;
 }
 
-
-type RuntimeConfigSecretResolver = Pick<
-  ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
->;
-
-export async function resolveExecutionRunAdapterConfig(input: {
-  companyId: string;
-  agentId?: string | null;
-  issueId?: string | null;
-  heartbeatRunId?: string | null;
-  projectId?: string | null;
-  executionRunConfig: Record<string, unknown>;
-  projectEnv: unknown;
-  secretsSvc: RuntimeConfigSecretResolver;
-}) {
-  const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
-    input.companyId,
-    input.executionRunConfig,
-    input.agentId
-      ? {
-          consumerType: "agent",
-          consumerId: input.agentId,
-          actorType: "agent",
-          actorId: input.agentId,
-          issueId: input.issueId ?? null,
-          heartbeatRunId: input.heartbeatRunId ?? null,
-        }
-      : undefined,
-  );
-  const projectEnvResolution = input.projectEnv
-    ? await input.secretsSvc.resolveEnvBindings(
-        input.companyId,
-        input.projectEnv,
-        input.projectId
-          ? {
-              consumerType: "project",
-              consumerId: input.projectId,
-              actorType: "agent",
-              actorId: input.agentId ?? null,
-              issueId: input.issueId ?? null,
-              heartbeatRunId: input.heartbeatRunId ?? null,
-            }
-          : undefined,
-      )
-    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
-  if (Object.keys(projectEnvResolution.env).length > 0) {
-    resolvedConfig.env = {
-      ...parseObject(resolvedConfig.env),
-      ...projectEnvResolution.env,
-    };
-    for (const key of projectEnvResolution.secretKeys) {
-      secretKeys.add(key);
-    }
-  }
-  return {
-    resolvedConfig,
-    secretKeys,
-    secretManifest: [...(manifest ?? []), ...(projectEnvResolution.manifest ?? [])],
-  };
-}
 
 
 function normalizeMaxConcurrentRuns(value: unknown) {
