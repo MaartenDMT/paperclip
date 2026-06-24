@@ -232,6 +232,7 @@ describe("server adapter registry", () => {
     expect(adapter).not.toBeNull();
     expect(adapter!.sessionCodec).toBeDefined();
     expect(adapter!.sessionManagement?.supportsSessionResume).toBe(true);
+    expect(adapter!.requiresMaterializedRuntimeSkills).toBe(true);
   });
 
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {

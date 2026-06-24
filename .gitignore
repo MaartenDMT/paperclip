@@ -49,6 +49,10 @@ server/ui-dist/
 /.tmp-*.log
 **/.tmp-*.log
 .paperclip-dev.log
+/.paperclip-*.log
+/.codex-*.log
+/.paperclip-dev-logs/
+/output/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/

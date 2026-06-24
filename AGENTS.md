@@ -31,12 +31,15 @@ Before making changes, read in this order:
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
-## 4. Dev Setup (Auto DB)
+## 4. Dev Setup (External PostgreSQL Only)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+This fork's local runtime must use external PostgreSQL. Do not leave `DATABASE_URL` unset for this fork, because that allows Paperclip to fall back to embedded PostgreSQL.
+
+Use the newest installed external PostgreSQL runtime available on the machine. Version check as of 2026-06-22: PostgreSQL 18 is the latest stable upstream release, PostgreSQL 19 is beta, and there is no stable PostgreSQL 20 release. If PostgreSQL 14 is the newest installed external runtime on this machine, use PostgreSQL 14.
 
 ```sh
 pnpm install
+$env:DATABASE_URL = "postgresql://paperclip:paperclip@127.0.0.1:5544/paperclip"
 pnpm dev
 ```
 
@@ -52,12 +55,7 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
-Reset local dev DB:
-
-```sh
-rm -rf data/pglite
-pnpm dev
-```
+If the configured external PostgreSQL port is down, start or fix the newest installed external PostgreSQL service/config first. Do not start embedded PostgreSQL as a fallback.
 
 ## 5. Core Engineering Rules
 
@@ -194,6 +192,9 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 ### Local Dev
 
 - Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
+- This fork's local Paperclip runtime is **external PostgreSQL only**. Do not start embedded PostgreSQL, do not create a temporary embedded config, and do not let Paperclip silently fall back to embedded.
+- The active Paperclip database is expected on the newest available external PostgreSQL runtime for this machine, using the configured external connection (`127.0.0.1:5544` for the current local instance). PostgreSQL release check as of 2026-06-22: 18 is the latest stable upstream release, 19 is beta, and there is no stable PostgreSQL 20 release. If PostgreSQL 14 is the newest installed external PostgreSQL, use PostgreSQL 14; otherwise use the newer installed PostgreSQL. If the configured port is down, fix/start the newest external PostgreSQL service or config first.
+- Do **not** assume `postgresql-x64-14` is wrong just because it is version 14. Use it when it is the newest available external PostgreSQL service for this machine or when the operator says it is the active database. The hard rule is external PostgreSQL only, never embedded fallback.
 - `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
 - Server startup from NTFS takes 30-60s — don't assume failure immediately
 - Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`

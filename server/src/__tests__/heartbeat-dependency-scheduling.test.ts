@@ -1370,6 +1370,35 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(forgedChildCommentWake).toBeNull();
 
+    const repeatedBlockedWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: deepDescendantIssueId },
+      contextSnapshot: { issueId: deepDescendantIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(repeatedBlockedWake).toBeNull();
+
+    const deferralActivity = await db
+      .select({ id: activityLog.id, details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "issue.tree_hold_wakeup_deferred"),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, deepDescendantIssueId),
+          eq(activityLog.agentId, agentId),
+          sql`${activityLog.details} ->> 'holdId' = ${hold.id}`,
+        ),
+      );
+    expect(deferralActivity).toHaveLength(1);
+    expect(deferralActivity[0]?.details).toMatchObject({
+      holdId: hold.id,
+      rootIssueId,
+      dedupeKey: `${hold.id}:${deepDescendantIssueId}:${agentId}`,
+    });
+
     const childCommentWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",

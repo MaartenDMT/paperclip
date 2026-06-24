@@ -174,6 +174,17 @@ describe("adapter routes", () => {
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
 
+    // kimi_local consumes the Paperclip runtime through materialized skill
+    // directories, but does not expose the managed skills sync/list bridge.
+    const kimiAdapter = res.body.find((a: any) => a.type === "kimi_local");
+    expect(kimiAdapter).toBeDefined();
+    expect(kimiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: false,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+    });
+
     // hermes_local currently supports skills + local JWT, but not the managed
     // instructions bundle flow because the bundled adapter does not consume
     // instructionsFilePath at runtime.

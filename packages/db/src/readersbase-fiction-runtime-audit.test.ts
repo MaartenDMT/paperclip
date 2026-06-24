@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildReadersbaseFictionAgentPlan,
   READERSBASE_CURRENT_FICTION_PRIORITY_NOTE,
+  READERSBASE_WORLD_VAULT_DETAIL_NOTE,
 } from "./readersbase-fiction-runtime-audit.js";
 
 describe("readersbase fiction runtime audit", () => {
-  it("prioritizes novels, fantasy, genre-mix, sci-fi, and series while pausing short story and novella agents", () => {
+  it("keeps novel, interactive, short-story, and novella lanes active for World Vault work", () => {
     const agents = [
       {
         id: "novelist",
@@ -46,11 +47,10 @@ describe("readersbase fiction runtime audit", () => {
     expect(plan.upgrades.map((upgrade) => upgrade.agent.name)).toEqual([
       "Novelist",
       "Interactive Fiction Designer",
-    ]);
-    expect(plan.pauses.map((pause) => pause.agent.name)).toEqual([
       "Short Fiction Writer",
       "Novella Writer",
     ]);
+    expect(plan.pauses).toEqual([]);
     expect(plan.resumes.map((resume) => resume.agent.name)).toEqual([
       "Interactive Fiction Designer",
     ]);
@@ -59,12 +59,14 @@ describe("readersbase fiction runtime audit", () => {
         (upgrade) =>
           typeof upgrade.nextConfig.promptTemplate === "string" &&
           upgrade.nextConfig.promptTemplate.includes(READERSBASE_CURRENT_FICTION_PRIORITY_NOTE) &&
+          upgrade.nextConfig.promptTemplate.includes(READERSBASE_WORLD_VAULT_DETAIL_NOTE) &&
           upgrade.nextConfig.promptTemplate.includes("fantasy") &&
           upgrade.nextConfig.promptTemplate.includes("genre-mix") &&
-          upgrade.nextConfig.promptTemplate.includes("sci-fi"),
+          upgrade.nextConfig.promptTemplate.includes("sci-fi") &&
+          upgrade.nextConfig.promptTemplate.includes("novellas") &&
+          upgrade.nextConfig.promptTemplate.includes("short stories"),
       ),
     ).toBe(true);
-    expect(plan.pauses.every((pause) => pause.reason.includes("short stories and novellas"))).toBe(true);
   });
 
   it("includes research/classification and source-of-truth guidance in fiction department upgrades", () => {
@@ -102,6 +104,14 @@ describe("readersbase fiction runtime audit", () => {
         recentFailures: 0,
       },
       {
+        id: "catalog",
+        name: "Catalog QA Analyst",
+        status: "idle",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+        recentFailures: 0,
+      },
+      {
         id: "draft",
         name: "Novelist",
         status: "idle",
@@ -118,6 +128,7 @@ describe("readersbase fiction runtime audit", () => {
       "Character Architect",
       "Plot Architect",
       "Worldbuilding Architect",
+      "Catalog QA Analyst",
       "Novelist",
     ]);
     expect(
@@ -126,7 +137,10 @@ describe("readersbase fiction runtime audit", () => {
         return typeof promptTemplate === "string" &&
           promptTemplate.includes("ReadersBase codebase and live website are the source of truth") &&
           promptTemplate.includes("Research & Classification Agent owns story research") &&
-          promptTemplate.includes("story alignment meetings");
+          promptTemplate.includes("story alignment meetings") &&
+          promptTemplate.includes("left-panel Files, Phase, and Tree tabs") &&
+          promptTemplate.includes("timeline/plotline/scene trackers") &&
+          promptTemplate.includes("Never treat post-hoc build packs");
       }),
     ).toBe(true);
   });
@@ -171,7 +185,9 @@ describe("readersbase fiction runtime audit", () => {
         create.capabilities.includes("ReadersBase codebase and live website are the source of truth") &&
         create.adapterType === "codex_local" &&
         create.adapterConfig.model === "gpt-5.3-codex" &&
-        create.adapterConfig.modelReasoningEffort === "xhigh",
+        create.adapterConfig.modelReasoningEffort === "xhigh" &&
+        typeof create.adapterConfig.promptTemplate === "string" &&
+        create.adapterConfig.promptTemplate.includes("World Vault quality gate"),
       ),
     ).toBe(true);
   });

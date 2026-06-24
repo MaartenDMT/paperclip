@@ -102,7 +102,8 @@ describe("mandatorySkillInstructionPreHook", () => {
     expect(generated).toContain("read and apply the `paperclip` skill");
     expect(generated).toContain("read and apply the `diagnose-why-work-stopped` skill");
     expect(generated).toContain("Skill key: company/caveman");
-    expect(generated).toContain("Use the runtime skill named `caveman`; do not treat the original source path as the runtime skill root.");
+    expect(generated).toContain("Use the skill named `caveman` in adapter Skill tools.");
+    expect(generated).toContain("The materialized runtime directory is `caveman`; do not treat the original source path as the runtime skill root.");
     expect(generated).toContain(`Original skill source: ${path.join(home, "skills", "caveman")}`);
     expect(generated).not.toContain(`Skill source: ${path.join(home, "skills", "caveman")}`);
     expect(generated).not.toContain("caveman--4573ebe2fc");
@@ -157,5 +158,57 @@ describe("mandatorySkillInstructionPreHook", () => {
       paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip"] },
       paperclipRuntimeSkills: [],
     });
+  });
+
+  it("uses SKILL.md frontmatter names for adapter Skill tool invocation when runtime names are hashed", async () => {
+    const home = await tempHome();
+    process.env.PAPERCLIP_HOME = home;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.PAPERCLIP_MANDATORY_SKILL = "caveman";
+
+    const cavemanDir = path.join(home, "skills", "caveman--4573ebe2fc");
+    await fs.mkdir(cavemanDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cavemanDir, "SKILL.md"),
+      "---\nname: caveman\n---\n# Caveman\n",
+      "utf8",
+    );
+
+    const runtimeConfig: Record<string, unknown> = {
+      paperclipRuntimeSkills: [
+        {
+          key: "juliusbrussee/caveman/caveman",
+          runtimeName: "caveman--4573ebe2fc",
+          source: cavemanDir,
+        },
+      ],
+    };
+    const contextSnapshot: Record<string, unknown> = {};
+
+    await mandatorySkillInstructionPreHook({
+      db: {} as never,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      } as never,
+      run: {
+        id: "run-1",
+      } as never,
+      runtimeConfig,
+      contextSnapshot,
+    });
+
+    const generated = await fs.readFile(String(runtimeConfig.instructionsFilePath), "utf8");
+    expect(generated).toContain("## caveman");
+    expect(generated).toContain("Skill invocation name: caveman");
+    expect(generated).toContain("Skill runtime name: caveman--4573ebe2fc");
+    expect(generated).toContain("Use the skill named `caveman` in adapter Skill tools.");
+    expect(contextSnapshot.mandatorySkillInstructions).toEqual([
+      expect.objectContaining({
+        skillKey: "juliusbrussee/caveman/caveman",
+        runtimeName: "caveman--4573ebe2fc",
+        invocationName: "caveman",
+      }),
+    ]);
   });
 });

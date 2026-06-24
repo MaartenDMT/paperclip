@@ -117,6 +117,10 @@ export function loadConfig(): Config {
     fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
+  const databaseUrl = process.env.DATABASE_URL ?? fileDbUrl;
+  if (fileDatabaseMode === "postgres" && !databaseUrl) {
+    throw new Error("Paperclip config uses postgres database mode but no DATABASE_URL or database.connectionString is configured.");
+  }
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
@@ -297,7 +301,7 @@ export function loadConfig(): Config {
     authPublicBaseUrl,
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
-    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),

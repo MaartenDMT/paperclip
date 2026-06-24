@@ -1,6 +1,6 @@
+import path from "node:path";
 import {
   executeSimpleCliAdapter,
-  hasSimpleCliTerminalResult,
   testSimpleCliEnvironment,
   type SimpleCliAdapterDefinition,
 } from "@paperclipai/adapter-utils/simple-cli-server";
@@ -13,6 +13,72 @@ import { DEFAULT_KIMI_LOCAL_MODEL, label, SANDBOX_INSTALL_COMMAND, type } from "
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readRuntimeSkillDirs(config: Record<string, unknown>): string[] {
+  const raw = config.paperclipRuntimeSkills;
+  if (!Array.isArray(raw)) return [];
+
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = readNonEmptyString((item as Record<string, unknown>).source);
+    if (!source) continue;
+    const dir = path.dirname(source);
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+function parseJsonLine(line: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasToolCalls(rec: Record<string, unknown>) {
+  return (Array.isArray(rec.tool_calls) && rec.tool_calls.length > 0) ||
+    (Array.isArray(rec.toolCalls) && rec.toolCalls.length > 0);
+}
+
+function isExplicitAssistantStop(rec: Record<string, unknown>) {
+  const stopReason = readNonEmptyString(rec.stop_reason) ?? readNonEmptyString(rec.stopReason);
+  const finishReason = readNonEmptyString(rec.finish_reason) ?? readNonEmptyString(rec.finishReason);
+  const reason = (stopReason ?? finishReason ?? "").toLowerCase();
+  return ["stop", "end_turn", "complete", "completed"].includes(reason);
+}
+
+export function hasKimiTerminalResult(output: { stdout: string; stderr?: string }): boolean {
+  for (const rawLine of output.stdout.split(/\r?\n/)) {
+    const event = parseJsonLine(rawLine.trim());
+    if (!event) continue;
+
+    const type = readNonEmptyString(event.type)?.toLowerCase() ?? "";
+    if (type === "result" || type === "message_stop" || type === "done" || type === "completed") {
+      return true;
+    }
+    if (type === "session.resume_hint") return true;
+
+    const data = event.data && typeof event.data === "object" && !Array.isArray(event.data)
+      ? event.data as Record<string, unknown>
+      : null;
+    const payload = data && Object.keys(data).length > 0 ? data : event;
+    const payloadType = readNonEmptyString(payload.type)?.toLowerCase() ?? type;
+    if (payloadType === "session.resume_hint") return true;
+    const role = readNonEmptyString(payload.role)?.toLowerCase() ?? "";
+    if ((role === "assistant" || payloadType === "message") && isExplicitAssistantStop(payload) && !hasToolCalls(payload)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractKimiSessionId(stdout: string): string | null {
@@ -93,9 +159,9 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
   biller: "kimi",
   terminalResultCleanup: {
     graceMs: 5_000,
-    hasTerminalResult: hasSimpleCliTerminalResult,
+    hasTerminalResult: hasKimiTerminalResult,
   },
-  buildArgs({ prompt, model, extraArgs, runtime }) {
+  buildArgs({ prompt, model, extraArgs, config, runtime }) {
     // Kimi's non-interactive `--prompt` mode is mutually exclusive with every
     // permission flag (`--yolo`, `--auto`, `--plan`) — passing one fails with
     // "Cannot combine --prompt with --yolo." and aborts the run (adapter_failed).
@@ -109,6 +175,9 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
       readNonEmptyString(runtime.sessionId);
     if (sessionId) args.push("--session", sessionId);
     if (model && model !== DEFAULT_KIMI_LOCAL_MODEL) args.push("--model", model);
+    for (const dir of readRuntimeSkillDirs(config)) {
+      args.push("--skills-dir", dir);
+    }
     args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;

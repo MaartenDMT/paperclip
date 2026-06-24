@@ -369,6 +369,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ISSUE_TREE_HOLD_WAKEUP_DEFERRED_ACTION = "issue.tree_hold_wakeup_deferred";
 const PAPERCLIP_PRE_CHECKOUT_STATUS_KEY = "paperclipPreCheckoutStatus";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -399,6 +400,61 @@ const MANAGER_TAKEOVER_FAILURE_COUNT = Math.max(
   1,
   Number.parseInt(process.env.PAPERCLIP_MANAGER_TAKEOVER_FAILURE_COUNT ?? "", 10) || 2,
 );
+
+async function logIssueTreeHoldWakeupDeferredOnce(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    holdId: string;
+    rootIssueId: string;
+    requestedReason: string;
+    source: string;
+    triggerDetail: string | null;
+  },
+) {
+  const existing = await db
+    .select({ id: activityLog.id })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.action, ISSUE_TREE_HOLD_WAKEUP_DEFERRED_ACTION),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.agentId, input.agentId),
+        sql`${activityLog.details} ->> 'holdId' = ${input.holdId}`,
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  if (existing) return false;
+
+  await logActivity(db, {
+    companyId: input.companyId,
+    actorType: "system",
+    actorId: "system",
+    agentId: input.agentId,
+    runId: null,
+    action: ISSUE_TREE_HOLD_WAKEUP_DEFERRED_ACTION,
+    entityType: "issue",
+    entityId: input.issueId,
+    details: {
+      holdId: input.holdId,
+      rootIssueId: input.rootIssueId,
+      requestedReason: input.requestedReason,
+      source: input.source,
+      triggerDetail: input.triggerDetail,
+      dedupeKey: `${input.holdId}:${input.issueId}:${input.agentId}`,
+      securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+    },
+  });
+
+  return true;
+}
+
 const LOCAL_AGENT_PRE_SPAWN_STALE_MS = 2 * 60 * 1000;
 const STALE_UNSCOPED_QUEUED_RUN_MS = Math.max(
   60_000,
@@ -8328,23 +8384,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         if (!treeHoldInteractionWake) {
           await writeSkippedRequest("issue_tree_hold_active");
-          await logActivity(db, {
+          await logIssueTreeHoldWakeupDeferredOnce(db, {
             companyId: agent.companyId,
-            actorType: "system",
-            actorId: "system",
+            issueId,
             agentId,
-            runId: null,
-            action: "issue.tree_hold_wakeup_deferred",
-            entityType: "issue",
-            entityId: issueId,
-            details: {
-              holdId: activePauseHold.holdId,
-              rootIssueId: activePauseHold.rootIssueId,
-              requestedReason: reason,
-              source,
-              triggerDetail,
-              securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-            },
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+            requestedReason: reason ?? "unknown",
+            source,
+            triggerDetail,
           });
           return null;
         }

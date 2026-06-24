@@ -4249,7 +4249,7 @@ export function issueService(db: Db) {
         ? await db
           .select({ unreadCount: sql<number>`count(*)::int` })
           .from(issueComments)
-          .where(and(eq(issueComments.issueId, issueId), sql`${issueComments.createdAt} > ${readState.lastReadAt}`))
+          .where(and(eq(issueComments.issueId, issueId), sql`${issueComments.createdAt} > ${readState.lastReadAt.toISOString()}`))
           .then((rows) => rows[0] ?? null)
         : opts?.userId
           ? { unreadCount: totalComments }

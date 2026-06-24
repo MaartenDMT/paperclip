@@ -1853,6 +1853,121 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(participants.map((participant) => participant.agentId)).not.toContain(ceoId);
   });
 
+  it("does not route product or infrastructure wording to fiction story alignment", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const fictionDirectorId = randomUUID();
+    const shortFictionWriterId = randomUUID();
+    const engineeringHeadId = randomUUID();
+    const engineerId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "ReadersBase",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: fictionDirectorId,
+        companyId,
+        name: "Fiction Director",
+        role: "fiction_director",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: shortFictionWriterId,
+        companyId,
+        name: "Short Fiction Writer",
+        role: "short_fiction_writer",
+        reportsTo: fictionDirectorId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineeringHeadId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerId,
+        companyId,
+        name: "Backend Developer",
+        role: "backend_developer",
+        reportsTo: engineeringHeadId,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "REA-3709 blocker: verify R2 bypass and draft-write billing disposition",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: null,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Add Start Writing CTA to homepage for author conversion",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Prevent MarkdownEditor open from auto-saving frontmatter or content without edits",
+        description: "Engineering product defect; keep editor content stable without creating a story meeting.",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: engineerId,
+        updatedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
+      },
+    ]);
+
+    const health = await interactionsSvc.getMeetingWorkflowHealth(companyId);
+
+    expect(health.recommendations.some((recommendation) => recommendation.trigger === "fiction_story_alignment"))
+      .toBe(false);
+    expect(
+      health.recommendations.some((recommendation) =>
+        recommendation.participantAgentIds.includes(shortFictionWriterId),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps workflow meetings multi-agent and wakes contributors before the chair", async () => {
     const companyId = randomUUID();
     const ceoId = randomUUID();

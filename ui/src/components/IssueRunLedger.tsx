@@ -128,6 +128,7 @@ const MISSING_LIVENESS_COPY: LivenessCopy = {
 
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
+const ISSUE_TREE_HOLD_WAKEUP_DEFERRED_ACTION = "issue.tree_hold_wakeup_deferred";
 
 type RunOutputSilenceLevel = NonNullable<ActiveRunForIssue["outputSilence"]>["level"];
 
@@ -318,6 +319,35 @@ function statusLabel(status: string) {
 
 function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
   return run.isLive || ACTIVE_RUN_STATUSES.has(run.status);
+}
+
+function activityEventDedupeKey(event: ActivityEvent): string | null {
+  if (event.action !== ISSUE_TREE_HOLD_WAKEUP_DEFERRED_ACTION) return null;
+  const holdId = readString(event.details?.holdId);
+  if (!holdId) return null;
+  return [
+    event.action,
+    event.companyId,
+    event.entityType,
+    event.entityId,
+    event.agentId ?? "system",
+    holdId,
+  ].join(":");
+}
+
+function dedupeLedgerActivityEvents(events: ActivityEvent[] | undefined): ActivityEvent[] {
+  if (!events?.length) return [];
+  const seen = new Set<string>();
+  const deduped: ActivityEvent[] = [];
+  for (const event of events) {
+    const dedupeKey = activityEventDedupeKey(event);
+    if (dedupeKey) {
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+    }
+    deduped.push(event);
+  }
+  return deduped;
 }
 
 function runSummary(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Agent, "name">>) {
@@ -550,7 +580,7 @@ export function IssueRunLedgerContent({
       });
     }
     if (canRenderActivityEvents) {
-      for (const event of activityEvents ?? []) {
+      for (const event of dedupeLedgerActivityEvents(activityEvents)) {
         items.push({
           kind: "activity",
           id: event.id,

@@ -29,6 +29,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  issues,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -966,14 +967,29 @@ export async function startServer(): Promise<StartedServer> {
     const reconcileMeetings = async (source: "startup" | "periodic") => {
       const companyIds = await instanceSettingsService(db).listCompanyIds();
       let created = 0;
+      const resolveMeetingWakeAgentIds = async (meeting: {
+        issueId: string | null;
+        participantAgentIds: string[];
+        chairAgentId: string | null;
+      }) => {
+        const candidateIds = [
+          ...meeting.participantAgentIds,
+          ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
+        ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
+        if (!meeting.issueId || candidateIds.length === 0) return candidateIds;
+        const issue = await db
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(eq(issues.id, meeting.issueId))
+          .then((rows) => rows[0] ?? null);
+        if (!issue?.assigneeAgentId) return candidateIds;
+        return candidateIds.includes(issue.assigneeAgentId) ? [issue.assigneeAgentId] : [];
+      };
       for (const companyId of companyIds) {
         const result = await issueThreadInteractions.reconcileMeetingWorkflow(companyId);
         created += result.created;
         for (const meeting of result.meetings) {
-          const agentIdsToWake = [
-            ...meeting.participantAgentIds,
-            ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
-          ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
+          const agentIdsToWake = await resolveMeetingWakeAgentIds(meeting);
           for (const agentId of agentIdsToWake) {
             try {
               await heartbeat.wakeup(agentId, {

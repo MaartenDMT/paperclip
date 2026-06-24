@@ -193,6 +193,26 @@ describe("project env routes", () => {
     );
   });
 
+  it("lists active projects by default", async () => {
+    mockProjectService.list.mockResolvedValue([buildProject()]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/projects");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.list).toHaveBeenCalledWith("company-1", { includeArchived: false });
+  });
+
+  it("can include archived projects explicitly", async () => {
+    mockProjectService.list.mockResolvedValue([buildProject({ archivedAt: new Date("2026-06-22T00:00:00.000Z") })]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/projects?includeArchived=true");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+  });
+
   it("normalizes env bindings on update and avoids logging raw values", async () => {
     const normalizedEnv = {
       PLAIN_KEY: { type: "plain", value: "top-secret" },
@@ -218,5 +238,20 @@ describe("project env routes", () => {
         },
       }),
     );
+  });
+
+  it("returns conflict when project delete is blocked by linked history", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.remove.mockRejectedValue(
+      new Error('update or delete on table "projects" violates foreign key constraint "cost_events_project_id_projects_id_fk"'),
+    );
+
+    const app = await createApp();
+    const res = await request(app).delete("/api/projects/project-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Project has linked history and cannot be hard-deleted. Archive it instead.",
+    });
   });
 });

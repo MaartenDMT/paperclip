@@ -20,24 +20,26 @@ const FICTION_RE = /(fiction|storybook|story book|novel|novella|writer|editor|na
 const SITE_QA_AGENT_NAME_RE =
   /^(UXDesigner|QA Engineer|Catalog QA Analyst|UX Optimization Analyst|Interaction Design Optimizer|Admin Operations QA Analyst|Author Experience QA Analyst)$/i;
 const FICTION_AGENT_NAME_RE =
-  /^(Fiction Director|Research & Classification Agent|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer|Novella Writer|Series Architect|Genre-Mix Architect|Sci-Fi Architect|Fantasy Architect)$/i;
-const PAUSED_FICTION_AGENT_NAME_RE = /^(Short Fiction Writer|Novella Writer)$/i;
+  /^(Fiction Director|Research & Classification Agent|Storybook Creator|Content Writer|Novelist|Worldbuilding Architect|Manuscript Quality Architect|Catalog QA Analyst|Character Architect|Graphic Novel Creator|Interactive Fiction Designer|Plot Architect|Short Fiction Writer|Novella Writer|Series Architect|Genre-Mix Architect|Sci-Fi Architect|Fantasy Architect)$/i;
+const PAUSED_FICTION_AGENT_NAME_RE = /^$/;
 
 const CODEX_MODEL = "gpt-5.3-codex";
 const STRATEGY_MODEL = "o3";
 const CREATIVE_MODEL = "gpt-5.3-codex";
 export const READERSBASE_CURRENT_FICTION_PRIORITY_NOTE =
-  "Current ReadersBase fiction priority: prioritize full-length novels and series development, especially fantasy, genre-mix, and sci-fi lanes. Standalone short-story and novella production is paused for now unless the board explicitly reactivates it.";
+  "Current ReadersBase fiction priority: prioritize high-quality world-aware fiction across novels, novellas, short stories, interactive fiction, storybooks, graphic novels, and series development. World Vault projects may use any appropriate format, including novellas and short stories, when the work is coherent, canon-aware, and routed through the Fiction Department gates.";
 export const READERSBASE_FICTION_DEPARTMENT_NOTE =
   "ReadersBase codebase and live website are the source of truth for product behavior, catalog surfaces, reader experience, author experience, and existing story-world commitments. Research & Classification Agent owns story research, source classification, backstory/history/family/friends/enemies/lovers dossiers, and evidence handoff before draft work expands the canon. Draft, research, character, plot, and worldbuilding agents should use story alignment meetings to discuss setup changes, reconcile plot/world/character/research conflicts, and update the story plan before major drafting or continuity decisions.";
+export const READERSBASE_WORLD_VAULT_DETAIL_NOTE =
+  "World Vault quality gate: treat shared worlds as very detailed continuity systems. Before creating, rewriting, approving, or publishing World Vault work, inspect and cite the left-panel Files, Phase, and Tree tabs; research-phase resources; project templates; story-design entities; continuity bible; character dossiers; plot architecture; timeline/plotline/scene trackers; worldbuilding resources; phase resources; and any resource dependencies attached to the work. Never treat post-hoc build packs, generated pass bundles, or publication ledgers as approval evidence unless the responsible Fiction Department gate reissued them through Paperclip issue-owned workflow. If required artifacts are missing, stale, contradictory, or not inspected, block or create the correct Character, Plot, Worldbuilding, MQA, Catalog QA, or Fiction Director follow-up instead of drafting around the gap.";
 const CREATIVE_SYSTEM_NOTE =
-  `Production fiction quality bar: storybook work is not children-only. Create full-length normal or interactive novels and connected series with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Treat fantasy, genre-mix, and sci-fi as priority shelves. Images are occasional supporting assets, not the product. Target length is story-driven long-form fiction: do not initiate short stories or novellas under the current priority.\n\n${READERSBASE_CURRENT_FICTION_PRIORITY_NOTE}\n\n${READERSBASE_FICTION_DEPARTMENT_NOTE}`;
+  `Production fiction quality bar: storybook work is not children-only. Create normal or interactive novels, novellas, short stories, storybooks, graphic novels, and connected series with real plot, character arcs, conflict, setting/world-building, continuity, and mature pacing. Treat fantasy, genre-mix, and sci-fi as priority shelves. Images are occasional supporting assets, not the product. Target length and format must be story-driven and appropriate to the World Vault lane.\n\n${READERSBASE_CURRENT_FICTION_PRIORITY_NOTE}\n\n${READERSBASE_FICTION_DEPARTMENT_NOTE}\n\n${READERSBASE_WORLD_VAULT_DETAIL_NOTE}`;
 const SITE_QA_SYSTEM_NOTE =
   "Production ReadersBase QA bar: inspect the live site critically, reproduce issues, create or update concrete tasks for every defect, and do not mark work done until the site behavior is verified or a blocker/recovery issue owns the next action.";
 const UNSTABLE_RUNTIME_NOTE =
   "Runtime reliability bar: every run must leave a concrete issue disposition: done, blocked with cause, in_review with reviewer/next action, or delegated follow-up. Do not exit after analysis without updating the issue state/comment trail.";
 const PAUSED_FICTION_REASON =
-  "Paused by ReadersBase board direction: short stories and novellas are deprioritized while full-length novels, interactive novels, fantasy, genre-mix, sci-fi, and series development take priority.";
+  "Paused by ReadersBase board direction.";
 
 export type ReadersbaseFictionAuditAgent = {
   id: string;

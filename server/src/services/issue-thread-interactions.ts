@@ -66,6 +66,10 @@ import {
   validateBusinessMeetingResult,
 } from "./meeting-outcome-utils.js";
 import { meetingService } from "./meetings.js";
+import {
+  findFictionDirector,
+  isFictionStoryAlignmentIssue,
+} from "./fiction-story-alignment.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -121,9 +125,6 @@ const STALE_IN_PROGRESS_MS = 72 * 60 * 60 * 1000;
 const STALE_PENDING_MEETING_MS = 24 * 60 * 60 * 1000;
 const OPERATING_SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_WORK_PRESSURE_RUNS = 3;
-const FICTION_STORY_ALIGNMENT_RE =
-  /\b(?:draft|chapter|scene|story|plot|character|backstor(?:y|ies)|family|familie|friends?|enemies|lovers?|world\s*building|worldbuilding|research|classification)\b/i;
-const FICTION_DIRECTOR_ROLE_KEYS = new Set(["fiction-director", "fiction_director", "creative-director", "creative_director"]);
 const FICTION_RESEARCH_ROLE_RE = /\b(?:research|researcher|research-agent|classification)\b/i;
 const FICTION_DRAFT_ROLE_RE = /\b(?:draft|writer|author|prose)\b/i;
 const FICTION_CHARACTER_ROLE_RE = /\bcharacter\b/i;
@@ -1518,28 +1519,17 @@ export function issueThreadInteractionService(db: Db) {
         const status = agentId ? agentById.get(agentId)?.status : null;
         return Boolean(status && !["paused", "pending_approval", "terminated"].includes(status));
       };
-      const normalizeRoleText = (value: string | null | undefined) =>
-        (value ?? "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-+|-+$/g, "");
       const agentSearchText = (agent: typeof companyAgentRows[number]) =>
         [agent.name, agent.role, agent.title].filter(Boolean).join(" ").toLowerCase();
-      const fictionDirector = companyAgentRows.find((agent) =>
-        isMeetingRunnableAgentId(agent.id) &&
-        (
-          FICTION_DIRECTOR_ROLE_KEYS.has(normalizeRoleText(agent.role)) ||
-          FICTION_DIRECTOR_ROLE_KEYS.has(normalizeRoleText(agent.title)) ||
-          normalizeRoleText(agent.name) === "fiction-director"
-        ),
-      ) ?? null;
+      const fictionDirector = findFictionDirector(companyAgentRows);
       const findFictionAgent = (pattern: RegExp) =>
         companyAgentRows.find((agent) =>
           isMeetingRunnableAgentId(agent.id) &&
           (!fictionDirector || agent.id === fictionDirector.id || agent.reportsTo === fictionDirector.id) &&
           pattern.test(agentSearchText(agent)),
         ) ?? null;
-      const isFictionStoryAlignmentIssue = (issue: typeof openIssueRows[number]) =>
-        FICTION_STORY_ALIGNMENT_RE.test([issue.title, issue.description ?? ""].join("\n"));
       const fictionStoryParticipantIds = (issue: typeof openIssueRows[number]) => {
-        if (!fictionDirector || !isFictionStoryAlignmentIssue(issue)) return [];
+        if (!fictionDirector || !isFictionStoryAlignmentIssue(issue, { fictionDirector, agentById })) return [];
         const ids = [
           fictionDirector.id,
           findFictionAgent(FICTION_RESEARCH_ROLE_RE)?.id ?? null,

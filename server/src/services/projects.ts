@@ -1,6 +1,6 @@
 import { existsSync, lstatSync } from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -550,8 +550,11 @@ export function projectService(db: Db) {
   };
 
   return {
-    list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+    list: async (companyId: string, options: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+      const rows = await db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.companyId, companyId), options.includeArchived ? undefined : isNull(projects.archivedAt)));
       const withGoals = await attachGoals(db, rows);
       return attachWorkspaces(db, withGoals);
     },

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { models } from "../index.js";
-import { detectModel, kimiDefinition } from "./index.js";
+import { detectModel, hasKimiTerminalResult, kimiDefinition } from "./index.js";
 
 describe("kimi_local server adapter", () => {
   const originalKimiModel = process.env.KIMI_MODEL;
@@ -85,6 +85,35 @@ describe("kimi_local server adapter", () => {
     ]);
   });
 
+  it("passes materialized Paperclip runtime skill parent directories to Kimi", () => {
+    expect(kimiDefinition.buildArgs({
+      prompt: "use skills",
+      model: "kimi-code/kimi-for-coding",
+      extraArgs: ["--debug"],
+      config: {
+        paperclipRuntimeSkills: [
+          { key: "company/caveman", runtimeName: "caveman", source: path.join("C:\\skills", "caveman") },
+          { key: "company/paperclip", runtimeName: "paperclip", source: path.join("C:\\skills", "paperclip") },
+          { key: "company/memory", runtimeName: "memory", source: path.join("D:\\other", "memory") },
+          { key: "invalid", runtimeName: "invalid", source: "" },
+        ],
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+    })).toEqual([
+      "--output-format",
+      "stream-json",
+      "--model",
+      "kimi-code/kimi-for-coding",
+      "--skills-dir",
+      "C:\\skills",
+      "--skills-dir",
+      "D:\\other",
+      "--debug",
+      "--prompt",
+      "use skills",
+    ]);
+  });
+
   it("extracts Kimi session resume hints from stdout", async () => {
     const result = await kimiDefinition.extractSessionParams?.({
       stdout: [
@@ -102,6 +131,42 @@ describe("kimi_local server adapter", () => {
     });
 
     expect(result).toEqual({ sessionId: "session_abc", cwd: "/repo" });
+  });
+
+  it("does not treat non-terminal assistant narration as a complete Kimi result", () => {
+    expect(hasKimiTerminalResult({
+      stdout: [
+        JSON.stringify({
+          role: "assistant",
+          content: [{ type: "text", text: "I will inspect the repo first." }],
+        }),
+      ].join("\n"),
+      stderr: "",
+    })).toBe(false);
+  });
+
+  it("treats explicit Kimi terminal events as complete results", () => {
+    expect(hasKimiTerminalResult({
+      stdout: [
+        JSON.stringify({
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          stop_reason: "end_turn",
+        }),
+      ].join("\n"),
+      stderr: "",
+    })).toBe(true);
+
+    expect(hasKimiTerminalResult({
+      stdout: [
+        JSON.stringify({
+          role: "meta",
+          type: "session.resume_hint",
+          session_id: "session_abc",
+        }),
+      ].join("\n"),
+      stderr: "",
+    })).toBe(true);
   });
 
   it("lists the local coding model detected by current Kimi config", () => {

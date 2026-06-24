@@ -32,12 +32,12 @@ const VAULT =
 const TZ_LABEL = process.env.PAPERCLIP_MEMORY_VAULT_TZ || "Europe/Brussels";
 const ISSUE_RE = /\bREA-\d{2,5}\b/g;
 
-// LLM backend for extraction. Default to local ollama so background rebuilds
-// don't burn external API quota. Override with PAPERCLIP_GRAPHIFY_BACKEND.
-const GRAPHIFY_BACKEND = process.env.PAPERCLIP_GRAPHIFY_BACKEND || "ollama";
-const GRAPHIFY_MODEL =
-  process.env.PAPERCLIP_GRAPHIFY_MODEL ||
-  (GRAPHIFY_BACKEND === "ollama" ? "qwen3.5:9b" : "qwen3.5:9b");
+// LLM backend for extraction. By default this follows the local adapter that
+// last completed a run: Claude agents use the Claude CLI backend and Codex
+// agents use the Codex backend. PAPERCLIP_GRAPHIFY_BACKEND remains an explicit
+// operator override; there is intentionally no implicit Ollama fallback.
+const GRAPHIFY_BACKEND_OVERRIDE = process.env.PAPERCLIP_GRAPHIFY_BACKEND?.trim() || null;
+const GRAPHIFY_MODEL_OVERRIDE = process.env.PAPERCLIP_GRAPHIFY_MODEL?.trim() || null;
 const GRAPHIFY_CORPUS_MODE = process.env.PAPERCLIP_GRAPHIFY_CORPUS_MODE || "compact";
 const GRAPHIFY_CORPUS_DIR =
   process.env.PAPERCLIP_GRAPHIFY_CORPUS_DIR ||
@@ -53,7 +53,7 @@ const GRAPHIFY_MAX_ISSUE_FILES = Number(
 );
 const GRAPHIFY_TOKEN_BUDGET = Number(
   process.env.PAPERCLIP_GRAPHIFY_TOKEN_BUDGET ||
-    (GRAPHIFY_BACKEND === "ollama" ? 4_096 : 60_000),
+    (GRAPHIFY_BACKEND_OVERRIDE === "ollama" ? 4_096 : 60_000),
 );
 const GRAPHIFY_API_TIMEOUT_SECONDS = Number(
   process.env.PAPERCLIP_GRAPHIFY_API_TIMEOUT_SECONDS || 900,
@@ -129,6 +129,7 @@ function scoreGraphifyCandidate(candidate: string): number {
 const GRAPHIFY_BIN_RESOLVED = resolveGraphifyBin();
 let graphifyInFlight = false;
 let graphifyTimer: NodeJS.Timeout | null = null;
+let graphifyCallerAdapterType: string | null = null;
 
 interface GraphifyExtractLock {
   dir: string;
@@ -1122,6 +1123,45 @@ function graphifyExtractTarget(): string | null {
   }
 }
 
+type GraphifyBackendSelection = {
+  backend: string;
+  model: string | null;
+  tokenBudget: number;
+};
+
+function graphifyBackendForAdapter(adapterType: string | null | undefined): string | null {
+  const normalized = String(adapterType ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "claude":
+    case "claude_local":
+      return "claude-cli";
+    case "codex":
+    case "codex_local":
+      return "codex";
+    default:
+      return null;
+  }
+}
+
+function defaultGraphifyModelForBackend(backend: string): string | null {
+  return backend === "ollama" ? "qwen3.5:9b" : null;
+}
+
+export function resolveGraphifyBackendSelection(
+  adapterType: string | null | undefined,
+): GraphifyBackendSelection | null {
+  const backend = GRAPHIFY_BACKEND_OVERRIDE ?? graphifyBackendForAdapter(adapterType);
+  if (!backend) return null;
+  return {
+    backend,
+    model: GRAPHIFY_MODEL_OVERRIDE ?? defaultGraphifyModelForBackend(backend),
+    tokenBudget: safePositiveInt(
+      GRAPHIFY_TOKEN_BUDGET,
+      backend === "ollama" ? 4_096 : 60_000,
+    ),
+  };
+}
+
 /**
  * Fire-and-forget `graphify extract <vault>` to refresh the agent-memory
  * knowledge graph. Driven by a periodic timer (not per-run) so server load is
@@ -1135,15 +1175,16 @@ function runGraphifyExtract(): void {
   if (!fs.existsSync(VAULT)) return; // vault missing — nothing to index
   const extractTarget = graphifyExtractTarget();
   if (!extractTarget) return;
+  const backendSelection = resolveGraphifyBackendSelection(graphifyCallerAdapterType);
+  if (!backendSelection) return;
   const args = [
     "extract",
     extractTarget,
     "--backend",
-    GRAPHIFY_BACKEND,
-    "--model",
-    GRAPHIFY_MODEL,
+    backendSelection.backend,
+    ...(backendSelection.model ? ["--model", backendSelection.model] : []),
     "--token-budget",
-    String(safePositiveInt(GRAPHIFY_TOKEN_BUDGET, 12_000)),
+    String(backendSelection.tokenBudget),
     "--max-concurrency",
     "1",
     "--api-timeout",
@@ -1175,7 +1216,7 @@ function runGraphifyExtract(): void {
       windowsHide: true,
       env: {
         ...process.env,
-        ...(GRAPHIFY_BACKEND === "ollama" && !process.env.OLLAMA_API_KEY
+        ...(backendSelection.backend === "ollama" && !process.env.OLLAMA_API_KEY
           ? { OLLAMA_API_KEY: "local" }
           : {}),
       },
@@ -1617,8 +1658,9 @@ export const vaultMemoryPostHook: PostHookHandler = async (ctx: LifecycleContext
 
   // Make sure the periodic graphify-refresh timer is armed. Idempotent —
   // the first hook call after server start starts the timer; further calls
-  // are no-ops. The timer fires every PAPERCLIP_GRAPHIFY_INTERVAL_MS (default
-  // 15 min) regardless of how many runs happen, so server load is predictable
-  // and there's no per-run shell spawn.
+  // are no-ops. The timer uses the adapter from the latest successful local
+  // run, so Claude-triggered refreshes route through Claude and Codex-triggered
+  // refreshes route through Codex unless an operator override is configured.
+  graphifyCallerAdapterType = agent.adapterType;
   ensureGraphifyTimer();
 };

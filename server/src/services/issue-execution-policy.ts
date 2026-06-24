@@ -597,7 +597,11 @@ function canAutoSkipPendingStage(input: {
   returnAssignee: IssueExecutionStagePrincipal | null;
   requestedStatus?: string;
 }) {
-  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+  if (
+    input.requestedStatus !== "done" ||
+    !["review", "approval"].includes(input.stage.type) ||
+    !input.returnAssignee
+  ) {
     return false;
   }
   return input.stage.participants.length > 0 &&

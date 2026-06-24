@@ -33,6 +33,10 @@ import {
   type MeetingOutcomeLinkType,
   validateBusinessMeetingResult,
 } from "./meeting-outcome-utils.js";
+import {
+  findFictionDirector,
+  isFictionStoryAlignmentIssue,
+} from "./fiction-story-alignment.js";
 
 type MeetingActor = {
   agentId?: string | null;
@@ -568,7 +572,7 @@ export function meetingService(db: Db) {
     const companyGoalId = recommendation.issueId ? null : await readDefaultCompanyGoalId(companyId);
 
     const now = new Date();
-    const [created] = await db.transaction(async (tx) => {
+    const created = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const [meeting] = await txDb
         .insert(meetings)
@@ -589,7 +593,9 @@ export function meetingService(db: Db) {
           createdAt: now,
           updatedAt: now,
         })
+        .onConflictDoNothing()
         .returning();
+      if (!meeting) return null;
       await txDb.insert(meetingParticipants).values(participantAgentIds.map((agentId) => ({
         companyId,
         meetingId: meeting.id,
@@ -604,8 +610,9 @@ export function meetingService(db: Db) {
           linkKind: "source",
         }).onConflictDoNothing();
       }
-      return [meeting];
+      return meeting;
     });
+    if (!created) return null;
 
     if (recommendation.issueId) {
       await db.update(issues).set({ updatedAt: now }).where(eq(issues.id, recommendation.issueId));
@@ -1190,8 +1197,105 @@ export function meetingService(db: Db) {
     return resolved;
   }
 
+  async function resolveInvalidFictionStoryAlignmentMeetings(companyId: string) {
+    const rows = await db
+      .select({
+        meeting: meetings,
+        issue: {
+          title: issues.title,
+          description: issues.description,
+          assigneeAgentId: issues.assigneeAgentId,
+        },
+      })
+      .from(meetings)
+      .innerJoin(issues, eq(issues.id, meetings.sourceIssueId))
+      .where(and(
+        eq(meetings.companyId, companyId),
+        eq(meetings.status, "pending"),
+        sql`${meetings.idempotencyKey} like 'meeting-workflow:fiction_story_alignment:%'`,
+        sql`${issues.status} not in ('done', 'cancelled')`,
+      ))
+      .limit(200);
+    if (rows.length === 0) return 0;
+
+    const agentRows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const agentById = new Map(agentRows.map((agent) => [agent.id, agent]));
+    const fictionDirector = findFictionDirector(agentRows);
+    const invalidMeetingIds = rows
+      .filter((row) => !isFictionStoryAlignmentIssue(row.issue, { fictionDirector, agentById }))
+      .map((row) => row.meeting.id);
+    if (invalidMeetingIds.length === 0) return 0;
+
+    const now = new Date();
+    const result = agentMeetingResultSchema.parse({
+      version: 1,
+      summaryMarkdown:
+        "Paperclip cancelled this stale story-alignment meeting because the source issue is not fiction-owned or explicitly story-production work.",
+      decisions: [
+        "No fiction story-alignment meeting is needed for this source issue.",
+      ],
+      actionItems: [],
+      blockers: [],
+      openQuestions: [],
+    });
+    const updated = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const updatedMeetings = await txDb
+        .update(meetings)
+        .set({
+          status: "cancelled",
+          result,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          inArray(meetings.id, invalidMeetingIds),
+          eq(meetings.companyId, companyId),
+          eq(meetings.status, "pending"),
+        ))
+        .returning({ id: meetings.id, sourceIssueId: meetings.sourceIssueId });
+      if (updatedMeetings.length > 0) {
+        await txDb
+          .update(meetingParticipants)
+          .set({ status: "cancelled", updatedAt: now })
+          .where(and(
+            eq(meetingParticipants.companyId, companyId),
+            inArray(meetingParticipants.meetingId, updatedMeetings.map((meeting) => meeting.id)),
+          ));
+      }
+      return updatedMeetings;
+    });
+
+    for (const meeting of updated) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "meeting_workflow",
+        action: "meeting.auto_resolved",
+        entityType: "meeting",
+        entityId: meeting.id,
+        details: {
+          sourceIssueId: meeting.sourceIssueId,
+          reason: "invalid_fiction_story_alignment_scope",
+        },
+      });
+    }
+    return updated.length;
+  }
+
   async function reconcilePendingWorkflowWakeups(companyId: string) {
     await resolveSupersededWorkflowMeetings(companyId);
+    await resolveInvalidFictionStoryAlignmentMeetings(companyId);
 
     const cutoff = new Date(Date.now() - PENDING_MEETING_REWAKE_MS);
     const rows = await db

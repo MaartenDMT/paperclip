@@ -1039,6 +1039,42 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBeUndefined();
     });
 
+    it("skips a self-approval-only stage and completes the workflow", () => {
+      const policy = makePolicy([
+        {
+          type: "approval",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Accepted",
+      });
+
+      expect(result.patch).toMatchObject({
+        executionState: {
+          status: "completed",
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[0].id],
+        },
+      });
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+    });
+
     it("skips a self-review-only review stage and advances to approval", () => {
       const policy = makePolicy([
         {

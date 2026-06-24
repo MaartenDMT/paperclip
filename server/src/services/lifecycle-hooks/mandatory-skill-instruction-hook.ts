@@ -81,6 +81,26 @@ function getRuntimeSkills(config: Record<string, unknown>): PaperclipSkillEntry[
   });
 }
 
+async function readSkillFrontmatterName(skill: PaperclipSkillEntry): Promise<string | null> {
+  const source = asString(skill.source);
+  if (!source) return null;
+  try {
+    const text = await fs.readFile(path.join(source, "SKILL.md"), "utf8");
+    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!match) return null;
+    for (const rawLine of match[1]!.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      const nameMatch = line.match(/^name:\s*(.+)$/i);
+      if (!nameMatch) continue;
+      const name = nameMatch[1]!.trim().replace(/^['"]|['"]$/g, "");
+      return asString(name);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 async function readExistingInstructions(filePath: string | null): Promise<string> {
   if (!filePath) return "";
   try {
@@ -100,13 +120,18 @@ function readMandatorySkillReferences() {
     .filter(Boolean);
 }
 
-function instructionFor(reference: string, skill: PaperclipSkillEntry) {
+function invocationNameFor(skill: PaperclipSkillEntry, frontmatterName: string | null): string {
+  return frontmatterName ?? skill.runtimeName ?? skill.key;
+}
+
+function instructionFor(reference: string, skill: PaperclipSkillEntry, frontmatterName: string | null) {
   const configuredInstruction = asString(process.env.PAPERCLIP_MANDATORY_SKILL_INSTRUCTION);
+  const invocationName = invocationNameFor(skill, frontmatterName);
   const base = configuredInstruction ?? DEFAULT_INSTRUCTIONS[normalize(reference)]
     ?? `At the start of every run, read and apply the \`${reference}\` skill when it is relevant.`;
   return base
-    .replaceAll(`\`${reference}\``, `\`${skill.runtimeName ?? skill.key}\``)
-    .replaceAll(reference, skill.runtimeName ?? skill.key);
+    .replaceAll(`\`${reference}\``, `\`${invocationName}\``)
+    .replaceAll(reference, invocationName);
 }
 
 function generatedInstructionPath(ctx: LifecycleContext): string {
@@ -129,11 +154,17 @@ export const mandatorySkillInstructionPreHook: PreHookHandler = async (ctx) => {
     .map((reference) => ({ reference, skill: findSkill(runtimeSkills, reference) }))
     .filter((entry): entry is { reference: string; skill: PaperclipSkillEntry } => Boolean(entry.skill));
   if (selected.length === 0) return;
+  const selectedWithInvocationNames = await Promise.all(
+    selected.map(async (entry) => ({
+      ...entry,
+      frontmatterName: await readSkillFrontmatterName(entry.skill),
+    })),
+  );
 
   const preference = readPaperclipSkillSyncPreference(config);
   const desiredSkills = Array.from(new Set([
     ...preference.desiredSkills,
-    ...selected.map((entry) => entry.skill.key),
+    ...selectedWithInvocationNames.map((entry) => entry.skill.key),
   ]));
   Object.assign(config, writePaperclipSkillSyncPreference(config, desiredSkills));
 
@@ -146,17 +177,22 @@ export const mandatorySkillInstructionPreHook: PreHookHandler = async (ctx) => {
     [
       "# Paperclip Mandatory Runtime Instruction",
       "",
-      ...selected.flatMap(({ reference, skill }) => [
-        `## ${skill.runtimeName ?? skill.key}`,
+      ...selectedWithInvocationNames.flatMap(({ reference, skill, frontmatterName }) => {
+        const invocationName = invocationNameFor(skill, frontmatterName);
+        const runtimeName = skill.runtimeName ?? skill.key;
+        return [
+        `## ${invocationName}`,
         "",
-        instructionFor(reference, skill),
+        instructionFor(reference, skill, frontmatterName),
         "",
         `Skill key: ${skill.key}`,
-        `Skill runtime name: ${skill.runtimeName ?? skill.key}`,
-        `Use the runtime skill named \`${skill.runtimeName ?? skill.key}\`; do not treat the original source path as the runtime skill root.`,
+        `Skill invocation name: ${invocationName}`,
+        `Skill runtime name: ${runtimeName}`,
+        `Use the skill named \`${invocationName}\` in adapter Skill tools. The materialized runtime directory is \`${runtimeName}\`; do not treat the original source path as the runtime skill root.`,
         `Original skill source: ${skill.source}`,
         "",
-      ]),
+        ];
+      }),
       existingInstructions.trim()
         ? [
             "# Existing Agent Instructions",
@@ -172,15 +208,17 @@ export const mandatorySkillInstructionPreHook: PreHookHandler = async (ctx) => {
 
   config.instructionsFilePath = targetPath;
   if (ctx.contextSnapshot) {
-    ctx.contextSnapshot.mandatorySkillInstructions = selected.map(({ skill }) => ({
+    ctx.contextSnapshot.mandatorySkillInstructions = selectedWithInvocationNames.map(({ skill, frontmatterName }) => ({
       skillKey: skill.key,
       runtimeName: skill.runtimeName ?? skill.key,
+      invocationName: invocationNameFor(skill, frontmatterName),
       instructionsFilePath: targetPath,
       originalInstructionsFilePath: existingInstructionsPath,
     }));
     ctx.contextSnapshot.mandatorySkillInstruction = {
-      skillKey: selected[0]!.skill.key,
-      runtimeName: selected[0]!.skill.runtimeName ?? selected[0]!.skill.key,
+      skillKey: selectedWithInvocationNames[0]!.skill.key,
+      runtimeName: selectedWithInvocationNames[0]!.skill.runtimeName ?? selectedWithInvocationNames[0]!.skill.key,
+      invocationName: invocationNameFor(selectedWithInvocationNames[0]!.skill, selectedWithInvocationNames[0]!.frontmatterName),
       instructionsFilePath: targetPath,
       originalInstructionsFilePath: existingInstructionsPath,
     };

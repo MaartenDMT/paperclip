@@ -10,6 +10,7 @@ import {
   normalizeVaultIssueLinks,
   prepareGraphifyCompactCorpus,
   releaseGraphifyExtractLock,
+  resolveGraphifyBackendSelection,
   sanitizeGraphReportWikilinks,
   tryAcquireGraphifyExtractLock,
   validateGraphifyGraphOutput,
@@ -327,6 +328,28 @@ describe("graphify extraction lock", () => {
     expect(metadata.owner).toBe(lock!.owner);
 
     releaseGraphifyExtractLock(lock!);
+  });
+});
+
+describe("graphify backend selection", () => {
+  it("routes Claude local agents through the Claude CLI backend", () => {
+    expect(resolveGraphifyBackendSelection("claude_local")).toMatchObject({
+      backend: "claude-cli",
+      model: null,
+      tokenBudget: 60_000,
+    });
+  });
+
+  it("routes Codex local agents through the Codex backend", () => {
+    expect(resolveGraphifyBackendSelection("codex_local")).toMatchObject({
+      backend: "codex",
+      model: null,
+      tokenBudget: 60_000,
+    });
+  });
+
+  it("does not silently fall back to Ollama for unsupported adapters", () => {
+    expect(resolveGraphifyBackendSelection("process")).toBeNull();
   });
 });
 

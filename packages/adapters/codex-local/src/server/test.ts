@@ -58,6 +58,8 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+const CODEX_HELLO_PROBE_TIMEOUT_SEC = 90;
+
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
@@ -335,7 +337,7 @@ export async function testEnvironment(
           {
             cwd,
             env: preparedProbe.env,
-            timeoutSec: 45,
+            timeoutSec: CODEX_HELLO_PROBE_TIMEOUT_SEC,
             graceSec: 5,
             stdin: "Respond with hello.",
             onLog: async () => {},

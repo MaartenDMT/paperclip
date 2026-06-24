@@ -400,7 +400,7 @@ const kimiLocalAdapter: ServerAdapterModule = {
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
-  requiresMaterializedRuntimeSkills: false,
+  requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) => {
     const command = readConfiguredCommand(config, "kimi");
     const canSelfInstall = !hasPathSeparator(command) && command === "kimi";

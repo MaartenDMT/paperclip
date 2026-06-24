@@ -100,7 +100,8 @@ export function projectRoutes(db: Db) {
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const includeArchived = req.query.includeArchived === "true";
+    const result = await svc.list(companyId, { includeArchived });
     res.json(result);
   });
 
@@ -658,7 +659,24 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.remove(id);
+    let project: Awaited<ReturnType<typeof svc.remove>>;
+    try {
+      project = await svc.remove(id);
+    } catch (err) {
+      const cause = typeof err === "object" && err !== null && "cause" in err
+        ? (err as { cause?: unknown }).cause
+        : null;
+      const message = [
+        err instanceof Error ? err.message : String(err),
+        cause instanceof Error ? cause.message : cause ? String(cause) : "",
+      ].join("\n");
+      if (message.includes("violates foreign key constraint")) {
+        throw conflict("Project has linked history and cannot be hard-deleted. Archive it instead.", {
+          projectId: id,
+        });
+      }
+      throw err;
+    }
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;

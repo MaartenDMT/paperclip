@@ -3910,11 +3910,26 @@ export function issueRoutes(
     const heartbeat = heartbeatService(db);
     let wakeupsRequested = 0;
     let wakeupsFailed = 0;
-    for (const meeting of result.meetings) {
-      const agentIdsToWake = [
+    const resolveMeetingWakeAgentIds = async (meeting: {
+      issueId: string | null;
+      participantAgentIds: string[];
+      chairAgentId: string | null;
+    }) => {
+      const candidateIds = [
         ...meeting.participantAgentIds,
         ...(meeting.participantAgentIds.length === 0 && meeting.chairAgentId ? [meeting.chairAgentId] : []),
       ].filter((agentId, index, list): agentId is string => Boolean(agentId) && list.indexOf(agentId) === index);
+      if (!meeting.issueId || candidateIds.length === 0) return candidateIds;
+      const issue = await db
+        .select({ assigneeAgentId: issuesTable.assigneeAgentId })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.id, meeting.issueId), eq(issuesTable.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue?.assigneeAgentId) return candidateIds;
+      return candidateIds.includes(issue.assigneeAgentId) ? [issue.assigneeAgentId] : [];
+    };
+    for (const meeting of result.meetings) {
+      const agentIdsToWake = await resolveMeetingWakeAgentIds(meeting);
       for (const agentId of agentIdsToWake) {
         wakeupsRequested += 1;
         try {
