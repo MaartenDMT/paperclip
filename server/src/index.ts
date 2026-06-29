@@ -72,6 +72,46 @@ function startupDebug(message: string) {
   process.stderr.write(`[paperclip][startup] ${message}\n`);
 }
 
+function unwrapErrorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let current = error;
+  const seen = new Set<unknown>();
+  while (current && !seen.has(current)) {
+    chain.push(current);
+    seen.add(current);
+    current = typeof current === "object" && current !== null && "cause" in current
+      ? (current as { cause?: unknown }).cause
+      : null;
+  }
+  return chain;
+}
+
+function isTransientRecoveryDatabaseError(error: unknown): boolean {
+  for (const entry of unwrapErrorChain(error)) {
+    const code = typeof entry === "object" && entry !== null && "code" in entry
+      ? String((entry as { code?: unknown }).code ?? "")
+      : "";
+    const message = entry instanceof Error ? entry.message.toLowerCase() : String(entry ?? "").toLowerCase();
+    if (
+      code === "CONNECT_TIMEOUT" ||
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "40P01" ||
+      code === "40001" ||
+      message.includes("connect_timeout") ||
+      message.includes("connect timeout") ||
+      message.includes("write connect_timeout") ||
+      message.includes("connection terminated") ||
+      message.includes("could not serialize access") ||
+      message.includes("deadlock detected") ||
+      message.includes("canceling statement due to lock timeout")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 type BetterAuthSessionUser = {
   id: string;
   email?: string | null;
@@ -1135,7 +1175,11 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
+        if (isTransientRecoveryDatabaseError(err)) {
+          logger.warn({ err }, "startup heartbeat recovery skipped after transient database error");
+        } else {
+          logger.error({ err }, "startup heartbeat recovery failed");
+        }
       });
     registerShutdownInterval(() => {
       void heartbeat
@@ -1242,7 +1286,11 @@ export async function startServer(): Promise<StartedServer> {
             }
           })
           .catch((err) => {
-            logger.error({ err }, "periodic heartbeat recovery failed");
+            if (isTransientRecoveryDatabaseError(err)) {
+              logger.warn({ err }, "periodic heartbeat recovery skipped after transient database error");
+            } else {
+              logger.error({ err }, "periodic heartbeat recovery failed");
+            }
           })
           .finally(() => {
             periodicHeartbeatRecoveryInFlight = false;

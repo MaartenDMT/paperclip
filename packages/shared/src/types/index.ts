@@ -144,6 +144,8 @@ export type {
 } from "./work-product.js";
 export type {
   Issue,
+  IssueCompletionEvidence,
+  IssueCompletionEvidenceKind,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,

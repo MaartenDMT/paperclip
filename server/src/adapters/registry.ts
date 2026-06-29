@@ -5,14 +5,7 @@ import type {
   ServerAdapterModule,
 } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
-import {
-  execute as acpxExecute,
-  testEnvironment as acpxTestEnvironment,
-  sessionCodec as acpxSessionCodec,
-  getConfigSchema as getAcpxConfigSchema,
-  listAcpxSkills,
-  syncAcpxSkills,
-} from "@paperclipai/adapter-acpx-local/server";
+
 import {
   agentConfigurationDoc as acpxAgentConfigurationDoc,
   models as acpxModels,
@@ -260,6 +253,10 @@ function prefixAdapterModelLabels(models: AdapterModel[], provider: "Claude" | "
   }));
 }
 
+async function loadAcpxServerAdapter() {
+  return import("@paperclipai/adapter-acpx-local/server");
+}
+
 async function listAcpxModels(): Promise<AdapterModel[]> {
   const [claude, codex] = await Promise.all([
     listClaudeModels().catch(() => claudeModels),
@@ -295,11 +292,10 @@ const claudeLocalAdapter: ServerAdapterModule = {
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
-  execute: acpxExecute,
-  testEnvironment: acpxTestEnvironment,
-  listSkills: listAcpxSkills,
-  syncSkills: syncAcpxSkills,
-  sessionCodec: acpxSessionCodec,
+  execute: async (ctx) => (await loadAcpxServerAdapter()).execute(ctx),
+  testEnvironment: async (ctx) => (await loadAcpxServerAdapter()).testEnvironment(ctx),
+  listSkills: async (ctx) => (await loadAcpxServerAdapter()).listAcpxSkills(ctx),
+  syncSkills: async (ctx, desiredSkills) => (await loadAcpxServerAdapter()).syncAcpxSkills(ctx, desiredSkills),
   sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
   models: dedupeAdapterModels([
     ...prefixAdapterModelLabels(claudeModels, "Claude"),
@@ -311,7 +307,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: acpxAgentConfigurationDoc,
-  getConfigSchema: getAcpxConfigSchema,
+  getConfigSchema: async () => (await loadAcpxServerAdapter()).getConfigSchema(),
 };
 
 const codexLocalAdapter: ServerAdapterModule = {

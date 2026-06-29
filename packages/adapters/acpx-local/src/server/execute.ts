@@ -1112,7 +1112,7 @@ function warmHandleMatches(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
 ): boolean {
-  return entry?.runtime === runtime && entry.handle === handle;
+  return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
 export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {

@@ -14,12 +14,19 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reconcileIssueGraphLiveness: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  backfillPullRequestWorkProductsFromComments: vi.fn(),
+  previewPullRequestWorkProductBackfillFromComments: vi.fn(),
+  recoverPullRequestWorkProducts: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     heartbeatService: () => mockHeartbeatService,
+    issueService: () => mockIssueService,
     logActivity: mockLogActivity,
   }));
 }
@@ -108,6 +115,107 @@ describe("company recovery routes", () => {
       escalationIssueIds: [],
       retiredRecoveryIssueIds: [],
     });
+    mockIssueService.backfillPullRequestWorkProductsFromComments.mockResolvedValue({
+      commentsScanned: 3,
+      commentsWithPullRequests: 2,
+      pullRequestWorkProductsCreated: 1,
+      pullRequestWorkProductsUpdated: 1,
+      issueIds: ["issue-3"],
+    });
+    mockIssueService.recoverPullRequestWorkProducts.mockResolvedValue({
+      backfill: {
+        commentsScanned: 3,
+        commentsWithPullRequests: 2,
+        pullRequestWorkProductsCreated: 1,
+        pullRequestWorkProductsUpdated: 1,
+        issueIds: ["issue-3"],
+      },
+      githubStatusSync: {
+        scanned: 2,
+        checked: 2,
+        updated: 1,
+        skippedFresh: 0,
+        skippedUnparseable: 0,
+        failed: 0,
+        workProductIds: ["work-product-1"],
+        failures: [],
+      },
+    });
+    mockIssueService.previewPullRequestWorkProductBackfillFromComments.mockResolvedValue({
+      commentsScanned: 557,
+      commentsWithPullRequests: 557,
+      issuesWithPullRequestComments: 246,
+      distinctPullRequests: 246,
+      existingPullRequestWorkProducts: 0,
+      missingPullRequestWorkProducts: 246,
+      pullRequestWorkProductsNeedingStatusUpdate: 0,
+      issueIds: ["issue-3"],
+    });
+  });
+
+  it("previews pull request work-product backfill without mutating issue work products", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-1",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .get("/api/companies/company-1/control-plane/pull-request-work-products/backfill/preview");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.previewPullRequestWorkProductBackfillFromComments).toHaveBeenCalledWith("company-1");
+    expect(mockIssueService.backfillPullRequestWorkProductsFromComments).not.toHaveBeenCalled();
+    expect(mockIssueService.recoverPullRequestWorkProducts).not.toHaveBeenCalled();
+    expect(res.body.preview).toMatchObject({
+      commentsScanned: 557,
+      issuesWithPullRequestComments: 246,
+      missingPullRequestWorkProducts: 246,
+    });
+  });
+
+  it("applies pull request work-product backfill as a narrow recovery operation", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "ceo-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/control-plane/pull-request-work-products/backfill/apply")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.recoverPullRequestWorkProducts).toHaveBeenCalledWith(
+      "company-1",
+      { runId: "run-1" },
+      { force: true },
+    );
+    expect(mockIssueService.backfillPullRequestWorkProductsFromComments).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: "company-1",
+      actorType: "agent",
+      action: "company.pull_request_work_product_recovery",
+      details: expect.objectContaining({
+        backfill: expect.objectContaining({
+          pullRequestWorkProductsCreated: 1,
+          pullRequestWorkProductsUpdated: 1,
+        }),
+        githubStatusSync: expect.objectContaining({ updated: 1 }),
+      }),
+    }));
+    expect(res.body.result).toMatchObject({
+      backfill: {
+        pullRequestWorkProductsCreated: 1,
+        pullRequestWorkProductsUpdated: 1,
+      },
+      githubStatusSync: { updated: 1 },
+    });
   });
 
   it("allows a CEO agent to run company-scoped control-plane recovery", async () => {
@@ -134,6 +242,10 @@ describe("company recovery routes", () => {
       force: true,
       lookbackHours: 12,
     });
+    expect(mockIssueService.recoverPullRequestWorkProducts).toHaveBeenCalledWith(
+      "company-1",
+      { runId: "run-1" },
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId: "company-1",
       actorType: "agent",
@@ -152,6 +264,18 @@ describe("company recovery routes", () => {
       silentActiveRuns: { closedHealthy: 1 },
       strandedAssignedIssues: { escalated: 1 },
       issueGraphLiveness: { obsoleteRecoveryBlockerRelationsRemoved: 1 },
+      pullRequestWorkProductBackfill: {
+        commentsScanned: 3,
+        commentsWithPullRequests: 2,
+        pullRequestWorkProductsCreated: 1,
+        pullRequestWorkProductsUpdated: 1,
+        issueIds: ["issue-3"],
+      },
+      pullRequestWorkProductStatusSync: {
+        scanned: 2,
+        checked: 2,
+        updated: 1,
+      },
     });
   });
 
@@ -177,6 +301,8 @@ describe("company recovery routes", () => {
     expect(mockHeartbeatService.reconcilePersistedHeartbeatRuntimeState).not.toHaveBeenCalled();
     expect(mockHeartbeatService.reapOrphanedRuns).not.toHaveBeenCalled();
     expect(mockHeartbeatService.scanSilentActiveRuns).not.toHaveBeenCalled();
+    expect(mockIssueService.backfillPullRequestWorkProductsFromComments).not.toHaveBeenCalled();
+    expect(mockIssueService.recoverPullRequestWorkProducts).not.toHaveBeenCalled();
   });
 
   it("rejects CEO agents crossing company boundaries", async () => {

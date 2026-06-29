@@ -12,3 +12,14 @@ packages:
   - server
   - ui
   - cli
+confirmModulesPurge: false
+patchedDependencies:
+  embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch
+overrides:
+  rollup: ">=4.59.0"
+allowBuilds:
+  '@embedded-postgres/windows-x64': set this to true or false
+  es5-ext: set this to true or false
+  esbuild: set this to true or false
+  sharp: set this to true or false
+  sqlite3: set this to true or false

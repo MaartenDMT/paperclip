@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { issueGraphLivenessAutoRecoveryRequestSchema } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { agentService, heartbeatService, logActivity } from "../services/index.js";
+import { agentService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { normalizeAgentPermissions } from "../services/agent-permissions.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -29,6 +29,55 @@ async function assertCanRunCompanyRecovery(req: Request, db: Db, companyId: stri
 export function companyRecoveryRoutes(db: Db) {
   const router = Router();
   const heartbeat = heartbeatService(db);
+  const issues = issueService(db);
+
+  router.get(
+    "/companies/:companyId/control-plane/pull-request-work-products/backfill/preview",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanRunCompanyRecovery(req, db, companyId);
+
+      const preview = await issues.previewPullRequestWorkProductBackfillFromComments(companyId);
+      res.json({
+        companyId,
+        preview,
+      });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/control-plane/pull-request-work-products/backfill/apply",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanRunCompanyRecovery(req, db, companyId);
+      const actor = getActorInfo(req);
+
+      const result = await issues.recoverPullRequestWorkProducts(
+        companyId,
+        { runId: actor.runId },
+        { force: true },
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.pull_request_work_product_recovery",
+        entityType: "company",
+        entityId: companyId,
+        details: result,
+      });
+
+      res.json({
+        companyId,
+        actor: actor.actorType === "agent"
+          ? { type: "agent", agentId: actor.agentId }
+          : { type: "board", userId: actor.actorId },
+        result,
+      });
+    },
+  );
 
   router.post(
     "/companies/:companyId/control-plane/recovery/run",
@@ -44,6 +93,7 @@ export function companyRecoveryRoutes(db: Db) {
         silentActiveRuns,
         strandedAssignedIssues,
         issueGraphLiveness,
+        pullRequestWorkProductRecovery,
       ] = await Promise.all([
         heartbeat.reconcilePersistedHeartbeatRuntimeState({ companyId }),
         heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }),
@@ -55,6 +105,7 @@ export function companyRecoveryRoutes(db: Db) {
           force: true,
           lookbackHours: req.body.lookbackHours,
         }),
+        issues.recoverPullRequestWorkProducts(companyId, { runId: actor.runId }),
       ]);
 
       await logActivity(db, {
@@ -83,6 +134,7 @@ export function companyRecoveryRoutes(db: Db) {
             escalationIssueIds: issueGraphLiveness.escalationIssueIds,
             retiredRecoveryIssueIds: issueGraphLiveness.retiredRecoveryIssueIds,
           },
+          pullRequestWorkProductRecovery,
         },
       });
 
@@ -96,6 +148,9 @@ export function companyRecoveryRoutes(db: Db) {
         silentActiveRuns,
         strandedAssignedIssues,
         issueGraphLiveness,
+        pullRequestWorkProductBackfill: pullRequestWorkProductRecovery.backfill,
+        pullRequestWorkProductStatusSync: pullRequestWorkProductRecovery.githubStatusSync,
+        pullRequestWorkProductRecovery,
       });
     },
   );

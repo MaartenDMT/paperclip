@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueCompletionEvidenceKind, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -49,7 +49,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
@@ -190,6 +190,19 @@ function compactRecord(record: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined),
   );
+}
+
+function completionEvidenceBadgeClass(kind: IssueCompletionEvidenceKind | undefined) {
+  if (kind === "code_shipped") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  if (kind === "operational" || kind === "non_code_completion" || kind === "evidence_present") return "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+  if (kind === "code_review_missing" || kind === "code_review_pending") return "border-amber-500/50 bg-amber-500/15 text-amber-800 dark:text-amber-200";
+  if (kind === "unknown") return "border-zinc-400/50 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300";
+  return "border-border bg-muted/40 text-muted-foreground";
+}
+
+function completionEvidenceNeedsAttention(issue: Pick<Issue, "completionEvidence">) {
+  const kind = issue.completionEvidence?.kind;
+  return kind === "code_review_missing" || kind === "code_review_pending" || kind === "unknown";
 }
 
 function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
@@ -1715,6 +1728,11 @@ export function IssueProperties({
       </div>
     </>
   );
+  const completionEvidence = issue.completionEvidence ?? null;
+  const CompletionEvidenceIcon = completionEvidenceNeedsAttention(issue) ? AlertTriangle : CheckCircle2;
+  const completionEvidenceTitle = completionEvidence?.reasons.length
+    ? completionEvidence.reasons.join(" ")
+    : completionEvidence?.label;
   const renderAddBlockedByButton = (onClick?: () => void) => (
     <button
       type="button"
@@ -1961,6 +1979,31 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
+        {completionEvidence ? (
+          <PropertyRow label="Completion">
+            <span
+              data-testid="issue-completion-evidence"
+              className={cn(
+                "inline-flex min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
+                completionEvidenceBadgeClass(completionEvidence.kind),
+              )}
+              title={completionEvidenceTitle}
+            >
+              <CompletionEvidenceIcon className="h-3 w-3 shrink-0" aria-hidden />
+              <span className="min-w-0 truncate">{completionEvidence.label}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {completionEvidence.prExpected ? "PR expected" : "No PR expected"}
+            </span>
+            {completionEvidence.blockingWorkProductIds.length > 0 ? (
+              <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                {completionEvidence.blockingWorkProductIds.length} evidence blocker{completionEvidence.blockingWorkProductIds.length === 1
+                  ? ""
+                  : "s"}
+              </span>
+            ) : null}
+          </PropertyRow>
+        ) : null}
         {showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
             inline={inline}

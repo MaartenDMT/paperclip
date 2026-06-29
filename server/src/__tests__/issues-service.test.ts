@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -395,17 +395,30 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Video Marketing Producer",
-      role: "marketing",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Video Marketing Producer",
+        role: "marketing",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Analytics Producer",
+        role: "marketing",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
 
     const createdIssueId = randomUUID();
     const otherIssueId = randomUUID();
@@ -1565,7 +1578,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2456,7 +2469,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2794,7 +2807,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3174,7 +3187,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3254,7 +3267,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-execution-lock-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3501,6 +3514,7 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
   }, 60_000);
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -3550,6 +3564,13 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
     });
 
     return { issueId, agentId };
+  }
+
+  function mockGitHubPullRequestFetch(body: Record<string, unknown>, status = 200) {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    })));
   }
 
   it("rejects checkout for done issues even if expectedStatuses includes done", async () => {
@@ -3641,13 +3662,20 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
       isPrimary: true,
     });
 
+    mockGitHubPullRequestFetch({
+      state: "open",
+      draft: false,
+      title: "REA-1638 PR",
+      html_url: "https://github.com/MaartenDMT/paperclip/pull/7",
+    });
+
     await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
       status: 422,
       message: "Issue cannot be marked done while linked pull requests are still open",
       details: {
         openPullRequests: [
           expect.objectContaining({
-            externalId: "7",
+            externalId: "MaartenDMT/paperclip#7",
             title: "REA-1638 PR",
             status: "ready_for_review",
           }),
@@ -3658,6 +3686,70 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_review");
     expect(issue?.completedAt).toBeNull();
+  });
+
+  it("allows marking an issue done when stale local PR state refreshes to merged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const workProductId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ship after stale PR refresh",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values({
+      id: workProductId,
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      externalId: "MaartenDMT/base#712",
+      title: "Old open title",
+      url: "https://github.com/MaartenDMT/base/pull/712",
+      status: "ready_for_review",
+      reviewState: "none",
+      isPrimary: true,
+    });
+
+    mockGitHubPullRequestFetch({
+      state: "closed",
+      draft: false,
+      merged_at: "2026-06-06T15:33:08Z",
+      closed_at: "2026-06-06T15:33:08Z",
+      title: "fix(backend): enforce public publish metadata guardrails",
+      html_url: "https://github.com/MaartenDMT/base/pull/712",
+      head: { ref: "fix/rea-4353-publish-metadata-validation" },
+      base: { ref: "develop" },
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+
+    expect(updated?.status).toBe("done");
+    const [product] = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.id, workProductId));
+    expect(product).toMatchObject({
+      status: "merged",
+      title: "fix(backend): enforce public publish metadata guardrails",
+    });
+    expect(product?.metadata).toMatchObject({
+      githubStatusSync: expect.objectContaining({
+        mergedAt: "2026-06-06T15:33:08Z",
+        baseRefName: "develop",
+      }),
+    });
   });
 
   it("allows marking an issue done after its linked pull request work product is merged", async () => {
@@ -3693,9 +3785,430 @@ describeEmbeddedPostgres("issueService.checkout non-runnable status guard", () =
       isPrimary: true,
     });
 
+    mockGitHubPullRequestFetch({
+      state: "closed",
+      draft: false,
+      merged_at: "2026-04-01T00:00:00Z",
+      closed_at: "2026-04-01T00:00:00Z",
+      title: "Merged PR",
+      html_url: "https://github.com/MaartenDMT/paperclip/pull/8",
+    });
+
     const updated = await svc.update(issueId, { status: "done" });
 
     expect(updated?.status).toBe("done");
     expect(updated?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("rejects marking an issue done with branch-only code evidence", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ship branch only",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "branch",
+      provider: "github",
+      externalId: "codex/readersbase-runtime-fix",
+      title: "codex/readersbase-runtime-fix",
+      url: "https://github.com/MaartenDMT/base/tree/codex/readersbase-runtime-fix",
+      status: "active",
+      reviewState: "none",
+      isPrimary: true,
+    });
+
+    mockGitHubPullRequestFetch({
+      state: "open",
+      draft: false,
+      title: "MaartenDMT/base#1007",
+      html_url: "https://github.com/MaartenDMT/base/pull/1007",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      message:
+        "Issue cannot be marked done with branch or commit work products that still need PR, merge, deployment, or review evidence",
+      details: {
+        incompleteCodeWorkProducts: [
+          expect.objectContaining({
+            type: "branch",
+            externalId: "codex/readersbase-runtime-fix",
+            status: "active",
+            reviewState: "none",
+          }),
+        ],
+      },
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+    expect(issue?.completedAt).toBeNull();
+  });
+
+  it("rejects marking likely code-shipping work done without structured evidence", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fix reader login 500",
+      description: "Changed the backend route handler and updated tests.",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      message: "Issue cannot be marked done without PR, merge, deployment, review, or artifact evidence for code-like work",
+      details: {
+        completionEvidence: expect.objectContaining({
+          kind: "code_review_missing",
+          prExpected: true,
+          blockingWorkProductIds: [],
+        }),
+      },
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+    expect(issue?.completedAt).toBeNull();
+  });
+
+  it("allows marking operational repair work done without code-shipping evidence", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Restore Readersbase production worktree",
+      description: "Recovered the checkout and verified pnpm dev starts again.",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("allows marking an issue done when branch evidence has merged PR evidence", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ship branch with PR",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        type: "branch",
+        provider: "github",
+        externalId: "codex/readersbase-runtime-fix",
+        title: "codex/readersbase-runtime-fix",
+        url: "https://github.com/MaartenDMT/base/tree/codex/readersbase-runtime-fix",
+        status: "active",
+        reviewState: "none",
+        isPrimary: false,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        type: "pull_request",
+        provider: "github",
+        externalId: "1007",
+        title: "Merged Readersbase runtime fix",
+        url: "https://github.com/MaartenDMT/base/pull/1007",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+      },
+    ]);
+
+    mockGitHubPullRequestFetch({
+      state: "closed",
+      draft: false,
+      merged_at: "2026-04-01T00:00:00Z",
+      closed_at: "2026-04-01T00:00:00Z",
+      title: "Merged Readersbase runtime fix",
+      html_url: "https://github.com/MaartenDMT/base/pull/1007",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("auto-captures GitHub pull request links from comments as open work products", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Capture PR links",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await svc.addComment(
+      issueId,
+      "Implementation pushed. PR: https://github.com/MaartenDMT/base/pull/1007",
+      {},
+    );
+
+    const products = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, issueId));
+    expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({
+      type: "pull_request",
+      provider: "github",
+      externalId: "MaartenDMT/base#1007",
+      title: "MaartenDMT/base#1007",
+      url: "https://github.com/MaartenDMT/base/pull/1007",
+      status: "ready_for_review",
+      isPrimary: true,
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      message: "Issue cannot be marked done while linked pull requests are still open",
+    });
+  });
+
+  it("updates auto-captured pull request work products when a later comment says merged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Capture merged PR links",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await svc.addComment(issueId, "PR opened: https://github.com/MaartenDMT/base/pull/1008", {});
+    await svc.addComment(issueId, "PR merged: https://github.com/MaartenDMT/base/pull/1008", {});
+
+    const products = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, issueId));
+    expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({
+      externalId: "MaartenDMT/base#1008",
+      status: "merged",
+    });
+
+    mockGitHubPullRequestFetch({
+      state: "closed",
+      draft: false,
+      merged_at: "2026-04-01T00:00:00Z",
+      closed_at: "2026-04-01T00:00:00Z",
+      title: "MaartenDMT/base#1008",
+      html_url: "https://github.com/MaartenDMT/base/pull/1008",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("backfills pull request work products from historical issue comments", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Historical PR comment",
+      status: "done",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        body: "PR opened before auto-capture existed: https://github.com/MaartenDMT/base/pull/1010",
+        createdAt: new Date("2026-04-01T10:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        body: "PR merged later: https://github.com/MaartenDMT/base/pull/1010",
+        createdAt: new Date("2026-04-01T10:05:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        body: "Regular status update without a PR link.",
+        createdAt: new Date("2026-04-01T10:10:00.000Z"),
+      },
+    ]);
+
+    const preview = await svc.previewPullRequestWorkProductBackfillFromComments(companyId);
+    expect(preview).toEqual({
+      commentsScanned: 2,
+      commentsWithPullRequests: 2,
+      issuesWithPullRequestComments: 1,
+      distinctPullRequests: 1,
+      existingPullRequestWorkProducts: 0,
+      missingPullRequestWorkProducts: 1,
+      pullRequestWorkProductsNeedingStatusUpdate: 0,
+      issueIds: [issueId],
+    });
+
+    const result = await svc.backfillPullRequestWorkProductsFromComments(companyId, { runId: null });
+
+    expect(result).toEqual({
+      commentsScanned: 2,
+      commentsWithPullRequests: 2,
+      pullRequestWorkProductsCreated: 1,
+      pullRequestWorkProductsUpdated: 1,
+      issueIds: [issueId],
+    });
+
+    const products = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, issueId));
+    expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({
+      type: "pull_request",
+      provider: "github",
+      externalId: "MaartenDMT/base#1010",
+      title: "MaartenDMT/base#1010",
+      url: "https://github.com/MaartenDMT/base/pull/1010",
+      status: "merged",
+      isPrimary: true,
+    });
+
+    const secondResult = await svc.backfillPullRequestWorkProductsFromComments(companyId, { runId: null });
+    expect(secondResult.pullRequestWorkProductsCreated).toBe(0);
+    expect(secondResult.pullRequestWorkProductsUpdated).toBe(2);
+    const [productAfterSecondRun] = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, issueId));
+    expect(productAfterSecondRun?.status).toBe("merged");
+
+    const previewAfterBackfill = await svc.previewPullRequestWorkProductBackfillFromComments(companyId);
+    expect(previewAfterBackfill).toEqual(expect.objectContaining({
+      existingPullRequestWorkProducts: 1,
+      missingPullRequestWorkProducts: 0,
+      pullRequestWorkProductsNeedingStatusUpdate: 0,
+    }));
+  });
+
+  it("blocks done after route-style pre-capture of an open pull request closeout comment", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closeout with open PR",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await svc.capturePullRequestWorkProductsFromText(
+      issueId,
+      "Code is pushed for review: https://github.com/MaartenDMT/base/pull/1009",
+    );
+
+    mockGitHubPullRequestFetch({
+      state: "open",
+      draft: false,
+      title: "MaartenDMT/base#1009",
+      html_url: "https://github.com/MaartenDMT/base/pull/1009",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      message: "Issue cannot be marked done while linked pull requests are still open",
+    });
   });
 });

@@ -492,6 +492,48 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
+  it("counts hidden done productivity reviews toward the creation cap", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await db.insert(issues).values(
+      [8, 9, 10].map((hoursAgo, index) => {
+        const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
+        return {
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          title: `Hidden completed productivity review ${index + 1}`,
+          status: "done",
+          priority: "high",
+          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          originId: seeded.issueId,
+          originFingerprint: `productivity-review:${seeded.issueId}`,
+          parentId: seeded.issueId,
+          issueNumber: index + 2,
+          identifier: `${seeded.issuePrefix}-${index + 2}`,
+          hiddenAt: new Date(createdAt.getTime() + 30_000),
+          createdAt,
+          updatedAt: createdAt,
+        };
+      }),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.creationCapped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
+  });
+
   it("coalesces concurrent productivity review creation races", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

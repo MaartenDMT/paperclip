@@ -37,6 +37,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueWorkProduct,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -70,6 +71,11 @@ import {
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+import {
+  syncGitHubPullRequestWorkProducts,
+  type GitHubPullRequestStatusSyncResult,
+} from "./github-pull-request-sync.js";
+import { classifyIssueCompletionEvidence } from "./issue-completion-evidence.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -87,12 +93,71 @@ export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 const TERMINAL_PULL_REQUEST_WORK_PRODUCT_STATUSES = new Set(["merged", "closed", "archived", "failed"]);
+const CODE_CHANGE_WORK_PRODUCT_TYPES = ["branch", "commit"] as const;
+const COMPLETED_CODE_WORK_PRODUCT_STATUSES = new Set(["approved", "merged", "closed", "archived"]);
+const CODE_COMPLETION_WORK_PRODUCT_TYPES = new Set([
+  "pull_request",
+  "branch",
+  "commit",
+  "preview_url",
+  "runtime_service",
+  "artifact",
+]);
+const GITHUB_PULL_REQUEST_URL_RE =
+  /\bhttps:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([0-9]+)(?:[/?#][^\s<>)\]]*)?/gi;
+
 type OpenPullRequestWorkProduct = {
   id: string;
   externalId: string | null;
   title: string;
   status: string;
   url: string | null;
+};
+type IncompleteCodeWorkProduct = {
+  id: string;
+  type: string;
+  externalId: string | null;
+  title: string;
+  status: string;
+  reviewState: string;
+  url: string | null;
+};
+type CapturedPullRequestWorkProduct = {
+  id: string;
+  externalId: string | null;
+  status: string;
+  url: string | null;
+  created: boolean;
+};
+type PullRequestWorkProductCommentBackfillResult = {
+  commentsScanned: number;
+  commentsWithPullRequests: number;
+  pullRequestWorkProductsCreated: number;
+  pullRequestWorkProductsUpdated: number;
+  issueIds: string[];
+};
+type PullRequestWorkProductCommentBackfillPreview = {
+  commentsScanned: number;
+  commentsWithPullRequests: number;
+  issuesWithPullRequestComments: number;
+  distinctPullRequests: number;
+  existingPullRequestWorkProducts: number;
+  missingPullRequestWorkProducts: number;
+  pullRequestWorkProductsNeedingStatusUpdate: number;
+  issueIds: string[];
+};
+type PullRequestWorkProductRecoveryResult = {
+  backfill: PullRequestWorkProductCommentBackfillResult;
+  githubStatusSync: GitHubPullRequestStatusSyncResult;
+};
+type ExtractedGithubPullRequest = {
+  owner: string;
+  repo: string;
+  number: string;
+  externalId: string;
+  title: string;
+  url: string;
+  status: string;
 };
 
 async function listOpenPullRequestWorkProducts(
@@ -115,6 +180,362 @@ async function listOpenPullRequestWorkProducts(
       eq(issueWorkProducts.type, "pull_request"),
     ));
   return rows.filter((row) => !TERMINAL_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(row.status));
+}
+
+async function listIncompleteCodeChangeWorkProducts(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+): Promise<IncompleteCodeWorkProduct[]> {
+  const rows = await dbOrTx
+    .select({
+      id: issueWorkProducts.id,
+      type: issueWorkProducts.type,
+      externalId: issueWorkProducts.externalId,
+      title: issueWorkProducts.title,
+      status: issueWorkProducts.status,
+      reviewState: issueWorkProducts.reviewState,
+      url: issueWorkProducts.url,
+    })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+    ));
+
+  const codeChangeRows = rows.filter((row) =>
+    CODE_CHANGE_WORK_PRODUCT_TYPES.includes(row.type as typeof CODE_CHANGE_WORK_PRODUCT_TYPES[number]),
+  );
+  if (codeChangeRows.length === 0) return [];
+
+  const hasCompletionEvidence = rows.some(
+    (row) =>
+      CODE_COMPLETION_WORK_PRODUCT_TYPES.has(row.type) &&
+      (row.reviewState === "approved" || COMPLETED_CODE_WORK_PRODUCT_STATUSES.has(row.status)),
+  );
+  if (hasCompletionEvidence) return [];
+
+  return codeChangeRows;
+}
+
+async function listIssueCompletionEvidenceWorkProducts(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+): Promise<IssueWorkProduct[]> {
+  const rows = await dbOrTx
+    .select()
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+    ));
+  return rows as unknown as IssueWorkProduct[];
+}
+
+function inferPullRequestStatusFromText(text: string) {
+  if (/\bmerged\b|\bmerge commit\b|\bmerged to\b/i.test(text)) return "merged";
+  if (/\bclosed\b/i.test(text)) return "closed";
+  if (/\bdraft\b/i.test(text)) return "draft";
+  return "ready_for_review";
+}
+
+function pullRequestStatusRank(status: string) {
+  if (status === "merged") return 4;
+  if (status === "closed" || status === "archived") return 3;
+  if (status === "ready_for_review" || status === "active" || status === "changes_requested") return 2;
+  if (status === "draft") return 1;
+  return 0;
+}
+
+function mergePullRequestEvidenceStatus(existingStatus: string, detectedStatus: string) {
+  return pullRequestStatusRank(existingStatus) > pullRequestStatusRank(detectedStatus)
+    ? existingStatus
+    : detectedStatus;
+}
+
+function extractGithubPullRequestsFromText(text: string): ExtractedGithubPullRequest[] {
+  const status = inferPullRequestStatusFromText(text);
+  const seen = new Set<string>();
+  const matches: ExtractedGithubPullRequest[] = [];
+
+  GITHUB_PULL_REQUEST_URL_RE.lastIndex = 0;
+  for (const match of text.matchAll(GITHUB_PULL_REQUEST_URL_RE)) {
+    const owner = match[1];
+    const repo = match[2];
+    const number = match[3];
+    if (!owner || !repo || !number) continue;
+
+    const dedupeKey = `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    matches.push({
+      owner,
+      repo,
+      number,
+      externalId: `${owner}/${repo}#${number}`,
+      title: `${owner}/${repo}#${number}`,
+      url: `https://github.com/${owner}/${repo}/pull/${number}`,
+      status,
+    });
+  }
+
+  return matches;
+}
+
+async function capturePullRequestWorkProductsFromText(
+  dbOrTx: Pick<Db, "select" | "insert" | "update">,
+  issueId: string,
+  text: string,
+  actor: { runId?: string | null } = {},
+): Promise<CapturedPullRequestWorkProduct[]> {
+  const pullRequests = extractGithubPullRequestsFromText(text);
+  if (pullRequests.length === 0) return [];
+
+  const issue = await dbOrTx
+    .select({
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+    })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+
+  const captured: CapturedPullRequestWorkProduct[] = [];
+  let hasPrimaryPullRequest = await dbOrTx
+    .select({ id: issueWorkProducts.id })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, issue.companyId),
+      eq(issueWorkProducts.issueId, issueId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.isPrimary, true),
+    ))
+    .then((rows) => rows.length > 0);
+
+  for (const pullRequest of pullRequests) {
+    const existing = await dbOrTx
+      .select({ id: issueWorkProducts.id, status: issueWorkProducts.status })
+      .from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, issue.companyId),
+        eq(issueWorkProducts.issueId, issueId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+        eq(issueWorkProducts.externalId, pullRequest.externalId),
+      ))
+      .then((rows) => rows[0] ?? null);
+
+    const metadata = {
+      source: "issue_comment_auto_capture",
+      owner: pullRequest.owner,
+      repo: pullRequest.repo,
+      number: pullRequest.number,
+    };
+
+    if (existing) {
+      const [updated] = await dbOrTx
+        .update(issueWorkProducts)
+        .set({
+          title: pullRequest.title,
+          url: pullRequest.url,
+          status: mergePullRequestEvidenceStatus(existing.status, pullRequest.status),
+          metadata,
+          updatedAt: new Date(),
+        })
+        .where(eq(issueWorkProducts.id, existing.id))
+        .returning({
+          id: issueWorkProducts.id,
+          externalId: issueWorkProducts.externalId,
+          status: issueWorkProducts.status,
+          url: issueWorkProducts.url,
+        });
+      if (updated) captured.push({ ...updated, created: false });
+      continue;
+    }
+
+    const isPrimary = !hasPrimaryPullRequest;
+    const [inserted] = await dbOrTx
+      .insert(issueWorkProducts)
+      .values({
+        companyId: issue.companyId,
+        projectId: issue.projectId,
+        issueId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        type: "pull_request",
+        provider: "github",
+        externalId: pullRequest.externalId,
+        title: pullRequest.title,
+        url: pullRequest.url,
+        status: pullRequest.status,
+        reviewState: "none",
+        isPrimary,
+        healthStatus: "unknown",
+        summary: "Auto-captured from an issue comment.",
+        metadata,
+        createdByRunId: actor.runId ?? null,
+      })
+      .returning({
+        id: issueWorkProducts.id,
+        externalId: issueWorkProducts.externalId,
+        status: issueWorkProducts.status,
+        url: issueWorkProducts.url,
+      });
+    if (inserted) {
+      captured.push({ ...inserted, created: true });
+      hasPrimaryPullRequest = true;
+    }
+  }
+
+  return captured;
+}
+
+async function backfillPullRequestWorkProductsFromComments(
+  dbOrTx: Pick<Db, "select" | "insert" | "update">,
+  companyId: string,
+  actor: { runId?: string | null } = {},
+): Promise<PullRequestWorkProductCommentBackfillResult> {
+  const commentRows = await dbOrTx
+    .select({
+      id: issueComments.id,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+    })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.companyId, companyId),
+      sql`${issueComments.body} ILIKE '%github.com/%/pull/%'`,
+    ))
+    .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+
+  const issueIds = new Set<string>();
+  let commentsWithPullRequests = 0;
+  let pullRequestWorkProductsCreated = 0;
+  let pullRequestWorkProductsUpdated = 0;
+
+  for (const comment of commentRows) {
+    const extracted = extractGithubPullRequestsFromText(comment.body);
+    if (extracted.length === 0) continue;
+    commentsWithPullRequests += 1;
+
+    const captured = await capturePullRequestWorkProductsFromText(
+      dbOrTx,
+      comment.issueId,
+      comment.body,
+      actor,
+    );
+    if (captured.length === 0) continue;
+
+    issueIds.add(comment.issueId);
+    pullRequestWorkProductsCreated += captured.filter((product) => product.created).length;
+    pullRequestWorkProductsUpdated += captured.filter((product) => !product.created).length;
+  }
+
+  return {
+    commentsScanned: commentRows.length,
+    commentsWithPullRequests,
+    pullRequestWorkProductsCreated,
+    pullRequestWorkProductsUpdated,
+    issueIds: [...issueIds],
+  };
+}
+
+async function previewPullRequestWorkProductBackfillFromComments(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+): Promise<PullRequestWorkProductCommentBackfillPreview> {
+  const commentRows = await dbOrTx
+    .select({
+      id: issueComments.id,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+    })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.companyId, companyId),
+      sql`${issueComments.body} ILIKE '%github.com/%/pull/%'`,
+    ))
+    .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+
+  const issueIds = new Set<string>();
+  const detectedByIssueAndExternalId = new Map<string, {
+    issueId: string;
+    externalId: string;
+    status: string;
+  }>();
+  let commentsWithPullRequests = 0;
+
+  for (const comment of commentRows) {
+    const detectedPullRequests = extractGithubPullRequestsFromText(comment.body);
+    if (detectedPullRequests.length === 0) continue;
+    commentsWithPullRequests += 1;
+    issueIds.add(comment.issueId);
+
+    for (const pullRequest of detectedPullRequests) {
+      const key = `${comment.issueId}\u0000${pullRequest.externalId}`;
+      const existing = detectedByIssueAndExternalId.get(key);
+      detectedByIssueAndExternalId.set(key, {
+        issueId: comment.issueId,
+        externalId: pullRequest.externalId,
+        status: existing
+          ? mergePullRequestEvidenceStatus(existing.status, pullRequest.status)
+          : pullRequest.status,
+      });
+    }
+  }
+
+  const issueIdList = [...issueIds];
+  const existingRows = issueIdList.length > 0
+    ? await dbOrTx
+      .select({
+        issueId: issueWorkProducts.issueId,
+        externalId: issueWorkProducts.externalId,
+        status: issueWorkProducts.status,
+      })
+      .from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.issueId, issueIdList),
+      ))
+    : [];
+  const existingByIssueAndExternalId = new Map(
+    existingRows
+      .filter((row) => row.externalId)
+      .map((row) => [`${row.issueId}\u0000${row.externalId}`, row]),
+  );
+
+  let existingPullRequestWorkProducts = 0;
+  let missingPullRequestWorkProducts = 0;
+  let pullRequestWorkProductsNeedingStatusUpdate = 0;
+
+  for (const [key, detected] of detectedByIssueAndExternalId) {
+    const existing = existingByIssueAndExternalId.get(key);
+    if (!existing) {
+      missingPullRequestWorkProducts += 1;
+      continue;
+    }
+
+    existingPullRequestWorkProducts += 1;
+    const mergedStatus = mergePullRequestEvidenceStatus(existing.status, detected.status);
+    if (mergedStatus !== existing.status) {
+      pullRequestWorkProductsNeedingStatusUpdate += 1;
+    }
+  }
+
+  return {
+    commentsScanned: commentRows.length,
+    commentsWithPullRequests,
+    issuesWithPullRequestComments: issueIdList.length,
+    distinctPullRequests: detectedByIssueAndExternalId.size,
+    existingPullRequestWorkProducts,
+    missingPullRequestWorkProducts,
+    pullRequestWorkProductsNeedingStatusUpdate,
+    issueIds: issueIdList,
+  };
 }
 
 function sanitizeTextForPostgres(input: string) {
@@ -2623,6 +3044,7 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      const lastActivityOrder = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
@@ -2630,7 +3052,7 @@ export function issueService(db: Db) {
         .orderBy(
           hasSearch ? asc(searchOrder) : asc(priorityOrder),
           asc(priorityOrder),
-          desc(issues.updatedAt),
+          desc(lastActivityOrder),
           desc(issues.id),
         );
       const pageQuery = offset > 0
@@ -3421,6 +3843,12 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (patch.status === "done") {
+        await syncGitHubPullRequestWorkProducts(dbOrTx, {
+          companyId: existing.companyId,
+          issueIds: [existing.id],
+          force: true,
+          limit: 50,
+        });
         const openPullRequests = await listOpenPullRequestWorkProducts(dbOrTx, existing.companyId, existing.id);
         if (openPullRequests.length > 0) {
           throw unprocessable("Issue cannot be marked done while linked pull requests are still open", {
@@ -3432,6 +3860,50 @@ export function issueService(db: Db) {
               url: pr.url,
             })),
           });
+        }
+        const incompleteCodeWorkProducts = await listIncompleteCodeChangeWorkProducts(
+          dbOrTx,
+          existing.companyId,
+          existing.id,
+        );
+        if (incompleteCodeWorkProducts.length > 0) {
+          throw unprocessable(
+            "Issue cannot be marked done with branch or commit work products that still need PR, merge, deployment, or review evidence",
+            {
+              incompleteCodeWorkProducts: incompleteCodeWorkProducts.map((product) => ({
+                id: product.id,
+                type: product.type,
+                externalId: product.externalId,
+                title: product.title,
+                status: product.status,
+                reviewState: product.reviewState,
+                url: product.url,
+              })),
+            },
+          );
+        }
+        const completionEvidenceWorkProducts = await listIssueCompletionEvidenceWorkProducts(
+          dbOrTx,
+          existing.companyId,
+          existing.id,
+        );
+        const completionEvidence = classifyIssueCompletionEvidence(
+          {
+            status: "done",
+            title: patch.title !== undefined ? patch.title : existing.title,
+            description: patch.description !== undefined ? patch.description : existing.description,
+            originKind: patch.originKind !== undefined ? patch.originKind : existing.originKind,
+          },
+          completionEvidenceWorkProducts,
+        );
+        if (
+          completionEvidence.kind === "code_review_missing" &&
+          completionEvidence.blockingWorkProductIds.length === 0
+        ) {
+          throw unprocessable(
+            "Issue cannot be marked done without PR, merge, deployment, review, or artifact evidence for code-like work",
+            { completionEvidence },
+          );
         }
       }
       if (patch.status === "in_progress") {
@@ -4329,29 +4801,78 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      const [comment] = await db
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          authorType,
-          createdByRunId: actor.runId ?? null,
-          body: redactedBody,
-          presentation,
-          metadata,
-          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
-        })
-        .returning();
+      const comment = await db.transaction(async (tx) => {
+        const [insertedComment] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType,
+            createdByRunId: actor.runId ?? null,
+            body: redactedBody,
+            presentation,
+            metadata,
+            ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+          })
+          .returning();
 
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+        await capturePullRequestWorkProductsFromText(tx, issueId, redactedBody, {
+          runId: actor.runId ?? null,
+        });
+
+        // Update issue's updatedAt so comment activity is reflected in recency sorting
+        await tx
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+
+        return insertedComment;
+      });
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+    },
+
+    capturePullRequestWorkProductsFromText: async (
+      issueId: string,
+      text: string,
+      actor?: { runId?: string | null },
+    ) => capturePullRequestWorkProductsFromText(db, issueId, text, actor),
+
+    backfillPullRequestWorkProductsFromComments: async (
+      companyId: string,
+      actor?: { runId?: string | null },
+    ) => backfillPullRequestWorkProductsFromComments(db, companyId, actor),
+
+    previewPullRequestWorkProductBackfillFromComments: async (
+      companyId: string,
+    ) => previewPullRequestWorkProductBackfillFromComments(db, companyId),
+
+    syncPullRequestWorkProductStatuses: async (
+      companyId: string,
+      opts: { issueIds?: string[]; force?: boolean; limit?: number; staleAfterMs?: number } = {},
+    ) => syncGitHubPullRequestWorkProducts(db, {
+      companyId,
+      issueIds: opts.issueIds,
+      force: opts.force,
+      limit: opts.limit,
+      staleAfterMs: opts.staleAfterMs,
+    }),
+
+    recoverPullRequestWorkProducts: async (
+      companyId: string,
+      actor: { runId?: string | null } = {},
+      opts: { force?: boolean; limit?: number; staleAfterMs?: number } = {},
+    ): Promise<PullRequestWorkProductRecoveryResult> => {
+      const backfill = await backfillPullRequestWorkProductsFromComments(db, companyId, actor);
+      const githubStatusSync = await syncGitHubPullRequestWorkProducts(db, {
+        companyId,
+        force: opts.force,
+        limit: opts.limit ?? 2_000,
+        staleAfterMs: opts.staleAfterMs,
+      });
+      return { backfill, githubStatusSync };
     },
 
     createAttachment: async (input: {

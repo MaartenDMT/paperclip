@@ -560,6 +560,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("register PR/branch/commit evidence as issue work products");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("branch-only evidence when a pull request");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Do not report product facts from stale memory when a fresh check failed");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
@@ -597,6 +599,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+    expect(prompt).toContain("register PR/branch/commit evidence as issue work products");
+    expect(prompt).toContain("branch-only evidence when a pull request");
     expect(prompt).toContain("treat that as an access/runtime blocker");
     expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
     expect(prompt).toContain("named unblock owner/action");

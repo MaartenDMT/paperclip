@@ -1,8 +1,14 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applySharedWorkspaceDirtyProtectionToAdapterConfig,
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
@@ -14,10 +20,13 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  resolveSharedWorkspaceDirtyProtection,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+
+const execFile = promisify(execFileCallback);
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -57,6 +66,21 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     createdAt: new Date(),
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
+}
+
+async function runGit(cwd: string, args: string[]) {
+  await execFile("git", args, { cwd });
+}
+
+async function createTempGitRepo(prefix: string) {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "initial\n", "utf8");
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+  return repoRoot;
 }
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
@@ -505,6 +529,125 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("resolveSharedWorkspaceDirtyProtection", () => {
+  it("moves fresh shared workspace runs into an isolated worktree when the project checkout is dirty", async () => {
+    const repoRoot = await createTempGitRepo("paperclip-dirty-shared-");
+    try {
+      await fs.writeFile(path.join(repoRoot, "README.md"), "changed\n", "utf8");
+      await fs.writeFile(path.join(repoRoot, "scratch.txt"), "untracked\n", "utf8");
+
+      const decision = await resolveSharedWorkspaceDirtyProtection({
+        requestedMode: "shared_workspace",
+        resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+        shouldReuseExisting: false,
+      });
+
+      expect(decision).toMatchObject({
+        mode: "isolated_workspace",
+        protected: true,
+        dirtyEntryCount: 1,
+        untrackedEntryCount: 1,
+      });
+      expect(decision.warnings[0]).toContain("using an isolated git worktree");
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("keeps clean fresh shared workspace runs in the shared workspace", async () => {
+    const repoRoot = await createTempGitRepo("paperclip-clean-shared-");
+    try {
+      const decision = await resolveSharedWorkspaceDirtyProtection({
+        requestedMode: "shared_workspace",
+        resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+        shouldReuseExisting: false,
+      });
+
+      expect(decision).toMatchObject({
+        mode: "shared_workspace",
+        protected: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+      });
+      expect(decision.warnings).toEqual([]);
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("does not disrupt explicit reuse of an existing execution workspace", async () => {
+    const repoRoot = await createTempGitRepo("paperclip-reused-shared-");
+    try {
+      await fs.writeFile(path.join(repoRoot, "README.md"), "changed\n", "utf8");
+
+      const decision = await resolveSharedWorkspaceDirtyProtection({
+        requestedMode: "shared_workspace",
+        resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+        shouldReuseExisting: true,
+      });
+
+      expect(decision).toMatchObject({
+        mode: "shared_workspace",
+        protected: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+      });
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe("applySharedWorkspaceDirtyProtectionToAdapterConfig", () => {
+  it("forces git worktree strategy when dirty shared checkout protection activates", () => {
+    const result = applySharedWorkspaceDirtyProtectionToAdapterConfig(
+      {
+        cwd: "/tmp/project",
+        workspaceStrategy: {
+          type: "project_primary",
+          baseRef: "main",
+          provisionCommand: "pnpm install",
+        },
+      },
+      {
+        mode: "isolated_workspace",
+        protected: true,
+        warnings: ["dirty shared checkout"],
+        dirtyEntryCount: 2,
+        untrackedEntryCount: 1,
+      },
+    );
+
+    expect(result).toEqual({
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "main",
+        provisionCommand: "pnpm install",
+      },
+    });
+  });
+
+  it("does not alter adapter config when dirty shared checkout protection is inactive", () => {
+    const config = {
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "project_primary",
+      },
+    };
+
+    expect(
+      applySharedWorkspaceDirtyProtectionToAdapterConfig(config, {
+        mode: "shared_workspace",
+        protected: false,
+        warnings: [],
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+      }),
+    ).toBe(config);
   });
 });
 

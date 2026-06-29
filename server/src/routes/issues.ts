@@ -103,6 +103,7 @@ import {
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { agentRoleCanAssignTasks } from "../services/agent-permissions.js";
+import { classifyIssueCompletionEvidence } from "../services/issue-completion-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -1699,14 +1700,15 @@ export function issueRoutes(
       limit,
       offset,
     });
-    const handoffStates = await listSuccessfulRunHandoffStates(
-      db,
-      companyId,
-      result.map((issue) => issue.id),
-    );
+    const issueIds = result.map((issue) => issue.id);
+    const [handoffStates, workProductsByIssue] = await Promise.all([
+      listSuccessfulRunHandoffStates(db, companyId, issueIds),
+      workProductsSvc.listForIssues(issueIds),
+    ]);
     res.json(result.map((issue) => ({
       ...issue,
       successfulRunHandoff: normalizeSuccessfulRunHandoffStateForIssue(issue, handoffStates.get(issue.id)),
+      completionEvidence: classifyIssueCompletionEvidence(issue, workProductsByIssue.get(issue.id) ?? []),
     })));
   });
 
@@ -1793,6 +1795,7 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      workProducts,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -1808,6 +1811,7 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        workProductsSvc.listForIssue(issue.id),
       ]);
 
     res.json({
@@ -1832,6 +1836,7 @@ export function issueRoutes(
         assigneeUserId: issue.assigneeUserId,
         originKind: issue.originKind,
         originId: issue.originId,
+        completionEvidence: classifyIssueCompletionEvidence(issue, workProducts),
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
@@ -1923,6 +1928,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const completionEvidence = classifyIssueCompletionEvidence(issue, workProducts);
     const blockedByIssueIds = relations.blockedBy.map((relation) => relation.id);
     res.json({
       ...issue,
@@ -1943,6 +1949,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      completionEvidence,
     });
   });
 
@@ -2925,6 +2932,12 @@ export function issueRoutes(
       }
     }
 
+    if (commentBody && updateFields.status === "done") {
+      await svc.capturePullRequestWorkProductsFromText(id, commentBody, {
+        runId: actor.runId,
+      });
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -3476,7 +3489,11 @@ export function issueRoutes(
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
         const issueClosedAfterUpdate = isClosedIssueStatus(issue.status);
-        const skipAssigneeCommentWake = selfComment || (issueClosedAfterUpdate && !reopened);
+        const issueParkedAfterUpdate = issue.status === "backlog";
+        const skipAssigneeCommentWake =
+          selfComment ||
+          (issueClosedAfterUpdate && !reopened) ||
+          (issueParkedAfterUpdate && !reopened && resumeRequested !== true && !interruptedRunId);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -4715,7 +4732,7 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || isClosed || currentIssue.status === "backlog";
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {

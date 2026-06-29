@@ -79,6 +79,11 @@ const require = createRequire(import.meta.url);
 const tsxCliPath = require.resolve("tsx/cli");
 const serverRoot = path.join(repoRoot, "server");
 
+stdin.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") return;
+  console.error(error);
+});
+
 const watchedDirectories = [
   "cli",
   "scripts",

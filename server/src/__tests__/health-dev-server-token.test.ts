@@ -64,9 +64,9 @@ describe("GET /health dev-server supervisor access", () => {
     }
   });
 
-  it("uses the configured database probe instead of the app pool execute path", async () => {
+  it("uses the app pool before the configured database probe", async () => {
     const db = {
-      execute: vi.fn(() => new Promise(() => {})),
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
       select: vi.fn(),
     } as unknown as Db;
     const databaseProbe = vi.fn().mockResolvedValue(undefined);
@@ -86,18 +86,18 @@ describe("GET /health dev-server supervisor access", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(databaseProbe).toHaveBeenCalledTimes(1);
-    expect((db as unknown as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
+    expect((db as unknown as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledTimes(1);
+    expect(databaseProbe).not.toHaveBeenCalled();
   });
 
-  it("falls back to the app pool when the configured database probe stalls", async () => {
+  it("falls back to the configured database probe when the app pool stalls", async () => {
     const previousTimeout = process.env.PAPERCLIP_HEALTH_DB_TIMEOUT_MS;
     process.env.PAPERCLIP_HEALTH_DB_TIMEOUT_MS = "5";
     const db = {
-      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      execute: vi.fn(() => new Promise(() => {})),
       select: vi.fn(),
     } as unknown as Db;
-    const databaseProbe = vi.fn(() => new Promise(() => {}));
+    const databaseProbe = vi.fn().mockResolvedValue(undefined);
 
     try {
       const app = express();
@@ -115,8 +115,8 @@ describe("GET /health dev-server supervisor access", () => {
       const res = await request(app).get("/health");
 
       expect(res.status).toBe(200);
-      expect(databaseProbe).toHaveBeenCalledTimes(1);
       expect((db as unknown as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledTimes(1);
+      expect(databaseProbe).toHaveBeenCalledTimes(1);
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.PAPERCLIP_HEALTH_DB_TIMEOUT_MS;

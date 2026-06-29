@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Eye, Flag, GitPullRequest, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -13,6 +13,50 @@ import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 
 type UnreadState = "hidden" | "visible" | "fading";
+
+function completionEvidenceRowBadge(issue: Issue) {
+  const evidence = issue.completionEvidence;
+  if (!evidence || evidence.kind === "not_done") return null;
+
+  const needsAttention =
+    evidence.kind === "code_review_missing" ||
+    evidence.kind === "code_review_pending" ||
+    evidence.kind === "unknown";
+  const label =
+    evidence.kind === "code_review_missing"
+      ? "PR needed"
+      : evidence.kind === "code_review_pending"
+        ? "PR pending"
+        : evidence.kind === "code_shipped"
+          ? "PR shipped"
+          : evidence.kind === "operational"
+            ? "No PR"
+            : evidence.kind === "non_code_completion"
+              ? "Non-code"
+              : evidence.kind === "evidence_present"
+                ? "Evidence"
+                : "Evidence?";
+  const Icon =
+    evidence.kind === "code_shipped" || evidence.kind === "code_review_missing" || evidence.kind === "code_review_pending"
+      ? GitPullRequest
+      : needsAttention
+        ? AlertTriangle
+        : CheckCircle2;
+  const title = evidence.reasons.length ? evidence.reasons.join(" ") : evidence.label;
+  const className = needsAttention
+    ? "border-amber-500/60 bg-amber-500/15 text-amber-800 dark:text-amber-200"
+    : evidence.prExpected
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+      : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+
+  return {
+    Icon,
+    label,
+    title,
+    className,
+    blockerCount: evidence.blockingWorkProductIds.length,
+  };
+}
 
 interface IssueRowProps {
   issue: Issue;
@@ -66,6 +110,26 @@ export function IssueRow({
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
   const productivityReview = issue.productivityReview ?? null;
+  const completionEvidenceBadge = completionEvidenceRowBadge(issue);
+  const completionEvidenceIndicator = completionEvidenceBadge ? (
+    <span
+      data-testid="issue-row-completion-evidence"
+      className={cn(
+        "ml-1.5 inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        completionEvidenceBadge.className,
+      )}
+      title={completionEvidenceBadge.title}
+      aria-label={completionEvidenceBadge.label}
+    >
+      <completionEvidenceBadge.Icon className="h-2.5 w-2.5" aria-hidden />
+      {completionEvidenceBadge.label}
+      {completionEvidenceBadge.blockerCount > 0 ? (
+        <span className="font-mono" aria-label={`${completionEvidenceBadge.blockerCount} evidence blockers`}>
+          {completionEvidenceBadge.blockerCount}
+        </span>
+      ) : null}
+    </span>
+  ) : null;
   const productivityReviewIndicator = productivityReview ? (
     <span
       className={cn(
@@ -125,6 +189,7 @@ export function IssueRow({
         {productivityReviewIndicator}
         {planningModeIndicator}
         {parkedBlockerIndicator}
+        {completionEvidenceIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
@@ -151,6 +216,7 @@ export function IssueRow({
               </span>
               {planningModeIndicator}
               {parkedBlockerIndicator}
+              {completionEvidenceIndicator}
             </>
           )}
           {mobileMeta ? (

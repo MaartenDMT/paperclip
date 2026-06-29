@@ -277,34 +277,35 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
     .join(", ");
 }
 
-function unwrapDatabaseConflictError(error: unknown) {
-  if (!error || typeof error !== "object") return null;
-
-  const candidate = error as {
+type DatabaseConflictErrorCandidate = {
     code?: string;
     constraint?: string;
     constraint_name?: string;
     message?: string;
     cause?: unknown;
-  };
+};
 
-  if (
+function databaseConflictErrorChain(error: unknown) {
+  const chain: DatabaseConflictErrorCandidate[] = [];
+  let current = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (!current || typeof current !== "object") break;
+    const candidate = current as DatabaseConflictErrorCandidate;
+    chain.push(candidate);
+    current = candidate.cause;
+  }
+  return chain;
+}
+
+function unwrapDatabaseConflictError(error: unknown) {
+  const chain = databaseConflictErrorChain(error);
+  if (chain.length === 0) return null;
+
+  return chain.find((candidate) =>
     typeof candidate.code === "string" ||
     typeof candidate.constraint === "string" ||
     typeof candidate.constraint_name === "string"
-  ) {
-    return candidate;
-  }
-
-  const cause = candidate.cause;
-  if (!cause || typeof cause !== "object") return candidate;
-
-  return cause as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-    message?: string;
-  };
+  ) ?? chain[chain.length - 1] ?? null;
 }
 
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
@@ -377,6 +378,17 @@ function isUniqueLivenessRecoveryConflict(error: unknown) {
           maybe.message.includes("issues_active_liveness_recovery_leaf_uq")
         )
     );
+}
+
+export function isDatabaseConcurrencyConflict(error: unknown): boolean {
+  return databaseConflictErrorChain(error).some((candidate) => {
+    const message = typeof candidate.message === "string" ? candidate.message.toLowerCase() : "";
+    return candidate.code === "40P01" ||
+      candidate.code === "40001" ||
+      message.includes("deadlock detected") ||
+      message.includes("could not serialize access") ||
+      message.includes("canceling statement due to lock timeout");
+  });
 }
 
 function formatDependencyPath(finding: IssueLivenessFinding) {
@@ -2877,6 +2889,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      try {
       const terminalStaleRunEvaluation = await resolveTerminalStaleRunEvaluationIssue(issue);
       if (terminalStaleRunEvaluation) {
         result.escalated += 1;
@@ -3163,6 +3176,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.issueIds.push(issue.id);
       } else {
         result.skipped += 1;
+      }
+      } catch (error) {
+        if (!isDatabaseConcurrencyConflict(error)) throw error;
+        result.skipped += 1;
+        logger.debug?.(
+          {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "recovery.skipped_concurrent_stranded_issue_reconciliation",
+        );
       }
     }
 

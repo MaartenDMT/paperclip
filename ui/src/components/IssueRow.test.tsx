@@ -314,4 +314,100 @@ describe("IssueRow", () => {
       root.unmount();
     });
   });
+
+  it("flags done branch-only code work that still needs PR evidence", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      status: "done",
+      completionEvidence: {
+        kind: "code_review_missing",
+        label: "Code evidence needs PR/review",
+        prExpected: true,
+        hasPullRequest: false,
+        hasCodeChangeEvidence: true,
+        hasCompletionEvidence: false,
+        hasOperationalOrigin: false,
+        evidenceWorkProductIds: [],
+        blockingWorkProductIds: ["work-product-1"],
+        reasons: ["Issue is done with branch evidence but no PR evidence."],
+      },
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-completion-evidence"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("PR needed");
+    expect(badges[0]?.textContent).toContain("1");
+    expect(badges[0]?.getAttribute("title")).toContain("branch evidence");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks operational done work as not expecting a PR", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      status: "done",
+      completionEvidence: {
+        kind: "operational",
+        label: "Operational completion",
+        prExpected: false,
+        hasPullRequest: false,
+        hasCodeChangeEvidence: false,
+        hasCompletionEvidence: false,
+        hasOperationalOrigin: true,
+        evidenceWorkProductIds: [],
+        blockingWorkProductIds: [],
+        reasons: ["Issue origin is operational work, so no pull request is expected."],
+      },
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-completion-evidence"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("No PR");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks non-code done work without implying a PR is needed", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      status: "done",
+      completionEvidence: {
+        kind: "non_code_completion",
+        label: "Non-code completion",
+        prExpected: false,
+        hasPullRequest: false,
+        hasCodeChangeEvidence: false,
+        hasCompletionEvidence: false,
+        hasOperationalOrigin: false,
+        evidenceWorkProductIds: [],
+        blockingWorkProductIds: [],
+        reasons: ["Issue text describes non-code domain work, so no pull request is expected."],
+      },
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-completion-evidence"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("Non-code");
+    expect(badges[0]?.textContent).not.toContain("Evidence?");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

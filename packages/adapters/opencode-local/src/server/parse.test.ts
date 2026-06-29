@@ -69,6 +69,33 @@ describe("parseOpenCodeJsonl", () => {
     expect(parsed.toolErrors).toEqual(["File not found: e2b-adapter-result.txt"]);
   });
 
+  it("parses Codex-style agent messages emitted by OpenCode-compatible CLIs", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "item_0",
+          type: "agent_message",
+          text: "Read the issue context and started the workspace repair.",
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "item_1",
+          type: "command_execution",
+          status: "failed",
+          aggregated_output: "Cannot find path 'missing-skill/SKILL.md'",
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Read the issue context and started the workspace repair.");
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.toolErrors).toEqual(["Cannot find path 'missing-skill/SKILL.md'"]);
+  });
+
   it("detects unknown session errors", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);

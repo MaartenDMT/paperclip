@@ -320,7 +320,6 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          isNull(issues.hiddenAt),
           sql`${issues.status} <> 'cancelled'`,
           sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
         ),

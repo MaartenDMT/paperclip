@@ -390,6 +390,8 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
   Issue,
+  IssueCompletionEvidence,
+  IssueCompletionEvidenceKind,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,

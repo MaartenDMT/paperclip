@@ -223,6 +223,7 @@ describe("server adapter registry", () => {
       "zai-coding-plan/glm-4.7",
       "zai-coding-plan/glm-5-turbo",
       "zai-coding-plan/glm-5.1",
+      "zai-coding-plan/glm-5.2",
       "zai-coding-plan/glm-5v-turbo",
     ]);
   });

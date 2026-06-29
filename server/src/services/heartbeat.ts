@@ -401,6 +401,100 @@ const MANAGER_TAKEOVER_FAILURE_COUNT = Math.max(
   Number.parseInt(process.env.PAPERCLIP_MANAGER_TAKEOVER_FAILURE_COUNT ?? "", 10) || 2,
 );
 
+function countGitPorcelainEntries(output: string) {
+  let dirtyEntryCount = 0;
+  let untrackedEntryCount = 0;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith("??")) untrackedEntryCount += 1;
+    else dirtyEntryCount += 1;
+  }
+  return {
+    dirtyEntryCount,
+    untrackedEntryCount,
+    totalEntryCount: dirtyEntryCount + untrackedEntryCount,
+  };
+}
+
+async function inspectWorkspaceGitStatus(cwd: string) {
+  try {
+    await execFile("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { cwd });
+    const status = await execFile("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"], { cwd });
+    return countGitPorcelainEntries(status.stdout);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveSharedWorkspaceDirtyProtection(input: {
+  requestedMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+  resolvedWorkspace: Pick<ResolvedWorkspaceForRun, "cwd" | "source">;
+  shouldReuseExisting: boolean;
+}) {
+  if (input.requestedMode !== "shared_workspace" || input.resolvedWorkspace.source !== "project_primary") {
+    return {
+      mode: input.requestedMode,
+      protected: false,
+      warnings: [] as string[],
+      dirtyEntryCount: 0,
+      untrackedEntryCount: 0,
+    };
+  }
+  if (input.shouldReuseExisting) {
+    return {
+      mode: input.requestedMode,
+      protected: false,
+      warnings: [] as string[],
+      dirtyEntryCount: 0,
+      untrackedEntryCount: 0,
+    };
+  }
+
+  const status = await inspectWorkspaceGitStatus(input.resolvedWorkspace.cwd);
+  if (!status || status.totalEntryCount === 0) {
+    return {
+      mode: input.requestedMode,
+      protected: false,
+      warnings: [] as string[],
+      dirtyEntryCount: status?.dirtyEntryCount ?? 0,
+      untrackedEntryCount: status?.untrackedEntryCount ?? 0,
+    };
+  }
+
+  const changedParts = [
+    status.dirtyEntryCount > 0
+      ? `${status.dirtyEntryCount} tracked change${status.dirtyEntryCount === 1 ? "" : "s"}`
+      : null,
+    status.untrackedEntryCount > 0
+      ? `${status.untrackedEntryCount} untracked file${status.untrackedEntryCount === 1 ? "" : "s"}`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  return {
+    mode: "isolated_workspace" as const,
+    protected: true,
+    warnings: [
+      `Project shared workspace "${input.resolvedWorkspace.cwd}" has ${changedParts.join(" and ")}. Paperclip is using an isolated git worktree for this issue so new work does not mix with unowned shared-checkout changes.`,
+    ],
+    dirtyEntryCount: status.dirtyEntryCount,
+    untrackedEntryCount: status.untrackedEntryCount,
+  };
+}
+
+export function applySharedWorkspaceDirtyProtectionToAdapterConfig(
+  config: Record<string, unknown>,
+  protection: Awaited<ReturnType<typeof resolveSharedWorkspaceDirtyProtection>>,
+) {
+  if (!protection.protected) return config;
+  const existingStrategy = parseObject(config.workspaceStrategy);
+  return {
+    ...config,
+    workspaceStrategy: {
+      ...existingStrategy,
+      type: "git_worktree",
+    },
+  };
+}
+
 async function logIssueTreeHoldWakeupDeferredOnce(
   db: Db,
   input: {
@@ -455,7 +549,10 @@ async function logIssueTreeHoldWakeupDeferredOnce(
   return true;
 }
 
-const LOCAL_AGENT_PRE_SPAWN_STALE_MS = 2 * 60 * 1000;
+const LOCAL_AGENT_PRE_SPAWN_STALE_MS = Math.max(
+  2 * 60 * 1000,
+  Math.floor(Number(process.env.PAPERCLIP_LOCAL_AGENT_PRE_SPAWN_STALE_MS ?? 2 * 60 * 1000)),
+);
 const STALE_UNSCOPED_QUEUED_RUN_MS = Math.max(
   60_000,
   Number.parseInt(process.env.PAPERCLIP_STALE_UNSCOPED_QUEUED_RUN_MS ?? "", 10) || 2 * 60 * 60 * 1000,
@@ -4632,8 +4729,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      const isMeetingWorkflowWake = isMeetingWorkflowWakeContext(context);
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !isMeetingWorkflowWake) {
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
         const managerTakeover = await getUnresolvedBlockerManagerTakeover({
           companyId: run.companyId,
           managerAgentId: run.agentId,
@@ -4712,11 +4808,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const isMeetingWorkflowWake = isMeetingWorkflowWakeContext(context);
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !isMeetingWorkflowWake) {
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
         const managerTakeover = await getUnresolvedBlockerManagerTakeover({
           companyId: run.companyId,
           managerAgentId: run.agentId,
@@ -4943,8 +5038,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      const isMeetingWorkflowWake = isMeetingWorkflowWakeContext(context);
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !isMeetingWorkflowWake) {
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
         const managerTakeover = await getUnresolvedBlockerManagerTakeover({
           companyId: run.companyId,
           managerAgentId: run.agentId,
@@ -5681,6 +5775,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const allowCriticallySilentTrackedCleanup =
         tracksLocalChild &&
         criticallySilent &&
+        !activeInMemory &&
         Boolean(processPidAlive || processGroupAlive);
       const staleActiveWithoutTrackedChild =
         activeInMemory &&
@@ -6481,6 +6576,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
+    const sharedWorkspaceDirtyProtection = await resolveSharedWorkspaceDirtyProtection({
+      requestedMode: requestedExecutionWorkspaceMode,
+      resolvedWorkspace,
+      shouldReuseExisting,
+    });
+    const selectedExecutionWorkspaceMode = sharedWorkspaceDirtyProtection.mode;
     const persistedExecutionWorkspaceMode = shouldReuseExisting && existingExecutionWorkspace
       ? issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode)
       : null;
@@ -6489,7 +6590,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspaceMode === "operator_branch" ||
       persistedExecutionWorkspaceMode === "agent_default"
         ? persistedExecutionWorkspaceMode
-        : requestedExecutionWorkspaceMode;
+        : selectedExecutionWorkspaceMode;
     const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const selectedEnvironmentId = resolveExecutionWorkspaceEnvironmentId({
       projectPolicy: projectExecutionWorkspacePolicy,
@@ -6498,15 +6599,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       defaultEnvironmentId: defaultEnvironment.id,
     });
-    const workspaceManagedConfig = shouldReuseExisting
+    let workspaceManagedConfig = shouldReuseExisting
       ? { ...config }
       : buildExecutionWorkspaceAdapterConfig({
           agentConfig: config,
           projectPolicy: projectExecutionWorkspacePolicy,
           issueSettings: issueExecutionWorkspaceSettings,
-          mode: requestedExecutionWorkspaceMode,
+          mode: selectedExecutionWorkspaceMode,
           legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
         });
+    workspaceManagedConfig = applySharedWorkspaceDirtyProtectionToAdapterConfig(
+      workspaceManagedConfig,
+      sharedWorkspaceDirtyProtection,
+    );
     const persistedWorkspaceManagedConfig = applyPersistedExecutionWorkspaceConfig({
       config: workspaceManagedConfig,
       workspaceConfig: reusableExecutionWorkspaceConfig,
@@ -6661,11 +6766,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               projectWorkspaceId: resolvedProjectWorkspaceId,
               sourceIssueId: issueRef?.id ?? null,
               mode:
-                requestedExecutionWorkspaceMode === "isolated_workspace"
+                selectedExecutionWorkspaceMode === "isolated_workspace"
                   ? "isolated_workspace"
-                  : requestedExecutionWorkspaceMode === "operator_branch"
+                  : selectedExecutionWorkspaceMode === "operator_branch"
                     ? "operator_branch"
-                    : requestedExecutionWorkspaceMode === "agent_default"
+                    : selectedExecutionWorkspaceMode === "agent_default"
                       ? "adapter_managed"
                       : "shared_workspace",
               strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
@@ -6740,8 +6845,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
         issueRef?.executionWorkspacePreference === "reuse_existing" ||
-        requestedExecutionWorkspaceMode === "isolated_workspace" ||
-        requestedExecutionWorkspaceMode === "operator_branch";
+        selectedExecutionWorkspaceMode === "isolated_workspace" ||
+        selectedExecutionWorkspaceMode === "operator_branch";
       const nextIssuePatch: Record<string, unknown> = {};
       if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
@@ -6848,6 +6953,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
+      ...sharedWorkspaceDirtyProtection.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason

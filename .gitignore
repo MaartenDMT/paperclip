@@ -90,3 +90,5 @@ server/src/graphify-out/
 .codex/
 .codex-run-logs/
 logs/
+/paperclip-dev*.log
+/paperclip-install-codex*.log

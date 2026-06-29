@@ -85,11 +85,11 @@ describe("kimi_local server adapter", () => {
     ]);
   });
 
-  it("passes materialized Paperclip runtime skill parent directories to Kimi", () => {
+  it("does not pass unsupported Paperclip skill directory flags to Kimi", () => {
     expect(kimiDefinition.buildArgs({
       prompt: "use skills",
       model: "kimi-code/kimi-for-coding",
-      extraArgs: ["--debug"],
+      extraArgs: ["--debug", "--skills-dir", "C:\\configured-skills", "--skills-dir=D:\\more-skills"],
       config: {
         paperclipRuntimeSkills: [
           { key: "company/caveman", runtimeName: "caveman", source: path.join("C:\\skills", "caveman") },
@@ -104,10 +104,6 @@ describe("kimi_local server adapter", () => {
       "stream-json",
       "--model",
       "kimi-code/kimi-for-coding",
-      "--skills-dir",
-      "C:\\skills",
-      "--skills-dir",
-      "D:\\other",
       "--debug",
       "--prompt",
       "use skills",

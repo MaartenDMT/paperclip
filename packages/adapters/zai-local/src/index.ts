@@ -11,6 +11,7 @@ export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_ZAI_LOCAL_MODEL, label: "zai-coding-plan/glm-4.7" },
   { id: "zai-coding-plan/glm-5-turbo", label: "zai-coding-plan/glm-5-turbo" },
   { id: "zai-coding-plan/glm-5.1", label: "zai-coding-plan/glm-5.1" },
+  { id: "zai-coding-plan/glm-5.2", label: "zai-coding-plan/glm-5.2" },
   { id: "zai-coding-plan/glm-5v-turbo", label: "zai-coding-plan/glm-5v-turbo" },
 ];
 
@@ -48,7 +49,7 @@ Runs Z.AI coding models through OpenCode locally or in a Paperclip execution env
 Core fields:
 - cwd: working directory for the CLI process
 - instructionsFilePath: markdown instructions prepended to the run prompt
-- model: OpenCode model id; supported defaults are "zai-coding-plan/glm-4.5-air", "zai-coding-plan/glm-4.7", "zai-coding-plan/glm-5-turbo", "zai-coding-plan/glm-5.1", and "zai-coding-plan/glm-5v-turbo"
+- model: OpenCode model id; supported defaults are "zai-coding-plan/glm-4.5-air", "zai-coding-plan/glm-4.7", "zai-coding-plan/glm-5-turbo", "zai-coding-plan/glm-5.1", "zai-coding-plan/glm-5.2", and "zai-coding-plan/glm-5v-turbo"
 - command: defaults to "opencode"
 - extraArgs: extra CLI args appended after Paperclip's default args
 - env: CLI authentication/environment variables

@@ -83,6 +83,23 @@ export function parseOpenCodeJsonl(stdout: string) {
       continue;
     }
 
+    if (type === "item.completed") {
+      const item = parseObject(event.item);
+      const itemType = asString(item.type, "").trim();
+      if (itemType === "agent_message") {
+        const text = asString(item.text, "").trim();
+        if (text) messages.push(text);
+        continue;
+      }
+
+      if (itemType === "command_execution") {
+        const status = asString(item.status, "").trim();
+        const text = asString(item.aggregated_output, "").trim();
+        if (status === "failed" && text) toolErrors.push(text);
+        continue;
+      }
+    }
+
     if (type === "step_finish") {
       const part = parseObject(event.part);
       const tokens = parseObject(part.tokens);

@@ -69,6 +69,7 @@ import { meetingService } from "./meetings.js";
 import {
   findFictionDirector,
   isFictionStoryAlignmentIssue,
+  needsFictionVisualStoryParticipant,
 } from "./fiction-story-alignment.js";
 
 type InteractionActor = {
@@ -128,8 +129,10 @@ const ACTIVE_WORK_PRESSURE_RUNS = 3;
 const FICTION_RESEARCH_ROLE_RE = /\b(?:research|researcher|research-agent|classification)\b/i;
 const FICTION_DRAFT_ROLE_RE = /\b(?:draft|writer|author|prose)\b/i;
 const FICTION_CHARACTER_ROLE_RE = /\bcharacter\b/i;
-const FICTION_PLOT_ROLE_RE = /\bplot\b/i;
-const FICTION_WORLDBUILDING_ROLE_RE = /\bworld\s*building|worldbuilding\b/i;
+const FICTION_PLOT_ROLE_RE = /\b(?:plot|arc|twist|sequence)\b/i;
+const FICTION_WORLDBUILDING_ROLE_RE = /\b(?:story[-_\s]*architect|world\s*building|worldbuilding|world[-_\s]*vault|lore|canon|setting|location|faction|country|empire|realm|geopolitic|magic[-_\s]*system)\b/i;
+const FICTION_VISUAL_STORY_ROLE_RE = /\b(?:storybook|graphic|visual|illustrat|cover|asset)\b/i;
+const FICTION_CONTINUITY_COORDINATOR_ROLE_RE = /\b(?:continuity|coordinator|canon|evaluation|gate)\b/i;
 
 async function listIssueIdsWithPendingNextActionPath(db: Db, companyId: string, issueIds: string[]) {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
@@ -248,8 +251,10 @@ const MEETING_TRIGGER_AGENDAS: Record<MeetingWorkflowTrigger, string[]> = {
   fiction_story_alignment: [
     "Research/classification: what facts, references, constraints, and labels should the story team use?",
     "Character: what backstories, history, family, friends, enemies, lovers, motivations, and contradictions need alignment?",
-    "Plot: what setup, reversals, causality, stakes, pacing, and continuity need to change?",
-    "Worldbuilding: what rules, places, factions, history, systems, and constraints need updating?",
+    "Plot and series sequence: what setup, reversals, causality, stakes, pacing, twist pipeline, book/season order, and long-range continuity need to change?",
+    "World Vault and lore: what locations, countries, alliances, factions, empires, realms, worlds, magic/power systems, history, laws, and constraints need updating?",
+    "Format and art density: is this a compact picture book, graphic/visual story, or long-form novel/storybook where images should be sparse and reserved for critical events?",
+    "Evaluation gates: what canon, continuity, escalation, twist, location, faction, and character checks must pass before the next draft continues?",
     "Draft: what concrete chapter/scene direction should the drafting agent write next, and what must not change?",
   ],
   no_recent_meetings: [
@@ -269,7 +274,7 @@ const MEETING_TRIGGER_FOCUS: Record<MeetingWorkflowTrigger, string> = {
   failed_run_review: "Business review focus: minimal, precise operating review of failed/stale run impact, blocked work, agent performance, retry/reassignment decisions, cost/churn, and exact recovery issue operations.",
   campaign_phase_review: "Business review focus: minimal, precise operating review of campaign phase progress, plan/review/execution blockers, responsible agents, required decisions, and exact issue/document/approval operations.",
   productivity_review: "Business review focus: minimal, precise operating review of productivity evidence, churn, cost, missing comments, agent performance, required decisions, and exact follow-up issue operations.",
-  fiction_story_alignment: "Story alignment focus: research classification, character backstories and relationships, plot causality, worldbuilding rules, draft direction, contradictions, and exact issue/document updates needed before writing continues.",
+  fiction_story_alignment: "Story alignment focus: research classification, character backstories and relationships, plot causality, series sequence, World Vault lore, locations, countries, alliances, factions, empires, realms, multiple worlds, magic/power systems, twist continuity, evaluation gates, format/art density including sparse critical-event images for long-form storybooks, draft direction, contradictions, and exact issue/document updates needed before writing continues.",
   no_recent_meetings: "Business review focus: company goals, targets, KPI trend, finance, business requirements, employee performance, cross-team problems, idea sharing, workflow health, memory correctness, and operating process improvements.",
 };
 
@@ -366,8 +371,8 @@ function meetingWorkflowPolicy(): MeetingWorkflowHealth["policy"] {
       {
         id: "fiction_story_alignment",
         label: "Fiction story alignment",
-        when: "Fiction setup or draft work touches research, characters, plot, or worldbuilding and needs coordinated story decisions before writing continues.",
-        chair: "Fiction Director with research, draft, character, plot, and worldbuilding participants.",
+        when: "Fiction setup or draft work touches research, characters, plot, series sequence, World Vault lore, locations, factions, countries, alliances, empires, worlds, magic systems, or evaluation gates and needs coordinated story decisions before writing continues.",
+        chair: "Fiction Director with research, draft, visual-story, character, plot/sequence, World Vault/lore, architecture, and continuity/coordinator participants when relevant.",
         expectedOutputs: MEETING_TRIGGER_OUTPUTS.fiction_story_alignment,
       },
       {
@@ -1534,9 +1539,11 @@ export function issueThreadInteractionService(db: Db) {
           fictionDirector.id,
           findFictionAgent(FICTION_RESEARCH_ROLE_RE)?.id ?? null,
           findFictionAgent(FICTION_DRAFT_ROLE_RE)?.id ?? null,
+          needsFictionVisualStoryParticipant(issue) ? findFictionAgent(FICTION_VISUAL_STORY_ROLE_RE)?.id ?? null : null,
           findFictionAgent(FICTION_CHARACTER_ROLE_RE)?.id ?? null,
           findFictionAgent(FICTION_PLOT_ROLE_RE)?.id ?? null,
           findFictionAgent(FICTION_WORLDBUILDING_ROLE_RE)?.id ?? null,
+          findFictionAgent(FICTION_CONTINUITY_COORDINATOR_ROLE_RE)?.id ?? null,
           issue.assigneeAgentId,
         ].filter((agentId): agentId is string => Boolean(agentId && isMeetingRunnableAgentId(agentId)));
         return [...new Set(ids)].slice(0, 20);
@@ -1661,7 +1668,7 @@ export function issueThreadInteractionService(db: Db) {
           ...buildRecommendation(
             "fiction_story_alignment",
             issue,
-            "Fiction setup/draft work needs research, character, plot, worldbuilding, and drafting alignment before continuing.",
+            "Fiction setup/draft work needs research, character, plot/sequence, World Vault lore, large-scale worldbuilding, evaluation gates, format/art-density, and drafting alignment before continuing.",
           ),
           suggestedHeadAgentId: fictionDirector.id,
           suggestedHeadName: fictionDirector.name ?? null,

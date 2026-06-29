@@ -36,16 +36,12 @@ function withHealthProbeTimeout<T>(probe: string, promise: Promise<T>): Promise<
 
 async function runDatabaseHealthProbe(db: Db, databaseProbe?: () => Promise<void>) {
   const appPoolProbe = () => db.execute(sql`SELECT 1`).then(() => undefined);
-  if (!databaseProbe) {
-    await withHealthProbeTimeout("database", appPoolProbe());
-    return;
-  }
-
   try {
-    await withHealthProbeTimeout("database", databaseProbe());
-  } catch (error) {
-    logger.warn({ err: error }, "Health check dedicated database probe failed; retrying through app pool");
     await withHealthProbeTimeout("database_app_pool", appPoolProbe());
+  } catch (error) {
+    if (!databaseProbe) throw error;
+    logger.warn({ err: error }, "Health check app-pool database probe failed; retrying through dedicated connection");
+    await withHealthProbeTimeout("database", databaseProbe());
   }
 }
 

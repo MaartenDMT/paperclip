@@ -29,6 +29,29 @@ import type { IssueWorkProduct } from "./work-product.js";
 
 export type { IssueWorkMode };
 
+export type IssueCompletionEvidenceKind =
+  | "not_done"
+  | "code_shipped"
+  | "code_review_pending"
+  | "code_review_missing"
+  | "operational"
+  | "non_code_completion"
+  | "evidence_present"
+  | "unknown";
+
+export interface IssueCompletionEvidence {
+  kind: IssueCompletionEvidenceKind;
+  label: string;
+  prExpected: boolean;
+  hasPullRequest: boolean;
+  hasCodeChangeEvidence: boolean;
+  hasCompletionEvidence: boolean;
+  hasOperationalOrigin: boolean;
+  evidenceWorkProductIds: string[];
+  blockingWorkProductIds: string[];
+  reasons: string[];
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -385,6 +408,7 @@ export interface Issue {
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  completionEvidence?: IssueCompletionEvidence;
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;

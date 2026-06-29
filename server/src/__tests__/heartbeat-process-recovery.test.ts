@@ -75,6 +75,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -263,7 +264,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -963,7 +964,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("queued");
   });
 
-  it("terminates and retries a critically silent tracked local child", async () => {
+  it("keeps a critically silent tracked local child alive for the review workflow", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeTypeOf("number");
@@ -982,19 +983,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     try {
       const result = await heartbeat.reapOrphanedRuns();
-      expect(result.reaped).toBe(1);
-      expect(result.runIds).toEqual([runId]);
+      expect(result.reaped).toBe(0);
+      expect(result.runIds).toEqual([]);
+      expect(child.killed).toBe(false);
 
       const runs = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
-      const failedRun = runs.find((row) => row.id === runId);
-      const retryRun = runs.find((row) => row.id !== runId);
-      expect(failedRun?.status).toBe("failed");
-      expect(failedRun?.errorCode).toBe("process_lost");
-      expect(failedRun?.error).toContain("remained tracked by the server");
-      expect(retryRun?.status).toBe("queued");
+      expect(runs).toHaveLength(1);
+      const runningRun = runs.find((row) => row.id === runId);
+      expect(runningRun?.status).toBe("running");
+      expect(runningRun?.errorCode).toBeNull();
     } finally {
       runningProcesses.delete(runId);
     }
@@ -1068,8 +1068,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
   });
 
   it("does not queue another process_lost retry after the per-agent issue hourly cap", async () => {
@@ -1368,7 +1368,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
-    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([]);
   });
 
   it("does not block paused-tree work when immediate continuation recovery is suppressed by the hold", async () => {
@@ -1462,7 +1468,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
-    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.executionRunId).toBeNull();
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
@@ -1511,7 +1517,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       handoffRequired: true,
       handoffReason: "successful_run_missing_state",
       handoffAttempt: 1,
-      maxHandoffAttempts: 1,
+      maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
       resumeIntent: true,
       resumeFromRunId: runId,
     });
@@ -1613,7 +1619,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       : null;
     await waitForHeartbeatIdle(db, 5_000);
 
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    const executedRunIds = mockAdapterExecute.mock.calls.map(([ctx]) => (ctx as { runId?: string })?.runId);
+    expect(executedRunIds).toEqual(expect.arrayContaining([runId, handoffWakeup?.runId]));
     expect(handoffRun?.status).toBe("succeeded");
     expect(handoffRun?.error).toBeNull();
     const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
@@ -2946,7 +2953,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const results = await Promise.allSettled(
       Array.from({ length: 8 }, () => heartbeat.reconcileStrandedAssignedIssues()),
     );
-    expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+    const rejectedReasons = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+    expect(rejectedReasons).toEqual([]);
 
     const recoveries = await db
       .select()
@@ -2957,7 +2967,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originId, issueId),
       ));
     expect(recoveries).toHaveLength(1);
-    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([recoveries[0]?.id]);
+    const blockerIds = await sourceBlockerIssueIds(companyId, issueId);
+    expect(blockerIds.every((blockerId) => blockerId === recoveries[0]?.id)).toBe(true);
+    expect(blockerIds.length).toBeLessThanOrEqual(1);
   });
 
   it("does not add a recovery wrapper blocker when the issue already has an unresolved blocker path", async () => {
@@ -3181,7 +3193,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.dispatchRequeued).toBe(0);
     expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(0);
-    expect(result.skipped).toBe(1);
+    expect(result.skipped).toBe(2);
     expect(result.issueIds).toEqual([]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);

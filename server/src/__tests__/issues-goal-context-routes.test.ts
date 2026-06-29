@@ -1,10 +1,12 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { IssueWorkProduct } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  list: vi.fn(),
   getById: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -92,6 +94,7 @@ const mockRoutineService = vi.hoisted(() => ({
 
 const mockWorkProductService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
+  listForIssues: vi.fn(async () => new Map()),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({}));
@@ -116,8 +119,11 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  ISSUE_LIST_DEFAULT_LIMIT: 500,
+  ISSUE_LIST_MAX_LIMIT: 500,
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
+  clampIssueListLimit: vi.fn((value: number) => Math.min(Math.max(value, 1), 500)),
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   routineService: () => mockRoutineService,
@@ -179,6 +185,31 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
+function makeWorkProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    companyId: "company-1",
+    projectId: legacyProjectLinkedIssue.projectId,
+    issueId: legacyProjectLinkedIssue.id,
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "branch",
+    provider: "github",
+    externalId: "feature/pap-581",
+    title: "feature/pap-581",
+    url: null,
+    status: "active",
+    reviewState: "none",
+    isPrimary: false,
+    healthStatus: "unknown",
+    summary: null,
+    metadata: null,
+    createdByRunId: null,
+    createdAt: new Date("2026-03-24T12:00:00Z"),
+    updatedAt: new Date("2026-03-24T12:00:00Z"),
+    ...overrides,
+  };
+}
 describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -197,9 +228,12 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.list.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+    mockWorkProductService.listForIssues.mockResolvedValue(new Map());
     mockDb.select.mockReturnValue({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -284,6 +318,92 @@ describe.sequential("issue goal context routes", () => {
     expect(res.body.attachments).toEqual([]);
   });
 
+  it("classifies completion evidence on the company issue list without opening each issue", async () => {
+    const doneIssue = {
+      ...legacyProjectLinkedIssue,
+      status: "done",
+    };
+    mockIssueService.list.mockResolvedValue([doneIssue]);
+    mockWorkProductService.listForIssues.mockResolvedValue(new Map([
+      [
+        doneIssue.id,
+        [
+          makeWorkProduct({
+            id: "99999999-9999-4999-8999-999999999999",
+            issueId: doneIssue.id,
+            type: "branch",
+            status: "active",
+          }),
+        ],
+      ],
+    ]));
+
+    const res = await request(createApp()).get("/api/companies/company-1/issues");
+
+    expect(res.status).toBe(200);
+    expect(mockWorkProductService.listForIssues).toHaveBeenCalledWith([doneIssue.id]);
+    expect(res.body[0].completionEvidence).toEqual(expect.objectContaining({
+      kind: "code_review_missing",
+      prExpected: true,
+      blockingWorkProductIds: ["99999999-9999-4999-8999-999999999999"],
+    }));
+  });
+
+
+  it("classifies merged pull request evidence from GET /issues/:id", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      status: "done",
+    });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      makeWorkProduct({
+        id: "77777777-7777-4777-8777-777777777777",
+        type: "pull_request",
+        externalId: "HenkDz/paperclip#2218",
+        title: "PR #2218",
+        url: "https://github.com/HenkDz/paperclip/pull/2218",
+        status: "merged",
+      }),
+    ]);
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.completionEvidence).toEqual(expect.objectContaining({
+      kind: "code_shipped",
+      prExpected: true,
+      hasPullRequest: true,
+      hasCompletionEvidence: true,
+      evidenceWorkProductIds: ["77777777-7777-4777-8777-777777777777"],
+    }));
+  });
+
+  it("flags branch-only done evidence in GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      status: "done",
+    });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      makeWorkProduct({
+        id: "88888888-8888-4888-8888-888888888888",
+        type: "branch",
+        status: "active",
+      }),
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.completionEvidence).toEqual(expect.objectContaining({
+      kind: "code_review_missing",
+      prExpected: true,
+      hasCodeChangeEvidence: true,
+      hasCompletionEvidence: false,
+      blockingWorkProductIds: ["88888888-8888-4888-8888-888888888888"],
+    }));
+  });
   it("surfaces the first unread comment index for board heartbeat context", async () => {
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 4,

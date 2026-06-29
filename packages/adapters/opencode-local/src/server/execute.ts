@@ -98,6 +98,7 @@ export function buildOpenCodeRunArgs(input: {
   variant?: string | null;
   extraArgs?: string[];
   message: string;
+  messageTransport?: "argv" | "stdin";
 }): string[] {
   const args = ["run", "--format", "json"];
   if (input.resumeSessionId) args.push("--session", input.resumeSessionId);
@@ -105,8 +106,10 @@ export function buildOpenCodeRunArgs(input: {
   const variant = input.variant?.trim();
   if (variant) args.push("--variant", variant);
   if (input.extraArgs && input.extraArgs.length > 0) args.push(...input.extraArgs);
-  const message = input.message.trim().length > 0 ? input.message : EMPTY_OPENCODE_RUN_MESSAGE;
-  args.push(message);
+  if (input.messageTransport !== "stdin") {
+    const message = input.message.trim().length > 0 ? input.message : EMPTY_OPENCODE_RUN_MESSAGE;
+    args.push(message);
+  }
   return args;
 }
 
@@ -585,25 +588,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null, message: string) => buildOpenCodeRunArgs({
+    const buildArgs = (
+      resumeSessionId: string | null,
+      message: string,
+      messageTransport: "argv" | "stdin" = "argv",
+    ) => buildOpenCodeRunArgs({
       resumeSessionId,
       model,
       variant,
       extraArgs,
       message,
+      messageTransport,
     });
 
     const runAttempt = async (resumeSessionId: string | null) => {
-      const args = buildArgs(resumeSessionId, prompt);
+      const stdin = prompt.trim().length > 0 ? prompt : EMPTY_OPENCODE_RUN_MESSAGE;
+      const args = buildArgs(resumeSessionId, stdin, "stdin");
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
-          commandArgs: buildArgs(resumeSessionId, `<message prompt ${prompt.length} chars>`),
+          commandArgs: buildArgs(resumeSessionId, `<message prompt ${stdin.length} chars via stdin>`, "argv"),
           env: loggedEnv,
-          prompt,
+          prompt: stdin,
           promptMetrics,
           context,
         });
@@ -614,6 +623,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        stdin,
         onSpawn,
         onLog,
         terminalResultCleanup: asBoolean(config.disableTerminalResultCleanup, false)
@@ -685,8 +695,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
       const completedWithTerminalResult =
         hasOpenCodeTerminalResult({ stdout: attempt.proc.stdout, stderr: attempt.proc.stderr }) &&
-        !parsedError &&
-        !stderrLine;
+        !parsedError;
       const normalizedExitCode = completedWithTerminalResult ? 0 : synthesizedExitCode;
       const fallbackErrorMessage =
         parsedError ||

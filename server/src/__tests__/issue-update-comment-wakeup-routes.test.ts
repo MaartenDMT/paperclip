@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  capturePullRequestWorkProductsFromText: vi.fn(async () => []),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -347,6 +348,33 @@ describe("issue update comment wakeups", () => {
       }),
     );
   }, 20_000);
+
+
+  it("does not wake the assignee on comment-only updates to backlog issues", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "backlog",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-backlog",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "parking stale routine execution",
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/" + existing.id)
+      .send({
+        comment: "parking stale routine execution",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
 
   it("does not wake the assignee when an issue update comment closes the issue", async () => {
     const existing = makeIssue({

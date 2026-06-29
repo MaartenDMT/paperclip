@@ -104,7 +104,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { execute } from "./execute.js";
+import { buildOpenCodeRunArgs, execute } from "./execute.js";
 
 describe("opencode remote execution", () => {
   const cleanupDirs: string[] = [];
@@ -381,7 +381,17 @@ describe("opencode remote execution", () => {
     expect(logs.join("")).toContain("`opencode models` timed out");
   });
 
-  it("passes Paperclip task context as the OpenCode run message argument", async () => {
+  it("omits the message argument when stdin transport is requested", () => {
+    expect(
+      buildOpenCodeRunArgs({
+        model: "opencode/gpt-5-nano",
+        message: "x".repeat(50_000),
+        messageTransport: "stdin",
+      }),
+    ).toEqual(["run", "--format", "json", "--model", "opencode/gpt-5-nano"]);
+  });
+
+  it("passes Paperclip task context to OpenCode over stdin", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-task-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -438,10 +448,9 @@ describe("opencode remote execution", () => {
     ) as
       | [string, unknown, string, string[], { stdin?: string }]
       | undefined;
-    const messageArg = runCall?.[3].at(-1);
-    expect(messageArg).toContain("# Paperclip Assignment");
-    expect(messageArg).toContain("REA-850");
-    expect(runCall?.[4].stdin).toBeUndefined();
+    expect(runCall?.[3].at(-1)).toBe("opencode/gpt-5-nano");
+    expect(runCall?.[4].stdin).toContain("# Paperclip Assignment");
+    expect(runCall?.[4].stdin).toContain("REA-850");
   });
 
   it("treats a terminal OpenCode result as success even when the wrapper exits nonzero", async () => {

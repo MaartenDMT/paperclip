@@ -64,9 +64,9 @@ describe("GET /health", () => {
     });
   });
 
-  it("uses a dedicated database probe when provided", async () => {
+  it("uses the app pool before a dedicated database probe when both are provided", async () => {
     const db = {
-      execute: vi.fn(() => new Promise(() => {})),
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
     } as unknown as Db;
     const databaseProbe = vi.fn().mockResolvedValue(undefined);
     const app = express();
@@ -84,8 +84,8 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(databaseProbe).toHaveBeenCalledTimes(1);
-    expect(db.execute).not.toHaveBeenCalled();
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect(databaseProbe).not.toHaveBeenCalled();
     expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
   });
 

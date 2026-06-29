@@ -1,4 +1,3 @@
-import path from "node:path";
 import {
   executeSimpleCliAdapter,
   testSimpleCliEnvironment,
@@ -13,24 +12,6 @@ import { DEFAULT_KIMI_LOCAL_MODEL, label, SANDBOX_INSTALL_COMMAND, type } from "
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function readRuntimeSkillDirs(config: Record<string, unknown>): string[] {
-  const raw = config.paperclipRuntimeSkills;
-  if (!Array.isArray(raw)) return [];
-
-  const dirs: string[] = [];
-  const seen = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const source = readNonEmptyString((item as Record<string, unknown>).source);
-    if (!source) continue;
-    const dir = path.dirname(source);
-    if (!dir || seen.has(dir)) continue;
-    seen.add(dir);
-    dirs.push(dir);
-  }
-  return dirs;
 }
 
 function parseJsonLine(line: string): Record<string, unknown> | null {
@@ -101,6 +82,20 @@ function extractKimiSessionId(stdout: string): string | null {
   return sessionId;
 }
 
+function filterUnsupportedKimiArgs(extraArgs: string[]): string[] {
+  const filtered: string[] = [];
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    if (arg === "--skills-dir") {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--skills-dir=")) continue;
+    filtered.push(arg);
+  }
+  return filtered;
+}
+
 export const sessionCodec = {
   deserialize(raw: unknown) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -161,7 +156,7 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
     graceMs: 5_000,
     hasTerminalResult: hasKimiTerminalResult,
   },
-  buildArgs({ prompt, model, extraArgs, config, runtime }) {
+  buildArgs({ prompt, model, extraArgs, runtime }) {
     // Kimi's non-interactive `--prompt` mode is mutually exclusive with every
     // permission flag (`--yolo`, `--auto`, `--plan`) — passing one fails with
     // "Cannot combine --prompt with --yolo." and aborts the run (adapter_failed).
@@ -175,10 +170,11 @@ export const kimiDefinition: SimpleCliAdapterDefinition = {
       readNonEmptyString(runtime.sessionId);
     if (sessionId) args.push("--session", sessionId);
     if (model && model !== DEFAULT_KIMI_LOCAL_MODEL) args.push("--model", model);
-    for (const dir of readRuntimeSkillDirs(config)) {
-      args.push("--skills-dir", dir);
-    }
-    args.push(...extraArgs);
+    // Kimi Code's current non-interactive CLI is backed by `codex exec`, which
+    // rejects `--skills-dir`. Older saved agent configs may still contain this
+    // Paperclip/Codex-specific flag, so strip it instead of letting the run fail
+    // before the model receives the prompt.
+    args.push(...filterUnsupportedKimiArgs(extraArgs));
     args.push("--prompt", prompt);
     return args;
   },

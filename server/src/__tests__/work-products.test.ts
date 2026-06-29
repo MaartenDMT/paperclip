@@ -92,4 +92,23 @@ describe("workProductService", () => {
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });
+
+  it("groups work products by issue id when listing multiple issues", async () => {
+    const rows = [
+      createWorkProductRow({ id: "work-product-1", issueId: "issue-1", title: "Branch 1", type: "branch" }),
+      createWorkProductRow({ id: "work-product-2", issueId: "issue-1", title: "PR 1" }),
+      createWorkProductRow({ id: "work-product-3", issueId: "issue-2", title: "Evidence 2", type: "artifact" }),
+    ];
+    const orderBy = vi.fn(async () => rows);
+    const where = vi.fn(() => ({ orderBy }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+
+    const svc = workProductService({ select } as any);
+    const result = await svc.listForIssues(["issue-1", "issue-2"]);
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(result.get("issue-1")?.map((product) => product.id)).toEqual(["work-product-1", "work-product-2"]);
+    expect(result.get("issue-2")?.map((product) => product.id)).toEqual(["work-product-3"]);
+  });
 });

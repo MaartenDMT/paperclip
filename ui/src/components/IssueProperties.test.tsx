@@ -419,6 +419,94 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders completion evidence for branch-only done work that still needs PR evidence", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "done",
+        completionEvidence: {
+          kind: "code_review_missing",
+          label: "Code evidence needs PR/review",
+          prExpected: true,
+          hasPullRequest: false,
+          hasCodeChangeEvidence: true,
+          hasCompletionEvidence: false,
+          hasOperationalOrigin: false,
+          evidenceWorkProductIds: [],
+          blockingWorkProductIds: ["work-product-1"],
+          reasons: ["Issue is done with branch evidence but no PR evidence."],
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="issue-completion-evidence"]')?.textContent)
+      .toContain("Code evidence needs PR/review");
+    expect(container.textContent).toContain("PR expected");
+    expect(container.textContent).toContain("1 evidence blocker");
+
+    act(() => root.unmount());
+  });
+
+  it("renders operational completion evidence without a PR expectation", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "done",
+        completionEvidence: {
+          kind: "operational",
+          label: "Operational completion",
+          prExpected: false,
+          hasPullRequest: false,
+          hasCodeChangeEvidence: false,
+          hasCompletionEvidence: false,
+          hasOperationalOrigin: true,
+          evidenceWorkProductIds: [],
+          blockingWorkProductIds: [],
+          reasons: ["Issue origin is operational/recovery/review work."],
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="issue-completion-evidence"]')?.textContent)
+      .toContain("Operational completion");
+    expect(container.textContent).toContain("No PR expected");
+
+    act(() => root.unmount());
+  });
+
+  it("renders non-code completion evidence without a PR expectation", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "done",
+        completionEvidence: {
+          kind: "non_code_completion",
+          label: "Non-code completion",
+          prExpected: false,
+          hasPullRequest: false,
+          hasCodeChangeEvidence: false,
+          hasCompletionEvidence: false,
+          hasOperationalOrigin: false,
+          evidenceWorkProductIds: [],
+          blockingWorkProductIds: [],
+          reasons: ["Issue text describes non-code domain work."],
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="issue-completion-evidence"]')?.textContent)
+      .toContain("Non-code completion");
+    expect(container.textContent).toContain("No PR expected");
+
+    act(() => root.unmount());
+  });
+
   it("renders blocked-by issues as direct chips and edits them from an add action", async () => {
     const onUpdate = vi.fn();
     mockIssuesApi.list.mockResolvedValue([
