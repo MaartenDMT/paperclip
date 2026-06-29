@@ -12,18 +12,21 @@ export const createCampaignSchema = z.object({
 });
 
 export type CreateCampaign = z.infer<typeof createCampaignSchema>;
+export type CreateCampaignInput = z.input<typeof createCampaignSchema>;
 
 export const updateCampaignSchema = createCampaignSchema.partial().extend({
   archivedAt: z.string().datetime().optional().nullable(),
 });
 
 export type UpdateCampaign = z.infer<typeof updateCampaignSchema>;
+export type UpdateCampaignInput = z.input<typeof updateCampaignSchema>;
 
 export const replaceCampaignProjectsSchema = z.object({
   projectIds: z.array(z.string().uuid()).max(50).default([]),
 });
 
 export type ReplaceCampaignProjects = z.infer<typeof replaceCampaignProjectsSchema>;
+export type ReplaceCampaignProjectsInput = z.input<typeof replaceCampaignProjectsSchema>;
 
 export const createCampaignPhaseSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -34,6 +37,7 @@ export const createCampaignPhaseSchema = z.object({
 });
 
 export type CreateCampaignPhase = z.infer<typeof createCampaignPhaseSchema>;
+export type CreateCampaignPhaseInput = z.input<typeof createCampaignPhaseSchema>;
 
 export const updateCampaignPhaseSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
@@ -44,12 +48,16 @@ export const updateCampaignPhaseSchema = z.object({
 });
 
 export type UpdateCampaignPhase = z.infer<typeof updateCampaignPhaseSchema>;
+export type UpdateCampaignPhaseInput = z.input<typeof updateCampaignPhaseSchema>;
 
 export const linkCampaignPhaseExecutionIssueSchema = z.object({
   issueId: z.string().uuid().nullable(),
 });
 
 export type LinkCampaignPhaseExecutionIssue = z.infer<typeof linkCampaignPhaseExecutionIssueSchema>;
+export type LinkCampaignPhaseExecutionIssueInput = z.input<
+  typeof linkCampaignPhaseExecutionIssueSchema
+>;
 
 export const upsertCampaignPhasePlanSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1).max(200_000)),
@@ -57,12 +65,16 @@ export const upsertCampaignPhasePlanSchema = z.object({
 });
 
 export type UpsertCampaignPhasePlan = z.infer<typeof upsertCampaignPhasePlanSchema>;
+export type UpsertCampaignPhasePlanInput = z.input<typeof upsertCampaignPhasePlanSchema>;
 
 export const submitCampaignPhasePlanForReviewSchema = z.object({
   decisionNote: multilineTextSchema.pipe(z.string().max(2_000)).optional().nullable(),
 });
 
 export type SubmitCampaignPhasePlanForReview = z.infer<
+  typeof submitCampaignPhasePlanForReviewSchema
+>;
+export type SubmitCampaignPhasePlanForReviewInput = z.input<
   typeof submitCampaignPhasePlanForReviewSchema
 >;
 
@@ -73,6 +85,7 @@ export const approveCampaignPhasePlanSchema = z.object({
 });
 
 export type ApproveCampaignPhasePlan = z.infer<typeof approveCampaignPhasePlanSchema>;
+export type ApproveCampaignPhasePlanInput = z.input<typeof approveCampaignPhasePlanSchema>;
 
 export const completeCampaignPhaseSchema = z.object({
   resultBody: multilineTextSchema.pipe(z.string().max(200_000)).optional().nullable(),
@@ -80,3 +93,4 @@ export const completeCampaignPhaseSchema = z.object({
 });
 
 export type CompleteCampaignPhase = z.infer<typeof completeCampaignPhaseSchema>;
+export type CompleteCampaignPhaseInput = z.input<typeof completeCampaignPhaseSchema>;

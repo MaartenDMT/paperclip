@@ -4,30 +4,27 @@ import type {
   CampaignListItem,
   CampaignPhaseDetail,
   CampaignPhasePlanSubmission,
-  completeCampaignPhaseSchema,
-  createCampaignPhaseSchema,
-  createCampaignSchema,
-  linkCampaignPhaseExecutionIssueSchema,
-  replaceCampaignProjectsSchema,
-  submitCampaignPhasePlanForReviewSchema,
-  updateCampaignPhaseSchema,
-  updateCampaignSchema,
-  upsertCampaignPhasePlanSchema,
+  CompleteCampaignPhaseInput,
+  CreateCampaignInput,
+  CreateCampaignPhaseInput,
+  LinkCampaignPhaseExecutionIssueInput,
+  ReplaceCampaignProjectsInput,
+  SubmitCampaignPhasePlanForReviewInput,
+  UpdateCampaignInput,
+  UpdateCampaignPhaseInput,
+  UpsertCampaignPhasePlanInput,
 } from "@paperclipai/shared";
-import type { z } from "zod";
 import { api } from "./client";
 
-type CreateCampaignRequest = z.input<typeof createCampaignSchema>;
-type UpdateCampaignRequest = z.input<typeof updateCampaignSchema>;
-type ReplaceCampaignProjectsRequest = z.input<typeof replaceCampaignProjectsSchema>;
-type CreateCampaignPhaseRequest = z.input<typeof createCampaignPhaseSchema>;
-type UpdateCampaignPhaseRequest = z.input<typeof updateCampaignPhaseSchema>;
-type LinkCampaignPhaseExecutionIssueRequest = z.input<typeof linkCampaignPhaseExecutionIssueSchema>;
-type CompleteCampaignPhaseRequest = z.input<typeof completeCampaignPhaseSchema>;
-type UpsertCampaignPhasePlanRequest = z.input<typeof upsertCampaignPhasePlanSchema>;
-type SubmitCampaignPhasePlanForReviewRequest = z.input<
-  typeof submitCampaignPhasePlanForReviewSchema
->;
+type CreateCampaignRequest = CreateCampaignInput;
+type UpdateCampaignRequest = UpdateCampaignInput;
+type ReplaceCampaignProjectsRequest = ReplaceCampaignProjectsInput;
+type CreateCampaignPhaseRequest = CreateCampaignPhaseInput;
+type UpdateCampaignPhaseRequest = UpdateCampaignPhaseInput;
+type LinkCampaignPhaseExecutionIssueRequest = LinkCampaignPhaseExecutionIssueInput;
+type CompleteCampaignPhaseRequest = CompleteCampaignPhaseInput;
+type UpsertCampaignPhasePlanRequest = UpsertCampaignPhasePlanInput;
+type SubmitCampaignPhasePlanForReviewRequest = SubmitCampaignPhasePlanForReviewInput;
 
 export const campaignsApi = {
   list: (companyId: string) =>
