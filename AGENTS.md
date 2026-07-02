@@ -155,14 +155,14 @@ When adding endpoints:
 
 ## 10. Pull Request Requirements
 
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies - use the template as the structure for your PR description. Required sections:
 
-- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
-- **What Changed** — bullet list of concrete changes
-- **Verification** — how a reviewer can confirm it works
-- **Risks** — what could go wrong
-- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
-- **Checklist** — all items checked
+- **Thinking Path** - trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
+- **What Changed** - bullet list of concrete changes
+- **Verification** - how a reviewer can confirm it works
+- **Risks** - what could go wrong
+- **Model Used** - the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None - human-authored" if no AI was used.
+- **Checklist** - all items checked
 
 ## 11. Definition of Done
 
@@ -186,7 +186,7 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 ### Hermes (plugin only)
 
 - Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
-- UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
+- UI uses generic **config-schema** + **ui-parser.js** from the package - no Hermes imports in `server/` or `ui/` source.
 - Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
 
 ### Local Dev
@@ -195,27 +195,27 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 - This fork's local Paperclip runtime is **external PostgreSQL only**. Do not start embedded PostgreSQL, do not create a temporary embedded config, and do not let Paperclip silently fall back to embedded.
 - The active Paperclip database is expected on the newest available external PostgreSQL runtime for this machine, using the configured external connection (`127.0.0.1:5544` for the current local instance). PostgreSQL release check as of 2026-06-22: 18 is the latest stable upstream release, 19 is beta, and there is no stable PostgreSQL 20 release. If PostgreSQL 14 is the newest installed external PostgreSQL, use PostgreSQL 14; otherwise use the newer installed PostgreSQL. If the configured port is down, fix/start the newest external PostgreSQL service or config first.
 - Do **not** assume `postgresql-x64-14` is wrong just because it is version 14. Use it when it is the newest available external PostgreSQL service for this machine or when the operator says it is the active database. The hard rule is external PostgreSQL only, never embedded fallback.
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
+- `npx vite build` hangs on NTFS - use `node node_modules/vite/bin/vite.js build` instead
+- Server startup from NTFS takes 30-60s - don't assume failure immediately
 - Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
+- Vite cache survives `rm -rf dist` - delete both: `rm -rf ui/dist ui/node_modules/.vite`
 
 ### Fork QoL Patches (not in upstream)
 
 These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
 
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
+1. **stderr_group** - amber accordion for MCP init noise in `RunTranscriptView.tsx`
+2. **tool_group** - accordion for consecutive non-terminal tools (write, read, search, browser)
+3. **Dashboard excerpt** - `LatestRunCard` strips markdown, shows first 3 lines/280 chars
 
 ### Plugin System
 
 PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
 
 - Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
-- The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
+- The plugin-loader should have ZERO hardcoded adapter imports - pure dynamic loading
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
-- Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
+- Built-in UI adapters can shadow external plugin parsers - remove built-in when fully externalizing
 - Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
 
 ## graphify
@@ -230,3 +230,21 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Maarten Vault Routing
+
+Use Maarten's vaults as context, not as a replacement for repo inspection.
+
+- Engineering Brain: `C:/Users/Maart/Documents/Obsidian Vaults/Engineering-Brain`.
+- Docker path for Engineering Brain: `/mnt/obsidian-vaults/Engineering-Brain`.
+- Personal PKM: C:/Users/Maart/Documents/Obsidian Vaults/Obsidian-Vault.
+- Docker path for Personal PKM: `/mnt/obsidian-vaults/Obsidian-Vault`.
+- Obsidian vaults Docker root: `/mnt/obsidian-vaults`.
+
+For implementation truth, inspect this repository first.
+
+For durable project memory, inspect the relevant project vault.
+
+For cross-project patterns, reusable lessons, and agent routing, inspect Engineering Brain.
+
+Do not dump raw logs, secrets, or volatile task noise into any vault.

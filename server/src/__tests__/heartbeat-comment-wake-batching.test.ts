@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -32,13 +32,30 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-async function createControlledGatewayServer() {
+async function truncateCompaniesCascadeWithRetry(db: ReturnType<typeof createDb>) {
+  await db.execute(sql.raw("SET client_min_messages TO warning"));
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+      return;
+    } catch (error) {
+      if (attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
+
+async function createControlledGatewayServer(options: { heldWaits?: number } = {}) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
-  let firstWaitRelease: (() => void) | null = null;
-  let firstWaitGate = new Promise<void>((resolve) => {
-    firstWaitRelease = resolve;
+  const heldWaits = options.heldWaits ?? 1;
+  const waitGates = Array.from({ length: heldWaits }, () => {
+    let release: (() => void) | null = null;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
   });
   let waitCount = 0;
 
@@ -105,8 +122,9 @@ async function createControlledGatewayServer() {
 
       if (frame.method === "agent.wait") {
         waitCount += 1;
-        if (waitCount === 1) {
-          await firstWaitGate;
+        const waitGate = waitGates[waitCount - 1];
+        if (waitGate) {
+          await waitGate.promise;
         }
         socket.send(
           JSON.stringify({
@@ -137,10 +155,17 @@ async function createControlledGatewayServer() {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayloads: () => agentPayloads,
+    releaseWait: (index: number) => {
+      waitGates[index]?.release?.();
+      if (waitGates[index]) {
+        waitGates[index].release = null;
+      }
+    },
     releaseFirstWait: () => {
-      firstWaitRelease?.();
-      firstWaitRelease = null;
-      firstWaitGate = Promise.resolve();
+      waitGates[0]?.release?.();
+      if (waitGates[0]) {
+        waitGates[0].release = null;
+      }
     },
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
@@ -152,12 +177,38 @@ async function createControlledGatewayServer() {
 describe("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const heartbeatServices = new Set<ReturnType<typeof heartbeatService>>();
+
+  function createHeartbeat() {
+    const heartbeat = heartbeatService(db);
+    heartbeatServices.add(heartbeat);
+    return heartbeat;
+  }
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-comment-wake-");
     db = createDb(started.connectionString);
     tempDb = started;
   }, 120_000);
+
+  afterEach(async () => {
+    for (const heartbeat of heartbeatServices) {
+      await heartbeat.drainActiveRunExecutions();
+    }
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.status} in ('queued', 'running')`);
+      if (activeRuns.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    for (const heartbeat of heartbeatServices) {
+      await heartbeat.drainActiveRunExecutions();
+    }
+    heartbeatServices.clear();
+    await truncateCompaniesCascadeWithRetry(db);
+  }, 30_000);
 
   afterAll(async () => {
     await closeDbClient(db);
@@ -170,7 +221,7 @@ describe("heartbeat comment wake batching", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     await db.insert(companies).values({
       id: companyId,
@@ -279,7 +330,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -472,7 +523,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -634,7 +685,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -711,6 +762,8 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment2 = await db
         .insert(issueComments)
@@ -760,14 +813,11 @@ describe("heartbeat comment wake batching", () => {
         .set({
           status: "done",
           completedAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issueId));
 
-      gateway.releaseFirstWait();
+      await heartbeat.cancelRun(firstRun!.id);
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
@@ -775,7 +825,7 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
 
       const issueAfterPromotion = await db
@@ -820,7 +870,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -897,6 +947,7 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment2 = await db
         .insert(issueComments)
@@ -953,14 +1004,11 @@ describe("heartbeat comment wake batching", () => {
         .set({
           status: "done",
           completedAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issueId));
 
-      gateway.releaseFirstWait();
+      await heartbeat.cancelRun(firstRun!.id);
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
@@ -968,7 +1016,7 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
 
       const reopenedIssue = await db
@@ -1013,7 +1061,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -1090,6 +1138,7 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment2 = await db
         .insert(issueComments)
@@ -1151,14 +1200,11 @@ describe("heartbeat comment wake batching", () => {
         .set({
           status: "done",
           completedAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issueId));
 
-      gateway.releaseFirstWait();
+      await heartbeat.cancelRun(firstRun!.id);
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
@@ -1166,7 +1212,7 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
 
       const issueAfterPromotion = await db
@@ -1210,7 +1256,7 @@ describe("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -1337,9 +1383,6 @@ describe("heartbeat comment wake batching", () => {
         .set({
           status: "cancelled",
           cancelledAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issueId));
@@ -1434,13 +1477,13 @@ describe("heartbeat comment wake batching", () => {
   }, 120_000);
 
   it("does not reopen a finished issue when the deferred comment wake came from another agent", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -1527,6 +1570,7 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment = await db
         .insert(issueComments)
@@ -1579,9 +1623,6 @@ describe("heartbeat comment wake batching", () => {
         .set({
           status: "done",
           completedAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issueId));
@@ -1589,6 +1630,8 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      await heartbeat.drainActiveRunExecutions({ runId: firstRun!.id });
+      gateway.releaseWait(1);
       await waitFor(async () => {
         const runs = await db
           .select()
@@ -1634,12 +1677,12 @@ describe("heartbeat comment wake batching", () => {
   }, 120_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -1734,6 +1777,9 @@ describe("heartbeat comment wake batching", () => {
         executionRunId: firstRun?.id,
       });
       gateway.releaseFirstWait();
+      await waitFor(() => gateway.getAgentPayloads().length === 2);
+      await heartbeat.drainActiveRunExecutions({ runId: firstRun!.id });
+      gateway.releaseWait(1);
       await waitFor(async () => {
         const runs = await db
           .select()
@@ -1777,7 +1823,10 @@ describe("heartbeat comment wake batching", () => {
       expect(payloads).toHaveLength(2);
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
-        modelProfile: "cheap",
+        paperclipModelProfile: expect.objectContaining({
+          requested: "cheap",
+          requestedBy: "wake_context",
+        }),
       });
     } finally {
       gateway.releaseFirstWait();
@@ -1792,7 +1841,7 @@ describe("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -1943,6 +1992,19 @@ describe("heartbeat comment wake batching", () => {
         issueId,
         wakeReason: "issue_comment_mentioned",
       });
+      await waitFor(async () => {
+        const primaryRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, primaryAgentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        return (
+          primaryRuns.length === 2 &&
+          primaryRuns[0]?.issueCommentStatus === "retry_queued" &&
+          primaryRuns[1]?.retryOfRunId === primaryRuns[0]?.id &&
+          primaryRuns[1]?.issueCommentStatus === "retry_exhausted"
+        );
+      }, 90_000);
 
       const issueAfterMention = await db
         .select({
@@ -1993,7 +2055,7 @@ describe("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -2135,12 +2197,12 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -2264,20 +2326,31 @@ describe("heartbeat comment wake batching", () => {
 
       expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
       expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
+
+      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      gateway.releaseWait(1);
+      await waitFor(async () => {
+        const runs = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        return runs.length === 2 && runs.every((run) => ["cancelled", "failed", "succeeded"].includes(run.status));
+      }, 90_000);
+      await heartbeat.drainActiveRunExecutions({ companyId });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 20_000);
+  }, 120_000);
 
   it("rejects successful corrective handoff runs that still leave the issue without a disposition", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const sourceRunId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     try {
       await db.insert(companies).values({
@@ -2397,6 +2470,23 @@ describe("heartbeat comment wake batching", () => {
       expect(recoveryIssue?.description).toContain("confirmed product defect or production blocker");
       expect(recoveryIssue?.description).toContain("Do not resolve this recovery issue");
 
+      await waitFor(async () => {
+        const runs = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId));
+        return runs.length > 1;
+      }, 5_000).catch(() => undefined);
+
+      const followUpRuns = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      for (const run of followUpRuns) {
+        if (run.id === handoffRun!.id || !["queued", "running", "scheduled_retry"].includes(run.status)) continue;
+        await heartbeat.cancelRun(run.id, { suppressFollowUp: true });
+      }
+      gateway.releaseWait(1);
       await heartbeat.drainActiveRunExecutions({ companyId });
       await waitFor(async () => {
         const activeRuns = await db

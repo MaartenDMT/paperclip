@@ -6176,8 +6176,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return [];
       }
+      const maxLocalActiveRunExecutions = LOCAL_ACTIVE_RUN_EXECUTIONS_MAX +
+        (hasPriorityQueuedRun ? HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX : 0);
       const localAvailableRunExecutionSlots = computeLocalAvailableRunExecutionSlots({
-        maxLocalActiveRunExecutions: LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+        maxLocalActiveRunExecutions,
         inMemoryActiveRunExecutions: activeRunExecutions.size,
         persistedRunningRuns: globalRunningCount,
       });
@@ -6187,7 +6189,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             localActiveRunExecutions: activeRunExecutions.size,
             persistedRunningRuns: globalRunningCount,
-            maxLocalActiveRunExecutions: LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+            maxLocalActiveRunExecutions,
           },
           "skipping queued-run start because local heartbeat launch capacity is full",
         );

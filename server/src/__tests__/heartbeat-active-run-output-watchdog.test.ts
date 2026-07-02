@@ -91,11 +91,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       if (activeRuns.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    await db.delete(heartbeatRuns);
-    await db.delete(issueComments);
-    await db.delete(issues);
-    await db.delete(agents);
-    await db.delete(companies);
+    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
   }, 30_000);
 
   afterAll(async () => {

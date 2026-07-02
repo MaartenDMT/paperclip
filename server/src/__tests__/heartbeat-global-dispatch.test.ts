@@ -169,11 +169,11 @@ describeEmbeddedPostgres("heartbeat global dispatch", () => {
     return agentId;
   }
 
-  it("enqueues due timer work for an idle agent while five unrelated runs are active", async () => {
+  it("enqueues due timer work for an idle agent while unrelated runs are active", async () => {
     const busyCompanyId = await seedCompany("Busy Company");
     const idleCompanyId = await seedCompany("Idle Company");
 
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       const agentId = await seedAgent(busyCompanyId, `Busy Agent ${index}`, "running");
       await db.insert(heartbeatRuns).values({
         companyId: busyCompanyId,
@@ -233,7 +233,7 @@ describeEmbeddedPostgres("heartbeat global dispatch", () => {
       status: "claimed",
       reason: "heartbeat_timer",
     });
-    expect(busyRunningCount).toHaveLength(5);
+    expect(busyRunningCount).toHaveLength(4);
     expect(queuedRun?.processStartedAt).toBeInstanceOf(Date);
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });

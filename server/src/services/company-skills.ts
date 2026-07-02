@@ -122,6 +122,7 @@ type ParsedSkillImportSource = {
 type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
+  required?: boolean;
   hostname?: string;
   owner?: string;
   repo?: string;
@@ -917,6 +918,7 @@ export async function readLocalSkillImportFromDirectory(
   const metadata = {
     ...(skillKey ? { skillKey } : {}),
     ...(parsedMetadata ?? {}),
+    ...(parsed.frontmatter.required === false ? { required: false } : {}),
     sourceKind: "local_path",
     ...(options?.metadata ?? {}),
   };
@@ -2188,7 +2190,8 @@ export function companySkillService(db: Db) {
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
+      const metadata = getSkillMeta(skill);
+      const sourceKind = asString(metadata.sourceKind);
       let source = normalizeSkillDirectory(skill);
       if (!source) {
         source = options.materializeMissing === false
@@ -2197,7 +2200,7 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const required = sourceKind === "paperclip_bundled" && metadata.required !== false;
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),

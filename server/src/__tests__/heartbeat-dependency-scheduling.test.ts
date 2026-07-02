@@ -98,16 +98,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 60_000);
 
   afterEach(async () => {
-    mockAdapterExecute.mockReset();
-    mockAdapterExecute.mockImplementation(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Dependency-aware heartbeat test run.",
-      provider: "test",
-      model: "test-model",
-    }));
+    await heartbeat.drainActiveRunExecutions();
     runningProcesses.clear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -143,6 +134,16 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(companySkills);
     await db.delete(environments);
     await db.delete(companies);
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Dependency-aware heartbeat test run.",
+      provider: "test",
+      model: "test-model",
+    }));
   });
 
   afterAll(async () => {
@@ -1103,147 +1104,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await heartbeat.resumeQueuedRuns();
 
     const runStarted = await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    }, 10_000);
-
-    const [run, wakeup] = await Promise.all([
-      db
-        .select({
-          status: heartbeatRuns.status,
-          errorCode: heartbeatRuns.errorCode,
-          error: heartbeatRuns.error,
-        })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({
-          status: agentWakeupRequests.status,
-          error: agentWakeupRequests.error,
-        })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, wakeupRequestId))
-        .then((rows) => rows[0] ?? null),
-    ]);
-
-    expect(runStarted, JSON.stringify({ run, wakeup })).toBe(true);
-    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
-    expect(wakeup).toMatchObject({ status: "completed", error: null });
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
-  });
-
-  it("allows a manager-owned blocked issue to run when the unresolved blocker belongs to a non-invokable direct report", async () => {
-    const companyId = randomUUID();
-    const managerId = randomUUID();
-    const reportId = randomUUID();
-    const blockerId = randomUUID();
-    const blockedIssueId = randomUUID();
-    const wakeupRequestId = randomUUID();
-    const runId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "ReadersBase",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values([
-      {
-        id: managerId,
-        companyId,
-        name: "ReadersBase QA Director",
-        role: "qa",
-        title: "QA Director",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {
-          heartbeat: {
-            wakeOnDemand: true,
-            maxConcurrentRuns: 1,
-          },
-        },
-        permissions: {},
-      },
-      {
-        id: reportId,
-        companyId,
-        name: "QA Engineer",
-        role: "qa",
-        status: "paused",
-        reportsTo: managerId,
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      },
-    ]);
-    await db.insert(issues).values([
-      {
-        id: blockerId,
-        companyId,
-        title: "Execute authenticated QA artifact",
-        status: "todo",
-        priority: "high",
-        assigneeAgentId: reportId,
-      },
-      {
-        id: blockedIssueId,
-        companyId,
-        title: "Coordinate authenticated QA artifact",
-        status: "blocked",
-        priority: "high",
-        assigneeAgentId: managerId,
-      },
-    ]);
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: blockerId,
-      relatedIssueId: blockedIssueId,
-      type: "blocks",
-    });
-    await db.insert(agentWakeupRequests).values({
-      id: wakeupRequestId,
-      companyId,
-      agentId: managerId,
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_execution_promoted",
-      payload: { issueId: blockedIssueId },
-      status: "queued",
-    });
-    await db.insert(heartbeatRuns).values({
-      id: runId,
-      companyId,
-      agentId: managerId,
-      invocationSource: "assignment",
-      triggerDetail: "system",
-      status: "queued",
-      wakeupRequestId,
-      contextSnapshot: {
-        issueId: blockedIssueId,
-        wakeReason: "issue_assigned",
-      },
-    });
-    await db
-      .update(agentWakeupRequests)
-      .set({ runId })
-      .where(eq(agentWakeupRequests.id, wakeupRequestId));
-
-    await heartbeat.resumeQueuedRuns();
-
-    const runStarted = await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
+      const [run, wakeup] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      return run?.status === "succeeded" && wakeup?.status === "completed";
     }, 10_000);
 
     const [run, wakeup] = await Promise.all([

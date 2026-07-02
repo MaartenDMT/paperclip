@@ -133,7 +133,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     }));
   });
 
-  it("seeds bundled memory skills when listing runtime entries for heartbeats", async () => {
+  it("seeds bundled Paperclip skills when listing runtime entries for heartbeats", async () => {
     const companyId = randomUUID();
 
     await db.insert(companies).values({
@@ -146,13 +146,18 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
     const keys = entries.map((entry) => entry.key);
 
-    expect(keys).toContain("paperclipai/paperclip/para-memory-files");
-    expect(keys).toContain("paperclipai/paperclip/karpathy-obsidian-memory");
-    expect(entries.find((entry) => entry.runtimeName === "para-memory-files")).toMatchObject({
+    expect(keys).toContain("paperclipai/paperclip/paperclip");
+    expect(keys).toContain("paperclipai/paperclip/paperclip-create-agent");
+    expect(keys).toContain("paperclipai/paperclip/paperclip-dev");
+    expect(entries.find((entry) => entry.runtimeName === "paperclip")).toMatchObject({
       required: true,
     });
-    expect(entries.find((entry) => entry.runtimeName === "karpathy-obsidian-memory")).toMatchObject({
+    expect(entries.find((entry) => entry.runtimeName === "paperclip-create-agent")).toMatchObject({
       required: true,
+    });
+    expect(entries.find((entry) => entry.runtimeName === "paperclip-dev")).toMatchObject({
+      required: false,
+      requiredReason: null,
     });
   });
 });

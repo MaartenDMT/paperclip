@@ -92,3 +92,7 @@ server/src/graphify-out/
 logs/
 /paperclip-dev*.log
 /paperclip-install-codex*.log
+
+# Local vault/runtime state and agent backup copies
+/vault/
+AGENTS.md.bak-*

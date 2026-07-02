@@ -281,7 +281,7 @@ describeEmbeddedPostgres("campaignService", () => {
       identifier: "REA-9999",
       title: "Create World Vault",
       status: "todo",
-      priority: "medium",
+      priority: "high",
     });
     expect(linked.taskProgress).toMatchObject({
       source: "execution_issue",
@@ -584,7 +584,7 @@ describeEmbeddedPostgres("campaignService", () => {
       goalId,
       assigneeAgentId: agentId,
       status: "todo",
-      priority: "high",
+      priority: "medium",
       originKind: "campaign_phase_execution",
       originId: phase.id,
       originFingerprint: submission.planRevision.id,

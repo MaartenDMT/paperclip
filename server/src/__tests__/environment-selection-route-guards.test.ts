@@ -67,6 +67,9 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  agentInstructionsService: () => ({
+    pruneStaleIssueScopedFiles: vi.fn(async () => ({ pruned: [] })),
+  }),
   executionWorkspaceService: () => ({}),
   goalService: () => ({
     getById: vi.fn(),
