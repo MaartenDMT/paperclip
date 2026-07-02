@@ -819,13 +819,26 @@ describe("heartbeat comment wake batching", () => {
 
       await heartbeat.cancelRun(firstRun!.id);
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const [runs, deferredWake] = await Promise.all([
+          db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.agentId, agentId)),
+          db
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.requestedAt))
+            .then((rows) => rows.at(-1) ?? null),
+        ]);
+        return runs.length === 1 && runs[0]?.status === "cancelled" && deferredWake?.status === "cancelled";
       }, 90_000);
 
       const issueAfterPromotion = await db
@@ -842,22 +855,28 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-            issue: {
-              id: issueId,
-              identifier: `${issuePrefix}-1`,
-              title: "Closed after deferred generic comment",
-              status: "done",
-              priority: "medium",
-            },
-          },
-        });
-      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+      const deferredWake = await db
+        .select({
+          status: agentWakeupRequests.status,
+          error: agentWakeupRequests.error,
+          finishedAt: agentWakeupRequests.finishedAt,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .then((rows) => rows.at(-1) ?? null);
+      expect(deferredWake).toMatchObject({
+        status: "cancelled",
+        error: "Deferred comment wake suppressed because the issue is done",
+      });
+      expect(deferredWake?.finishedAt).not.toBeNull();
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1629,15 +1648,26 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await heartbeat.drainActiveRunExecutions({ runId: firstRun!.id });
-      gateway.releaseWait(1);
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, companyId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const [runs, deferredWake] = await Promise.all([
+          db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.companyId, companyId)),
+          db
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, companyId),
+                eq(agentWakeupRequests.agentId, mentionedAgentId),
+                eq(agentWakeupRequests.status, "cancelled"),
+              ),
+            )
+            .then((rows) => rows[0] ?? null),
+        ]);
+        return runs.length === 1 && runs[0]?.status === "succeeded" && Boolean(deferredWake);
       }, 90_000);
 
       const issueAfterPromotion = await db
@@ -1654,22 +1684,28 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_comment_mentioned",
-          commentIds: [comment.id],
-          latestCommentId: comment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Do not reopen from agent mention",
-            status: "done",
-            priority: "medium",
-          },
-        },
+      const deferredWake = await db
+        .select({
+          status: agentWakeupRequests.status,
+          error: agentWakeupRequests.error,
+          finishedAt: agentWakeupRequests.finishedAt,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, mentionedAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .then((rows) => rows.at(-1) ?? null);
+      expect(deferredWake).toMatchObject({
+        status: "cancelled",
+        error: "Deferred comment wake suppressed because the issue is done",
       });
-      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
+      expect(deferredWake?.finishedAt).not.toBeNull();
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

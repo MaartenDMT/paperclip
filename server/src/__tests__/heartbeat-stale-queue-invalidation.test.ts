@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -29,6 +29,7 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { computeLocalActiveRunExecutionsMax } from "../services/heartbeat-capacity.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -148,7 +149,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await ensureIssueRelationsTable(db);
   }, 90_000);
 
+  beforeEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
+    runningProcesses.clear();
+    await cleanupHeartbeatInvalidationFixture(db);
+  });
+
   afterEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -1630,7 +1638,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const { companyId, agentId: firstAgentId } = await seedCompanyAndAgent({
       agentName: "HungLocalAgent1",
     });
-    const additionalAgentIds = [randomUUID(), randomUUID(), randomUUID()];
+    const localLaunchCapacity = computeLocalActiveRunExecutionsMax(
+      process.env.PAPERCLIP_LOCAL_ACTIVE_RUN_EXECUTIONS_MAX,
+    );
+    const additionalAgentIds = Array.from({ length: localLaunchCapacity }, () => randomUUID());
     await db.insert(agents).values(
       additionalAgentIds.map((agentId, index) => ({
         id: agentId,
@@ -1669,7 +1680,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       runIds.push(runId);
       runIssueIds.set(runId, issueId);
     }
-    for (const runId of runIds.slice(0, 3)) {
+    const hungRunIdsInLaunchSlots = runIds.slice(0, localLaunchCapacity);
+    const queuedAfterLaunchCapacityRunId = runIds[localLaunchCapacity]!;
+    for (const runId of hungRunIdsInLaunchSlots) {
       hungRunIds.add(runId);
     }
 
@@ -1716,8 +1729,12 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       const rows = await db
         .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
         .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.id, runIds.slice(0, 3)));
-      return rows.length === 3 && rows.every((row) => row.status === "running") && releaseHungRuns.length === 3;
+        .where(inArray(heartbeatRuns.id, hungRunIdsInLaunchSlots));
+      return (
+        rows.length === localLaunchCapacity &&
+        rows.every((row) => row.status === "running") &&
+        releaseHungRuns.length === localLaunchCapacity
+      );
     }, 20_000)).resolves.toBe(true);
 
     const staleAt = new Date(Date.now() - 10 * 60 * 1000);
@@ -1731,17 +1748,17 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         processGroupId: null,
         updatedAt: staleAt,
       })
-      .where(inArray(heartbeatRuns.id, runIds.slice(0, 3)));
+      .where(inArray(heartbeatRuns.id, hungRunIdsInLaunchSlots));
 
     const beforeReapFourth = await db
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runIds[3]!))
+      .where(eq(heartbeatRuns.id, queuedAfterLaunchCapacityRunId))
       .then((rows) => rows[0] ?? null);
     expect(beforeReapFourth?.status).toBe("queued");
 
     const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1 });
-    expect(reaped.runIds.sort()).toEqual(runIds.slice(0, 3).sort());
+    expect(reaped.runIds.sort()).toEqual(hungRunIdsInLaunchSlots.sort());
     for (const release of releaseHungRuns) release();
 
     await heartbeat.resumeQueuedRuns();
@@ -1750,7 +1767,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       const row = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runIds[3]!))
+        .where(eq(heartbeatRuns.id, queuedAfterLaunchCapacityRunId))
         .then((rows) => rows[0] ?? null);
       return row?.status === "succeeded";
     }, 20_000)).resolves.toBe(true);
@@ -1758,7 +1775,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const fourthRun = await db
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runIds[3]!))
+      .where(eq(heartbeatRuns.id, queuedAfterLaunchCapacityRunId))
       .then((rows) => rows[0] ?? null);
     expect(fourthRun?.status).toBe("succeeded");
   }, 30_000);

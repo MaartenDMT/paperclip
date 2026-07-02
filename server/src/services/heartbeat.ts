@@ -585,6 +585,7 @@ const LOCAL_QUEUED_RUNS_MAX = computeLocalQueuedRunsMax(
 );
 
 type ActiveRunExecution = {
+  serviceId: symbol;
   runId: string;
   agentId: string;
   companyId: string;
@@ -624,6 +625,7 @@ export interface HeartbeatServiceOptions {
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const serviceId = Symbol("heartbeatService");
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -4137,9 +4139,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
+            executionRunId:
+              retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ? scheduledRun.id : null,
+            executionAgentNameKey:
+              retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ? normalizeAgentNameKey(agent.name) : null,
+            executionLockedAt:
+              retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ? now : null,
             updatedAt: now,
           })
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
@@ -5339,7 +5344,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (issue.status === "done" || issue.status === "cancelled") {
       const allowsClosedIssueCommentWake =
         wakeCommentId &&
-        issue.status === "done";
+        issue.status === "done" &&
+        resumeIntent;
       if (!allowsClosedIssueCommentWake) {
         return {
           stale: true,
@@ -5922,15 +5928,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       activeRunExecutions.delete(run.id);
+      await finalizeAgentStatus(run.agentId, "failed");
+      await startNextQueuedRunForAgent(run.agentId);
       reaped.push(run.id);
     }
 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+      await resumeQueuedRuns();
     }
     return { reaped: reaped.length, runIds: reaped };
   }
@@ -5945,6 +5952,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function pruneInactiveRunExecutions() {
+    const trackedRunIds = Array.from(activeRunExecutions.values())
+      .filter((execution) => execution.serviceId === serviceId)
+      .map((execution) => execution.runId);
+    if (trackedRunIds.length === 0) return 0;
+
+    const persistedRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, trackedRunIds));
+    const activePersistedRunIds = new Set(
+      persistedRuns
+        .filter((run) => !isHeartbeatRunTerminalStatus(run.status))
+        .map((run) => run.id),
+    );
+
+    let pruned = 0;
+    for (const runId of trackedRunIds) {
+      if (activePersistedRunIds.has(runId)) continue;
+      activeRunExecutions.delete(runId);
+      pruned += 1;
+    }
+    return pruned;
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { companyId?: string }) {
@@ -6160,6 +6192,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
 
+      await pruneInactiveRunExecutions();
       const hasPriorityQueuedRun = queuedRuns.some((run) => isPriorityQueuedRun(run));
       const maxGlobalRunningRuns = HEARTBEAT_GLOBAL_RUNNING_RUNS_MAX +
         (hasPriorityQueuedRun ? HEARTBEAT_GLOBAL_PRIORITY_BURST_MAX : 0);
@@ -6290,6 +6323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
         });
         activeRunExecutions.set(claimedRun.id, {
+          serviceId,
           runId: claimedRun.id,
           agentId: claimedRun.agentId,
           companyId: claimedRun.companyId,
@@ -8000,6 +8034,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             deferredWakeReason === "issue_reopened_via_comment" ||
             deferredResumeIntent
           );
+        if (deferredCommentIds.length > 0 && issue.status === "done" && !deferredResumeIntent) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because the issue is done",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
@@ -9402,6 +9448,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string;
   } = {}) {
     const matching = Array.from(activeRunExecutions.values()).filter((execution) => {
+      if (execution.serviceId !== serviceId) return false;
       if (filter.runId && execution.runId !== filter.runId) return false;
       if (filter.agentId && execution.agentId !== filter.agentId) return false;
       if (filter.companyId && execution.companyId !== filter.companyId) return false;
@@ -9792,6 +9839,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      const scheduledRetryPromotion = await promoteDueScheduledRetries(now);
+      const queuedRunReconciliation = await reconcileQueuedHeartbeatRuns(now);
+      await resumeQueuedRuns();
+
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9836,6 +9887,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        scheduledRetryPromotion,
+        queuedRunReconciliation,
       };
     },
 

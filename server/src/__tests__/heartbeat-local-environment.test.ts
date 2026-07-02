@@ -88,10 +88,12 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(environmentLeases);
     await db.delete(environments);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
