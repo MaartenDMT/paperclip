@@ -260,6 +260,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.teamLeadId).toBe(agentId);
 
     const activity = await db
       .select()
@@ -281,7 +282,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    const runningAgentRows = Array.from({ length: 5 }, (_, index) => ({
+    const globalRunCap = Math.max(1, Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 20)));
+    const runningAgentRows = Array.from({ length: globalRunCap }, (_, index) => ({
       id: randomUUID(),
       companyId,
       name: `Running Bot ${index + 1}`,
@@ -354,6 +356,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(heartbeatRuns.agentId, dueAgentId));
 
     expect(dueAgentRuns).toEqual([]);
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: now, updatedAt: now })
+      .where(eq(heartbeatRuns.companyId, companyId));
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
@@ -381,6 +388,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.teamLeadId).toBe(agentId);
     expect(wakeup?.payload).toMatchObject({
       issueId,
       nextCheckAt: nextCheckAt.toISOString(),
@@ -455,6 +463,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_recovery");
+    expect(wakeup?.teamLeadId).toBe(agentId);
     expect(wakeup?.payload).toMatchObject({
       issueId,
       clearReason: "max_attempts_exhausted",

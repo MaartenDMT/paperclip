@@ -844,6 +844,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "issue_monitor_recovery_issue",
+          teamLeadId: input.claimed.assigneeAgentId,
           idempotencyKey: `issue-monitor-recovery-issue:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
           payload: withRecoveryModelProfileHint({ issueId: recoveryIssue.id, sourceIssueId: input.claimed.id }),
           requestedByActorType: input.actorType,
@@ -905,6 +906,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       source: "automation",
       triggerDetail: "system",
       reason: "issue_monitor_recovery",
+      teamLeadId: input.claimed.assigneeAgentId,
       idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
       payload: withRecoveryModelProfileHint({
         issueId: input.claimed.id,
@@ -1063,6 +1065,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         source: input.source,
         triggerDetail: input.triggerDetail,
         reason: input.wakeReason,
+        teamLeadId: claimed.assigneeAgentId,
         idempotencyKey: `issue-monitor:${claimed.id}:${scheduledAtIso}`,
         payload: {
           issueId: claimed.id,
@@ -8181,6 +8184,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
+    const teamLeadId = opts.teamLeadId ?? null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -8223,6 +8227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
+        teamLeadId,
         source,
         triggerDetail,
         reason: skipReason,
@@ -8389,6 +8394,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason: "issue_execution_issue_not_found",
@@ -8596,6 +8602,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason: "issue_dependencies_blocked",
@@ -8647,6 +8654,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
               agentId,
+              teamLeadId,
               source,
               triggerDetail,
               reason: "issue_execution_same_name",
@@ -8713,6 +8721,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason: "issue_execution_deferred",
@@ -8730,6 +8739,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason: "management_queue_cap_reached",
@@ -8747,6 +8757,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason: "local_queued_run_cap_reached",
@@ -8765,6 +8776,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: agent.companyId,
             agentId,
+            teamLeadId,
             source,
             triggerDetail,
             reason,
@@ -8874,6 +8886,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
+        teamLeadId,
         source,
         triggerDetail,
         reason,
@@ -8904,6 +8917,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .values({
         companyId: agent.companyId,
         agentId,
+        teamLeadId,
         source,
         triggerDetail,
         reason,
