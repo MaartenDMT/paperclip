@@ -2288,6 +2288,11 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    updateIssueWorkProductSchema.parse({
+      metadata: existing.metadata,
+      ...req.body,
+      provider: existing.provider,
+    });
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });

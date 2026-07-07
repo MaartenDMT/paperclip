@@ -40,6 +40,14 @@ const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  pruneStaleIssueScopedFiles: vi.fn(async () => ({
+    agentsChecked: 0,
+    filesRemoved: 0,
+    errors: [],
+  })),
+}));
+
 const mockDocumentService = vi.hoisted(() => ({
   upsertIssueDocument: vi.fn(),
 }));
@@ -97,6 +105,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentInstructionsService: () => mockAgentInstructionsService,
     agentService: () => mockAgentService,
     companyService: () => mockCompanyService,
     documentService: () => mockDocumentService,
@@ -249,6 +258,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
+    mockAgentInstructionsService.pruneStaleIssueScopedFiles.mockClear();
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -385,6 +395,45 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects metadata-only PATCH with invalid ReadersBase bridge metadata using the existing provider", async () => {
+    mockWorkProductService.getById.mockResolvedValue({
+      id: "product-1",
+      issueId,
+      companyId,
+      type: "artifact",
+      provider: "readersbase",
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .patch("/api/work-products/product-1")
+      .send({ metadata: { artifactKeys: ["missing-contract"] } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(JSON.stringify(res.body.details)).toContain("Required");
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows metadata-only PATCH for non-ReadersBase work products", async () => {
+    mockWorkProductService.getById.mockResolvedValue({
+      id: "product-1",
+      issueId,
+      companyId,
+      type: "artifact",
+      provider: "github",
+      metadata: null,
+    });
+
+    await request(await createApp(boardActor()))
+      .patch("/api/work-products/product-1")
+      .send({ metadata: { artifactKeys: ["non-readersbase-contract"] } })
+      .expect(200);
+
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", {
+      metadata: { artifactKeys: ["non-readersbase-contract"] },
+    });
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
