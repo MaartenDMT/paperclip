@@ -8,6 +8,8 @@ export {
   companyTemplateCampaignPhaseDefinitionSchema,
   companyTemplateCompanyDefinitionSchema,
   companyTemplateDefinitionSchema,
+  companyTemplateDocumentDefinitionSchema,
+  companyTemplateDocumentScopeSchema,
   companyTemplateGoalDefinitionSchema,
   companyTemplateIssueDefinitionSchema,
   companyTemplateProjectDefinitionSchema,

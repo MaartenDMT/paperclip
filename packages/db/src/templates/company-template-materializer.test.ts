@@ -6,7 +6,10 @@ import {
   campaignProjects,
   campaigns,
   companies,
+  documentRevisions,
+  documents,
   goals,
+  issueDocuments,
   issueWorkProducts,
   issues,
   projects,
@@ -157,6 +160,9 @@ describeEmbeddedPostgres("createDrizzleCompanyTemplateMaterializerStore", () => 
 
   afterEach(async () => {
     await db.delete(issueWorkProducts);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(campaignPhases);
     await db.delete(campaignProjects);
@@ -211,6 +217,26 @@ describeEmbeddedPostgres("createDrizzleCompanyTemplateMaterializerStore", () => 
         expect(row?.assigneeAgentId).toBe(agentIdBySlug.get(ownerAgentSlug));
         expect(row?.assigneeAgentId).not.toBe(ownerAgentSlug);
       }
+
+      const seededDocuments = await db
+        .select({ title: documents.title, latestBody: documents.latestBody })
+        .from(documents)
+        .where(eq(documents.companyId, String(result.companyId)));
+      expect(seededDocuments.some((document) => document.title === "ReadersBase Publishing Operating Manual")).toBe(true);
+      expect(seededDocuments.some((document) => document.latestBody.includes("Do not mutate ReadersBase"))).toBe(true);
+
+      const researchPhase = await db
+        .select({ planDocumentId: campaignPhases.planDocumentId })
+        .from(campaignPhases)
+        .where(eq(campaignPhases.title, "Research"))
+        .limit(1);
+      expect(researchPhase[0]?.planDocumentId).toBeTruthy();
+
+      const pilotIssueDocumentRows = await db
+        .select({ key: issueDocuments.key })
+        .from(issueDocuments)
+        .where(eq(issueDocuments.key, "pilot-brief"));
+      expect(pilotIssueDocumentRows).toHaveLength(1);
     },
     embeddedPostgresTestTimeoutMs,
   );

@@ -102,6 +102,19 @@ export interface CompanyTemplateIssueDefinition {
   metadata?: CompanyTemplateMetadata;
 }
 
+export type CompanyTemplateDocumentScope = "company" | "agent" | "campaign_phase_plan" | "issue";
+
+export interface CompanyTemplateDocumentDefinition {
+  slug: string;
+  title: string;
+  body: string;
+  format?: "markdown";
+  scope: CompanyTemplateDocumentScope;
+  targetSlug?: string;
+  documentKey?: string;
+  metadata?: CompanyTemplateMetadata;
+}
+
 export interface CompanyTemplateArtifactContract {
   key: string;
   title: string;
@@ -129,6 +142,7 @@ export interface CompanyTemplateDefinition {
   campaignTemplates: CompanyTemplateCampaignDefinition[];
   artifactContracts: CompanyTemplateArtifactContract[];
   starterIssues?: CompanyTemplateIssueDefinition[];
+  documents?: CompanyTemplateDocumentDefinition[];
   metadata?: CompanyTemplateMetadata;
 }
 
@@ -145,7 +159,7 @@ export type CompanyTemplateMaterializationActionKind = "create" | "update" | "sk
 
 export interface CompanyTemplateMaterializationAction {
   kind: CompanyTemplateMaterializationActionKind;
-  entityType: "company" | "agent" | "goal" | "project" | "campaign" | "campaign_phase" | "issue" | "work_product" | "artifact_contract";
+  entityType: "company" | "agent" | "goal" | "project" | "campaign" | "campaign_phase" | "issue" | "work_product" | "artifact_contract" | "document";
   slug: string;
   label: string;
   reason?: string;

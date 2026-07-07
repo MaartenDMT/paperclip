@@ -9,6 +9,9 @@ export {
   buildReadersBaseArtifactWorkProductInput,
 } from "./readersbase-artifact-bridge.js";
 export {
+  READERSBASE_COMPANY_PACK_DOCUMENTS,
+} from "./readersbase-company-pack.js";
+export {
   READERSBASE_PUBLISHING_FORMATS,
   READERSBASE_PUBLISHING_TEMPLATE,
 } from "./readersbase-publishing.js";

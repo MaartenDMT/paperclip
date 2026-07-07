@@ -72,4 +72,19 @@ describe("READERSBASE_PUBLISHING_TEMPLATE", () => {
     expect(priorityMetadata.primaryFormats).toEqual(["novel", "interactive-novel", "graphic-novel"]);
     expect(priorityMetadata.requiresBoardApprovalBeforeExternalPublication).toBe(true);
   });
+
+  it("loads durable markdown company-pack documents for runtime seeding", () => {
+    const documents = READERSBASE_PUBLISHING_TEMPLATE.documents ?? [];
+
+    expect(documents.map((document) => document.slug)).toEqual(
+      expect.arrayContaining([
+        "company-operating-manual",
+        "phase-research-plan",
+        "pilot-ashen-observatory-research-brief",
+      ]),
+    );
+    expect(documents.find((document) => document.slug === "company-operating-manual")?.body).toContain("Do not mutate ReadersBase");
+    expect(documents.find((document) => document.slug === "phase-research-plan")?.scope).toBe("campaign_phase_plan");
+    expect(documents.find((document) => document.slug === "pilot-ashen-observatory-research-brief")?.documentKey).toBe("pilot-brief");
+  });
 });

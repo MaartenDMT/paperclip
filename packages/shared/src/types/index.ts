@@ -50,6 +50,8 @@ export type {
   CompanyTemplateCampaignPhaseDefinition,
   CompanyTemplateCompanyDefinition,
   CompanyTemplateDefinition,
+  CompanyTemplateDocumentDefinition,
+  CompanyTemplateDocumentScope,
   CompanyTemplateGoalDefinition,
   CompanyTemplateIssueDefinition,
   CompanyTemplateMaterializationAction,

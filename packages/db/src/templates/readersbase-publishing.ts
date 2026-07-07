@@ -1,4 +1,5 @@
 import type { CompanyTemplateAgentDefinition, CompanyTemplateArtifactContract, CompanyTemplateDefinition, CompanyTemplateProjectDefinition } from "@paperclipai/shared";
+import { READERSBASE_COMPANY_PACK_DOCUMENTS } from "./readersbase-company-pack.js";
 import { READERSBASE_CREATIVE_SYSTEM_NOTE, READERSBASE_CURRENT_FICTION_PRIORITY_NOTE, READERSBASE_FICTION_DEPARTMENT_NOTE } from "./readersbase-notes.js";
 
 export const READERSBASE_PUBLISHING_FORMATS = [
@@ -305,6 +306,7 @@ export const READERSBASE_PUBLISHING_TEMPLATE: CompanyTemplateDefinition = {
     },
   ],
   artifactContracts,
+  documents: READERSBASE_COMPANY_PACK_DOCUMENTS,
   metadata: {
     templateSlug: "readersbase-publishing",
     priorityRouting: {

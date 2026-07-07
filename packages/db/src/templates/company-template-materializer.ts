@@ -14,7 +14,10 @@ import {
   campaignProjects,
   campaigns,
   companies,
+  documentRevisions,
+  documents,
   goals,
+  issueDocuments,
   issueWorkProducts,
   issues,
   projects,
@@ -34,7 +37,8 @@ export type CompanyTemplateMaterializerEntity =
   | "campaign_phase"
   | "issue"
   | "work_product"
-  | "artifact_contract";
+  | "artifact_contract"
+  | "document";
 
 type MaterializedEntity = { id: string; [key: string]: unknown };
 
@@ -135,6 +139,10 @@ export function planCompanyTemplateInstall(
 
   for (const issue of parsed.starterIssues ?? []) {
     actions.push(createAction("issue", issue.slug, issue.title, issue.metadata));
+  }
+
+  for (const document of parsed.documents ?? []) {
+    actions.push(createAction("document", document.slug, document.title, document.metadata));
   }
 
   return {
@@ -325,6 +333,27 @@ function buildReadersBasePilotEntities(template: CompanyTemplateDefinition): Pla
     });
   }
 
+  for (const document of template.documents ?? []) {
+    const targetSlug = document.targetSlug;
+    entities.push({
+      action: createAction("document", document.slug, document.title, document.metadata),
+      companySlug,
+      parentSlug: document.scope === "campaign_phase_plan" || document.scope === "issue" || document.scope === "agent" ? targetSlug : undefined,
+      data: {
+        title: document.title,
+        body: document.body,
+        format: document.format ?? "markdown",
+        scope: document.scope,
+        targetSlug,
+        documentKey: document.documentKey,
+        metadata: {
+          ...withTemplateMetadata(template, document.slug, document.metadata),
+          templateDocumentSlug: document.slug,
+        },
+      },
+    });
+  }
+
   return entities;
 }
 
@@ -438,7 +467,7 @@ export async function materializeReadersBasePublishingPilot(
   return materializePlannedEntities(store, template, plan, entities, options);
 }
 
-function firstRow<T extends MaterializedEntity>(rows: T[]): T | null {
+function firstRow<T>(rows: T[]): T | null {
   return rows[0] ?? null;
 }
 
@@ -474,6 +503,16 @@ function createDrizzleTx(db: Db): CompanyTemplateMaterializerTx {
           return firstRow(await db.select().from(issues).where(and(eq(issues.companyId, String(scope.companyId)), eq(issues.originKind, String(scope.data?.originKind ?? "company_template_materializer")), eq(issues.originId, String(scope.data?.originId)))).limit(1)) as MaterializedEntity | null;
         case "work_product":
           return firstRow(await db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, String(scope.companyId)), eq(issueWorkProducts.issueId, String(scope.parentId)), eq(issueWorkProducts.provider, String(scope.data?.provider)), eq(issueWorkProducts.externalId, String(scope.data?.externalId)))).limit(1)) as MaterializedEntity | null;
+        case "document": {
+          if (scope.data?.scope === "issue" && scope.parentId && scope.data?.documentKey) {
+            return firstRow(await db.select({ id: documents.id }).from(issueDocuments).innerJoin(documents, eq(issueDocuments.documentId, documents.id)).where(and(eq(issueDocuments.companyId, String(scope.companyId)), eq(issueDocuments.issueId, String(scope.parentId)), eq(issueDocuments.key, String(scope.data.documentKey)))).limit(1)) as MaterializedEntity | null;
+          }
+          if (scope.data?.scope === "campaign_phase_plan" && scope.parentId) {
+            const phase = firstRow(await db.select({ planDocumentId: campaignPhases.planDocumentId }).from(campaignPhases).where(and(eq(campaignPhases.companyId, String(scope.companyId)), eq(campaignPhases.id, String(scope.parentId)))).limit(1)) as { planDocumentId: string | null } | null;
+            return phase?.planDocumentId ? { id: phase.planDocumentId } : null;
+          }
+          return firstRow(await db.select().from(documents).where(and(eq(documents.companyId, String(scope.companyId)), eq(documents.title, String(scope.label)))).limit(1)) as MaterializedEntity | null;
+        }
         case "artifact_contract":
           return null;
       }
@@ -576,6 +615,38 @@ function createDrizzleTx(db: Db): CompanyTemplateMaterializerTx {
             summary: input.data.summary ? String(input.data.summary) : null,
             metadata: input.data.metadata as Record<string, unknown>,
           }).returning()) as MaterializedEntity;
+        case "document": {
+          const document = firstRow(await db.insert(documents).values({
+            companyId: String(input.companyId),
+            title: String(input.data.title),
+            format: String(input.data.format ?? "markdown"),
+            latestBody: String(input.data.body),
+            latestRevisionId: null,
+            latestRevisionNumber: 1,
+          }).returning()) as MaterializedEntity;
+          const revision = firstRow(await db.insert(documentRevisions).values({
+            companyId: String(input.companyId),
+            documentId: String(document.id),
+            revisionNumber: 1,
+            title: String(input.data.title),
+            format: String(input.data.format ?? "markdown"),
+            body: String(input.data.body),
+            changeSummary: "Seeded from company template markdown pack.",
+          }).returning()) as MaterializedEntity;
+          await db.update(documents).set({ latestRevisionId: String(revision.id) }).where(eq(documents.id, String(document.id)));
+          if (input.data.scope === "issue" && input.parentId && input.data.documentKey) {
+            await db.insert(issueDocuments).values({
+              companyId: String(input.companyId),
+              issueId: String(input.parentId),
+              documentId: String(document.id),
+              key: String(input.data.documentKey),
+            }).onConflictDoNothing();
+          }
+          if (input.data.scope === "campaign_phase_plan" && input.parentId) {
+            await db.update(campaignPhases).set({ planDocumentId: String(document.id) }).where(eq(campaignPhases.id, String(input.parentId)));
+          }
+          return document;
+        }
         case "artifact_contract":
           return { id: input.slug };
       }

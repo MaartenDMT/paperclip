@@ -143,4 +143,55 @@ describe("companyTemplateDefinitionSchema", () => {
     expect(result.success).toBe(false);
     expect(result.error?.issues.some((issue) => issue.message.includes("unknown requiredArtifactKey"))).toBe(true);
   });
+
+  it("accepts markdown documents with valid runtime targets", () => {
+    const result = companyTemplateDefinitionSchema.safeParse({
+      ...validTemplate,
+      documents: [
+        {
+          slug: "research-phase-plan",
+          title: "Research Phase Plan",
+          scope: "campaign_phase_plan",
+          targetSlug: "fiction-production:research",
+          body: "# Research\n",
+        },
+        {
+          slug: "research-issue-brief",
+          title: "Research Issue Brief",
+          scope: "issue",
+          targetSlug: "fiction-production:research:issue",
+          documentKey: "pilot-brief",
+          body: "# Pilot\n",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects document definitions with missing or unknown targets", () => {
+    const result = companyTemplateDefinitionSchema.safeParse({
+      ...validTemplate,
+      documents: [
+        {
+          slug: "missing-phase-plan",
+          title: "Missing Phase Plan",
+          scope: "campaign_phase_plan",
+          targetSlug: "fiction-production:missing-phase",
+          body: "# Missing\n",
+        },
+        {
+          slug: "missing-key-issue-doc",
+          title: "Missing Key Issue Doc",
+          scope: "issue",
+          targetSlug: "fiction-production:research:issue",
+          body: "# Missing key\n",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.message.includes("unknown document campaign phase targetSlug"))).toBe(true);
+    expect(result.error?.issues.some((issue) => issue.message.includes("issue documents require documentKey"))).toBe(true);
+  });
 });

@@ -107,6 +107,19 @@ export const companyTemplateIssueDefinitionSchema = z.object({
   metadata: metadataSchema.optional(),
 });
 
+export const companyTemplateDocumentScopeSchema = z.enum(["company", "agent", "campaign_phase_plan", "issue"]);
+
+export const companyTemplateDocumentDefinitionSchema = z.object({
+  slug: slugSchema,
+  title: z.string().min(1),
+  body: z.string().min(1),
+  format: z.literal("markdown").optional(),
+  scope: companyTemplateDocumentScopeSchema,
+  targetSlug: z.string().min(1).optional(),
+  documentKey: z.string().min(1).regex(/^[a-z0-9][a-z0-9_-]*$/, "documentKey must be lowercase letters, numbers, _ or -").optional(),
+  metadata: metadataSchema.optional(),
+});
+
 export const companyTemplateArtifactContractSchema = z.object({
   key: z.string().min(1),
   title: z.string().min(1),
@@ -155,6 +168,7 @@ export const companyTemplateDefinitionSchema = z.object({
   campaignTemplates: z.array(companyTemplateCampaignDefinitionSchema),
   artifactContracts: z.array(companyTemplateArtifactContractSchema),
   starterIssues: z.array(companyTemplateIssueDefinitionSchema).optional(),
+  documents: z.array(companyTemplateDocumentDefinitionSchema).optional(),
   metadata: metadataSchema.optional(),
 }).superRefine((template, ctx) => {
   const agentSlugs = template.agents.map((agent) => agent.slug);
@@ -162,6 +176,7 @@ export const companyTemplateDefinitionSchema = z.object({
   const projectSlugs = template.projects.map((project) => project.slug);
   const campaignSlugs = template.campaignTemplates.map((campaign) => campaign.slug);
   const artifactKeys = template.artifactContracts.map((contract) => contract.key);
+  const documentSlugs = template.documents?.map((document) => document.slug) ?? [];
   const knownAgents = new Set(agentSlugs);
   const knownGoals = new Set(goalSlugs);
   const knownProjects = new Set(projectSlugs);
@@ -173,6 +188,7 @@ export const companyTemplateDefinitionSchema = z.object({
   addDuplicateIssues(ctx, projectSlugs, "project slug", (index) => ["projects", index, "slug"]);
   addDuplicateIssues(ctx, campaignSlugs, "campaign slug", (index) => ["campaignTemplates", index, "slug"]);
   addDuplicateIssues(ctx, artifactKeys, "artifact key", (index) => ["artifactContracts", index, "key"]);
+  addDuplicateIssues(ctx, documentSlugs, "document slug", (index) => ["documents", index, "slug"]);
 
   const rootAgents = template.agents.filter((agent) => !agent.reportsToSlug);
   if (rootAgents.length !== 1) {
@@ -256,6 +272,27 @@ export const companyTemplateDefinitionSchema = z.object({
     }
     if (contract.ownerAgentSlug && !knownAgents.has(contract.ownerAgentSlug)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown artifact ownerAgentSlug: ${contract.ownerAgentSlug}`, path: ["artifactContracts", index, "ownerAgentSlug"] });
+    }
+  });
+
+  template.documents?.forEach((document, index) => {
+    if ((document.scope === "agent" || document.scope === "campaign_phase_plan" || document.scope === "issue") && !document.targetSlug) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${document.scope} documents require targetSlug`, path: ["documents", index, "targetSlug"] });
+    }
+    if (document.scope === "agent" && document.targetSlug && !knownAgents.has(document.targetSlug)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown document agent targetSlug: ${document.targetSlug}`, path: ["documents", index, "targetSlug"] });
+    }
+    if (document.scope === "campaign_phase_plan" && document.targetSlug) {
+      const [campaignSlug, phaseSlug] = document.targetSlug.split(":");
+      const campaign = template.campaignTemplates.find((candidate) => candidate.slug === campaignSlug);
+      if (!campaign || !campaign.phases.some((phase) => phase.slug === phaseSlug)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown document campaign phase targetSlug: ${document.targetSlug}`, path: ["documents", index, "targetSlug"] });
+      }
+    }
+    if (document.scope === "issue") {
+      if (!document.documentKey) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "issue documents require documentKey", path: ["documents", index, "documentKey"] });
+      }
     }
   });
 
