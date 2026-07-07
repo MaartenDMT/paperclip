@@ -40,7 +40,7 @@ describe("buildReadersBaseArtifactWorkProductInput", () => {
         paperclipTemplateVersion: "1.0.0",
         readersbaseArtifactInventoryPath:
           "plans/readersbase-artifact-phase-contract.md",
-        taxonomyValidation: "future-bridge",
+        taxonomyValidation: "readersbase-runtime",
       },
       followUpContext: {
         summary:

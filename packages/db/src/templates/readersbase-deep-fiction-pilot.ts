@@ -56,7 +56,7 @@ export const READERSBASE_DEEP_FICTION_PILOT: ReadersBaseDeepFictionPilot = {
   title: "The Ashen Observatory",
   format: "novel",
   genre: "sci-fi",
-  subgenre: "science-fantasy mystery",
+  subgenre: "science_fantasy",
   campaignTemplateSlug: "fiction-production",
   readersbaseProjectId: "pilot-readersbase-ashen-observatory",
   readersbaseSeriesId: null,

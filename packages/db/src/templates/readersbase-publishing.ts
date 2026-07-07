@@ -5,11 +5,11 @@ export const READERSBASE_PUBLISHING_FORMATS = [
   "novel",
   "novella",
   "short-story",
-  "interactive-story",
+  "interactive-novel",
+  "interactive-novella",
+  "interactive-short-story",
   "storybook",
-  "graphic-visual-narrative",
-  "serial-fiction",
-  "anthology",
+  "graphic-novel",
 ] as const;
 
 const defaultAdapterConfig = {
@@ -81,7 +81,7 @@ const agents: CompanyTemplateAgentDefinition[] = [
   agent("genre-taxonomy-liaison", "Genre Taxonomy Liaison", "genre_taxonomy_liaison", "Genre Taxonomy Liaison", "head-of-genre", "Maintains bridge metadata to ReadersBase genre keys without duplicating the live taxonomy.", "genre", { readersBaseBridgeRole: "taxonomy-reference" }),
   agent("tropes-promise-analyst", "Tropes & Promise Analyst", "tropes_promise_analyst", "Tropes & Promise Analyst", "head-of-genre", "Checks trope compatibility, reader promise delivery, genre-mix risks, and shelf-positioning evidence.", "genre"),
   agent("subgenre-fit-reviewer", "Subgenre Fit Reviewer", "subgenre_fit_reviewer", "Subgenre Fit Reviewer", "head-of-genre", "Reviews subgenre selection, edge cases, exclusions, and bridge metadata before publication.", "genre"),
-  agent("head-of-format", "Head of Format", "head_of_format", "Format Director", "publisher-in-chief", "Owns format-specific structure and quality for novels, novellas, short stories, interactive stories, storybooks, graphic narratives, serial fiction, and anthologies.", "format", { supportedFormats: READERSBASE_PUBLISHING_FORMATS }),
+  agent("head-of-format", "Head of Format", "head_of_format", "Format Director", "publisher-in-chief", "Owns format-specific structure and quality for novels, novellas, short stories, interactive novels, storybooks, and graphic novels.", "format", { supportedFormats: READERSBASE_PUBLISHING_FORMATS }),
   agent("novel-novella-format-editor", "Novel & Novella Format Editor", "novel_novella_format_editor", "Novel & Novella Format Editor", "head-of-format", "Checks long-form manuscript expectations, pacing, chapter architecture, and novella/novel fit.", "format"),
   agent("short-serial-format-editor", "Short & Serial Format Editor", "short_serial_format_editor", "Short & Serial Format Editor", "head-of-format", "Checks short story, serial installment, anthology contribution, and serialization constraints.", "format"),
   agent("interactive-story-designer", "Interactive Story Designer", "interactive_story_designer", "Interactive Story Designer", "head-of-format", "Owns branching narrative structure, choice state, consequence maps, and interactive-reader affordances.", "format"),
@@ -308,8 +308,8 @@ export const READERSBASE_PUBLISHING_TEMPLATE: CompanyTemplateDefinition = {
   metadata: {
     templateSlug: "readersbase-publishing",
     priorityRouting: {
-      primaryFormats: ["novel", "interactive-story", "serial-fiction"],
-      priorityGenres: ["fantasy", "genre-mix", "sci-fi"],
+      primaryFormats: ["novel", "interactive-novel", "graphic-novel"],
+      priorityGenres: ["fantasy", "science_fantasy", "sci-fi"],
       pausedByDefault: ["standalone-short-story", "standalone-novella"],
       requiresBoardApprovalBeforeExternalPublication: true,
       note: READERSBASE_CURRENT_FICTION_PRIORITY_NOTE,

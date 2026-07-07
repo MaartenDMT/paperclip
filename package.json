@@ -24,6 +24,7 @@
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
+    "readersbase:validate-bridge": "tsx scripts/validate-readersbase-bridge-contract.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
     "issues:audit-management": "tsx packages/db/src/analyze-issue-management.ts",

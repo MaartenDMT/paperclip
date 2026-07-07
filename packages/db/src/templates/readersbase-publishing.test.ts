@@ -38,11 +38,11 @@ describe("READERSBASE_PUBLISHING_TEMPLATE", () => {
       "novel",
       "novella",
       "short-story",
-      "interactive-story",
+      "interactive-novel",
+      "interactive-novella",
+      "interactive-short-story",
       "storybook",
-      "graphic-visual-narrative",
-      "serial-fiction",
-      "anthology",
+      "graphic-novel",
     ]);
   });
 
@@ -69,7 +69,7 @@ describe("READERSBASE_PUBLISHING_TEMPLATE", () => {
 
     expect(researchPhase?.ownerAgentSlug).toBe("head-of-research");
     expect(publishingPhase?.ownerAgentSlug).toBe("head-of-publishing");
-    expect(priorityMetadata.primaryFormats).toEqual(["novel", "interactive-story", "serial-fiction"]);
+    expect(priorityMetadata.primaryFormats).toEqual(["novel", "interactive-novel", "graphic-novel"]);
     expect(priorityMetadata.requiresBoardApprovalBeforeExternalPublication).toBe(true);
   });
 });

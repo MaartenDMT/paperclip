@@ -7,6 +7,11 @@ import {
   type CreateIssueWorkProduct,
   type ReadersBaseArtifactBridgeMetadata,
 } from "@paperclipai/shared";
+import {
+  READERSBASE_SHARED_TYPES_CATALOG_CONTRACT,
+  assertValidReadersBaseBridgeContract,
+} from "./readersbase-contract-validation.js";
+import { READERSBASE_PUBLISHING_FORMATS } from "./readersbase-publishing.js";
 
 interface BuildReadersBaseArtifactWorkProductInputOptions {
   template: CompanyTemplateDefinition;
@@ -104,6 +109,11 @@ export function buildReadersBaseArtifactBridgeMetadata(
     options.phaseSlug,
   );
   const contracts = requiredContractsForPhase(options.template, phase);
+  assertValidReadersBaseBridgeContract({
+    template: options.template,
+    publishingFormats: READERSBASE_PUBLISHING_FORMATS,
+    catalog: READERSBASE_SHARED_TYPES_CATALOG_CONTRACT,
+  });
   const metadata = {
     artifactContractVersion: READERSBASE_ARTIFACT_CONTRACT_VERSION,
     bridgeKind: "readersbase_phase_artifact_bridge",
@@ -130,7 +140,7 @@ export function buildReadersBaseArtifactBridgeMetadata(
       paperclipTemplateVersion: options.template.version,
       readersbaseArtifactInventoryPath:
         "plans/readersbase-artifact-phase-contract.md",
-      taxonomyValidation: "future-bridge",
+      taxonomyValidation: "readersbase-runtime",
     },
     followUpContext: {
       summary: options.summary,

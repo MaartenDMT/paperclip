@@ -13,6 +13,13 @@ export {
   READERSBASE_PUBLISHING_TEMPLATE,
 } from "./readersbase-publishing.js";
 export {
+  READERSBASE_SHARED_TYPES_CATALOG_CONTRACT,
+  assertValidReadersBaseBridgeContract,
+  validateReadersBaseBridgeContract,
+  type ReadersBaseBridgeContractValidationResult,
+  type ReadersBaseSharedTypesCatalogContract,
+} from "./readersbase-contract-validation.js";
+export {
   READERSBASE_DEEP_FICTION_PILOT,
   buildReadersBaseDeepFictionPilotWorkProducts,
 } from "./readersbase-deep-fiction-pilot.js";
