@@ -543,7 +543,7 @@ function createDrizzleTx(db: Db): CompanyTemplateMaterializerTx {
             title: String(input.data.title),
             objective: input.data.objective ? String(input.data.objective) : null,
             status: String(input.data.status ?? "planning"),
-            assigneeAgentId: input.data.ownerAgentSlug ? String(input.data.ownerAgentSlug) : null,
+            assigneeAgentId: input.data.ownerAgentId ? String(input.data.ownerAgentId) : null,
           }).returning()) as MaterializedEntity;
         case "issue":
           return firstRow(await db.insert(issues).values({

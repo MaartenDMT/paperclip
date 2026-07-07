@@ -1,11 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  agents,
+  campaignPhases,
+  campaignProjects,
+  campaigns,
+  companies,
+  goals,
+  issueWorkProducts,
+  issues,
+  projects,
+} from "../schema/index.js";
+import { createDb } from "../client.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../test-embedded-postgres.js";
 import { READERSBASE_PUBLISHING_TEMPLATE } from "./readersbase-publishing.js";
 import {
   type CompanyTemplateMaterializerTx,
   type CompanyTemplateMaterializerStore,
+  createDrizzleCompanyTemplateMaterializerStore,
   materializeReadersBasePublishingPilot,
   planCompanyTemplateInstall,
 } from "./company-template-materializer.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const embeddedPostgresTestTimeoutMs = process.platform === "win32" ? 120_000 : 30_000;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres materializer tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
 
 type EntityBucket = Record<string, Record<string, unknown>>;
 
@@ -116,4 +144,74 @@ describe("planCompanyTemplateInstall", () => {
     expect(fake.buckets.company).toBeUndefined();
     expect(fake.buckets.work_product).toBeUndefined();
   });
+});
+
+describeEmbeddedPostgres("createDrizzleCompanyTemplateMaterializerStore", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-template-materializer-");
+    db = createDb(tempDb.connectionString);
+  }, embeddedPostgresTestTimeoutMs);
+
+  afterEach(async () => {
+    await db.delete(issueWorkProducts);
+    await db.delete(issues);
+    await db.delete(campaignPhases);
+    await db.delete(campaignProjects);
+    await db.delete(campaigns);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it(
+    "maps campaign phase assignees to resolved agent IDs instead of template slugs",
+    async () => {
+      const store = createDrizzleCompanyTemplateMaterializerStore(db);
+
+      const result = await materializeReadersBasePublishingPilot(store, { dryRun: false });
+
+      expect(result.applied).toBe(true);
+      expect(result.companyId).toBeTruthy();
+
+      const agentRows = await db
+        .select({
+          id: agents.id,
+          metadata: agents.metadata,
+        })
+        .from(agents)
+        .where(eq(agents.companyId, String(result.companyId)));
+      const agentIdBySlug = new Map(
+        agentRows.map((agent) => [
+          String((agent.metadata as Record<string, unknown> | null)?.templateAgentSlug),
+          agent.id,
+        ]),
+      );
+      const phaseRows = await db
+        .select({
+          title: campaignPhases.title,
+          assigneeAgentId: campaignPhases.assigneeAgentId,
+        })
+        .from(campaignPhases)
+        .where(eq(campaignPhases.companyId, String(result.companyId)));
+
+      expect(phaseRows).toHaveLength(READERSBASE_PUBLISHING_TEMPLATE.campaignTemplates[0].phases.length);
+      for (const phase of READERSBASE_PUBLISHING_TEMPLATE.campaignTemplates[0].phases) {
+        expect(phase.ownerAgentSlug).toBeTruthy();
+        const ownerAgentSlug = String(phase.ownerAgentSlug);
+        const row = phaseRows.find((candidate) => candidate.title === phase.title);
+        expect(row).toBeTruthy();
+        expect(row?.assigneeAgentId).toBe(agentIdBySlug.get(ownerAgentSlug));
+        expect(row?.assigneeAgentId).not.toBe(ownerAgentSlug);
+      }
+    },
+    embeddedPostgresTestTimeoutMs,
+  );
 });
