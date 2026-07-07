@@ -41,6 +41,27 @@ export {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./instance.js";
 export type {
+  CompanyTemplateAgentDefinition,
+  CompanyTemplateArtifactContract,
+  CompanyTemplateArtifactKind,
+  CompanyTemplateArtifactLifecycleStatus,
+  CompanyTemplateArtifactReviewGate,
+  CompanyTemplateCampaignDefinition,
+  CompanyTemplateCampaignPhaseDefinition,
+  CompanyTemplateCompanyDefinition,
+  CompanyTemplateDefinition,
+  CompanyTemplateGoalDefinition,
+  CompanyTemplateIssueDefinition,
+  CompanyTemplateMaterializationAction,
+  CompanyTemplateMaterializationActionKind,
+  CompanyTemplateMaterializationPlan,
+  CompanyTemplateMaterializationResult,
+  CompanyTemplateMetadata,
+  CompanyTemplateProjectDefinition,
+  CompanyTemplateSchemaVersion,
+  CompanyTemplateSeedOptions,
+} from "./company-template.js";
+export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillCompatibility,

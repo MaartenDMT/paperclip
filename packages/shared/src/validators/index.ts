@@ -1,4 +1,19 @@
 export {
+  companyTemplateAgentDefinitionSchema,
+  companyTemplateArtifactContractSchema,
+  companyTemplateArtifactKindSchema,
+  companyTemplateArtifactLifecycleStatusSchema,
+  companyTemplateArtifactReviewGateSchema,
+  companyTemplateCampaignDefinitionSchema,
+  companyTemplateCampaignPhaseDefinitionSchema,
+  companyTemplateCompanyDefinitionSchema,
+  companyTemplateDefinitionSchema,
+  companyTemplateGoalDefinitionSchema,
+  companyTemplateIssueDefinitionSchema,
+  companyTemplateProjectDefinitionSchema,
+  type CompanyTemplateDefinitionInput,
+} from "./company-template.js";
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
