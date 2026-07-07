@@ -123,4 +123,24 @@ describe("companyTemplateDefinitionSchema", () => {
     expect(result.success).toBe(false);
     expect(result.error?.issues.some((issue) => issue.message.includes("duplicate phase sequence"))).toBe(true);
   });
+
+  it("rejects campaign phase required artifact keys without matching artifact contracts", () => {
+    const result = companyTemplateDefinitionSchema.safeParse({
+      ...validTemplate,
+      campaignTemplates: [
+        {
+          ...validTemplate.campaignTemplates[0],
+          phases: [
+            {
+              ...validTemplate.campaignTemplates[0].phases[0],
+              requiredArtifactKeys: ["missing-contract"],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.message.includes("unknown requiredArtifactKey"))).toBe(true);
+  });
 });

@@ -165,6 +165,7 @@ export const companyTemplateDefinitionSchema = z.object({
   const knownAgents = new Set(agentSlugs);
   const knownGoals = new Set(goalSlugs);
   const knownProjects = new Set(projectSlugs);
+  const knownArtifactKeys = new Set(artifactKeys);
   const phaseSlugs = new Set(template.campaignTemplates.flatMap((campaign) => campaign.phases.map((phase) => phase.slug)));
 
   addDuplicateIssues(ctx, agentSlugs, "agent slug", (index) => ["agents", index, "slug"]);
@@ -238,6 +239,11 @@ export const companyTemplateDefinitionSchema = z.object({
       if (phase.projectSlug && !knownProjects.has(phase.projectSlug)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown phase projectSlug: ${phase.projectSlug}`, path: ["campaignTemplates", campaignIndex, "phases", phaseIndex, "projectSlug"] });
       }
+      phase.requiredArtifactKeys?.forEach((artifactKey, artifactIndex) => {
+        if (!knownArtifactKeys.has(artifactKey)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown requiredArtifactKey: ${artifactKey}`, path: ["campaignTemplates", campaignIndex, "phases", phaseIndex, "requiredArtifactKeys", artifactIndex] });
+        }
+      });
     });
   });
 
