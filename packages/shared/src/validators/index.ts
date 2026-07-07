@@ -286,6 +286,13 @@ export {
 } from "./work-product.js";
 
 export {
+  READERSBASE_ARTIFACT_CONTRACT_VERSION,
+  readersBaseArtifactBridgeContractRefSchema,
+  readersBaseArtifactBridgeMetadataSchema,
+  type ReadersBaseArtifactBridgeMetadataInput,
+} from "./readersbase-artifact-bridge.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

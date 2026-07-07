@@ -61,6 +61,14 @@ export type {
   CompanyTemplateSchemaVersion,
   CompanyTemplateSeedOptions,
 } from "./company-template.js";
+export { READERSBASE_ARTIFACT_CONTRACT_VERSION } from "./readersbase-artifact-bridge.js";
+export type {
+  ReadersBaseArtifactBridgeContractRef,
+  ReadersBaseArtifactBridgeFollowUpContext,
+  ReadersBaseArtifactBridgeMetadata,
+  ReadersBaseArtifactBridgeSourceRefs,
+  ReadersBaseArtifactContractVersion,
+} from "./readersbase-artifact-bridge.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
@@ -110,7 +118,14 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type {
+  Project,
+  ProjectCodebase,
+  ProjectCodebaseOrigin,
+  ProjectGoalRef,
+  ProjectManagedByPlugin,
+  ProjectWorkspace,
+} from "./project.js";
 export type {
   CompanySearchHighlight,
   CompanySearchIssueSummary,
@@ -319,8 +334,23 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
-export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
+export type {
+  CostEvent,
+  CostSummary,
+  IssueCostSummary,
+  CostByAgent,
+  CostByProviderModel,
+  CostByBiller,
+  CostByAgentModel,
+  CostWindowSpendRow,
+  CostByProject,
+} from "./cost.js";
+export type {
+  FinanceEvent,
+  FinanceSummary,
+  FinanceByBiller,
+  FinanceByKind,
+} from "./finance.js";
 export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
@@ -333,7 +363,17 @@ export type {
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
-export type { DashboardRunActivityDay, DashboardSummary, ManagerOverviewAttention, ManagerOverviewIssueWorkloadKind, ManagerOverviewIssue, ManagerOverviewMeeting, ManagerOverviewAgent, ManagerOverviewReport, ManagerOverview } from "./dashboard.js";
+export type {
+  DashboardRunActivityDay,
+  DashboardSummary,
+  ManagerOverviewAttention,
+  ManagerOverviewIssueWorkloadKind,
+  ManagerOverviewIssue,
+  ManagerOverviewMeeting,
+  ManagerOverviewAgent,
+  ManagerOverviewReport,
+  ManagerOverview,
+} from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,

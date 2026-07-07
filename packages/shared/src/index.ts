@@ -1,4 +1,7 @@
-export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export {
+  agentAdapterTypeSchema,
+  optionalAgentAdapterTypeSchema,
+} from "./adapter-type.js";
 export {
   companyTemplateAgentDefinitionSchema,
   companyTemplateArtifactContractSchema,
@@ -14,6 +17,12 @@ export {
   companyTemplateProjectDefinitionSchema,
   type CompanyTemplateDefinitionInput,
 } from "./validators/company-template.js";
+export {
+  READERSBASE_ARTIFACT_CONTRACT_VERSION,
+  readersBaseArtifactBridgeContractRefSchema,
+  readersBaseArtifactBridgeMetadataSchema,
+  type ReadersBaseArtifactBridgeMetadataInput,
+} from "./validators/readersbase-artifact-bridge.js";
 export type {
   CompanyTemplateAgentDefinition,
   CompanyTemplateArtifactContract,
@@ -35,6 +44,13 @@ export type {
   CompanyTemplateSchemaVersion,
   CompanyTemplateSeedOptions,
 } from "./types/company-template.js";
+export type {
+  ReadersBaseArtifactBridgeContractRef,
+  ReadersBaseArtifactBridgeFollowUpContext,
+  ReadersBaseArtifactBridgeMetadata,
+  ReadersBaseArtifactBridgeSourceRefs,
+  ReadersBaseArtifactContractVersion,
+} from "./types/readersbase-artifact-bridge.js";
 export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -1118,8 +1134,16 @@ export {
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
-export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
-export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
+export {
+  normalizeAgentUrlKey,
+  deriveAgentUrlKey,
+  isUuidLike,
+} from "./agent-url-key.js";
+export {
+  deriveProjectUrlKey,
+  normalizeProjectUrlKey,
+  hasNonAsciiContent,
+} from "./project-url-key.js";
 export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
