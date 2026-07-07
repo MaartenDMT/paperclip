@@ -12,3 +12,7 @@ export {
   READERSBASE_PUBLISHING_FORMATS,
   READERSBASE_PUBLISHING_TEMPLATE,
 } from "./readersbase-publishing.js";
+export {
+  READERSBASE_DEEP_FICTION_PILOT,
+  buildReadersBaseDeepFictionPilotWorkProducts,
+} from "./readersbase-deep-fiction-pilot.js";
