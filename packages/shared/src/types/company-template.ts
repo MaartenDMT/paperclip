@@ -145,7 +145,7 @@ export type CompanyTemplateMaterializationActionKind = "create" | "update" | "sk
 
 export interface CompanyTemplateMaterializationAction {
   kind: CompanyTemplateMaterializationActionKind;
-  entityType: "company" | "agent" | "goal" | "project" | "campaign" | "campaign_phase" | "issue" | "artifact_contract";
+  entityType: "company" | "agent" | "goal" | "project" | "campaign" | "campaign_phase" | "issue" | "work_product" | "artifact_contract";
   slug: string;
   label: string;
   reason?: string;
