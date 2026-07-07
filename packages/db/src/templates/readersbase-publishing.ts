@@ -13,18 +13,52 @@ export const READERSBASE_PUBLISHING_FORMATS = [
   "graphic-novel",
 ] as const;
 
+const codexMcpOffArgs = [
+  "-c",
+  "mcp_servers.MCP_DOCKER.enabled=false",
+  "-c",
+  "mcp_servers.gimp_mcp.enabled=false",
+] as const;
+
 const defaultAdapterConfig = {
-  model: "gpt-5.3-codex",
-  modelReasoningEffort: "xhigh",
+  model: "gpt-5.5",
+  modelReasoningEffort: "medium",
   promptTemplate: READERSBASE_CREATIVE_SYSTEM_NOTE,
+  extraArgs: [...codexMcpOffArgs],
+  paperclipSkillSync: {
+    desiredSkills: ["paperclip"],
+  },
 };
 
 const defaultRuntimeConfig = {
   heartbeat: {
-    enabled: false,
+    enabled: true,
     wakeOnDemand: true,
   },
 };
+
+const codexRuntimePosture = {
+  adapterType: "codex_local",
+  model: "gpt-5.5",
+  reasoningEffort: "medium",
+  auth: "host Codex login inherited into an isolated Paperclip-managed CODEX_HOME",
+  codexHome: "companies/<company-id>/codex-home",
+  defaultMcp: "lean: Docker and GIMP MCP disabled unless an issue explicitly asks for visual, Docker, or full-MCP work",
+  skills: {
+    defaultDesired: ["paperclip"],
+    departmentExpectations: {
+      production: ["paperclip", "issue handoff hygiene", "budget/watchdog escalation"],
+      research: ["paperclip", "source citation hygiene", "evidence confidence labels"],
+      storyArchitecture: ["paperclip", "continuity and story-bible artifact discipline"],
+      drafting: ["paperclip", "approved-artifact grounded drafting", "no shallow placeholders"],
+      editorial: ["paperclip", "quality-gate review", "rights and sensitivity risk notes"],
+      publishing: ["paperclip", "metadata package QA", "approval-gated export only"],
+      qaArtifactLibrary: ["paperclip", "artifact completeness", "bridge-manifest validation"],
+    },
+  },
+  issueDesign: "Use ask work mode for missing creative/business decisions; keep watchdog-friendly issues scoped to reviewable artifacts.",
+  hermes: "optional plugin-only integration in this fork; register Hermes through Adapter manager when needed, do not seed built-in Hermes agents here",
+} as const;
 
 function agent(
   slug: string,
@@ -49,6 +83,7 @@ function agent(
     metadata: {
       templateSlug: "readersbase-publishing",
       departmentSlug,
+      runtimePosture: codexRuntimePosture,
       readersBaseBridgeRole: departmentSlug === "readersbase-bridge" ? "bridge" : undefined,
       ...extraMetadata,
     },
@@ -273,6 +308,7 @@ export const READERSBASE_PUBLISHING_TEMPLATE: CompanyTemplateDefinition = {
       templateVersion: "1.0.0",
       domain: "readersbase-publishing",
       bridge: "readersbase",
+      runtimePosture: codexRuntimePosture,
     },
   },
   agents,
@@ -317,5 +353,6 @@ export const READERSBASE_PUBLISHING_TEMPLATE: CompanyTemplateDefinition = {
       note: READERSBASE_CURRENT_FICTION_PRIORITY_NOTE,
     },
     bridgeBoundary: "metadata-only; live ReadersBase taxonomy/catalog mutation is deferred to a future bridge adapter",
+    runtimePosture: codexRuntimePosture,
   },
 };

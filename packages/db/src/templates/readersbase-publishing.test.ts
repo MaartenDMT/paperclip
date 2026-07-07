@@ -62,6 +62,31 @@ describe("READERSBASE_PUBLISHING_TEMPLATE", () => {
     );
   });
 
+  it("configures Codex Local with the current lean ReadersBase runtime posture", () => {
+    const publisher = READERSBASE_PUBLISHING_TEMPLATE.agents.find((agent) => agent.slug === "publisher-in-chief");
+
+    expect(publisher?.adapterType).toBe("codex_local");
+    expect(publisher?.adapterConfig).toMatchObject({
+      model: "gpt-5.5",
+      modelReasoningEffort: "medium",
+      paperclipSkillSync: { desiredSkills: ["paperclip"] },
+    });
+    expect(publisher?.adapterConfig.extraArgs).toEqual([
+      "-c",
+      "mcp_servers.MCP_DOCKER.enabled=false",
+      "-c",
+      "mcp_servers.gimp_mcp.enabled=false",
+    ]);
+    expect(publisher?.runtimeConfig).toMatchObject({
+      heartbeat: { enabled: true, wakeOnDemand: true },
+    });
+    expect(publisher?.metadata?.runtimePosture).toMatchObject({
+      adapterType: "codex_local",
+      model: "gpt-5.5",
+      hermes: expect.stringContaining("plugin-only"),
+    });
+  });
+
   it("routes priority work to long-form and governed publishing owners", () => {
     const researchPhase = READERSBASE_PUBLISHING_TEMPLATE.campaignTemplates[0].phases.find((phase) => phase.slug === "research");
     const publishingPhase = READERSBASE_PUBLISHING_TEMPLATE.campaignTemplates[0].phases.find((phase) => phase.slug === "publishing");
@@ -83,7 +108,12 @@ describe("READERSBASE_PUBLISHING_TEMPLATE", () => {
         "pilot-ashen-observatory-research-brief",
       ]),
     );
-    expect(documents.find((document) => document.slug === "company-operating-manual")?.body).toContain("Do not mutate ReadersBase");
+    const manual = documents.find((document) => document.slug === "company-operating-manual")?.body ?? "";
+
+    expect(manual).toContain("Do not mutate ReadersBase");
+    expect(manual).toContain("Default model routing is `gpt-5.5` with `modelReasoningEffort: medium`");
+    expect(manual).toContain("Hermes is optional for this fork");
+    expect(manual).toContain("Use ask work mode");
     expect(documents.find((document) => document.slug === "phase-research-plan")?.scope).toBe("campaign_phase_plan");
     expect(documents.find((document) => document.slug === "pilot-ashen-observatory-research-brief")?.documentKey).toBe("pilot-brief");
   });
