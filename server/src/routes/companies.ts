@@ -1,6 +1,12 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  createDrizzleCompanyTemplateMaterializerStore,
+  materializeReadersBasePublishingPilot,
+  READERSBASE_DEEP_FICTION_PILOT,
+  READERSBASE_PUBLISHING_TEMPLATE,
+} from "@paperclipai/db/templates/index";
+import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -89,6 +95,33 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
   }
 
+  function buildReadersBaseTemplateInstallSummary() {
+    const template = READERSBASE_PUBLISHING_TEMPLATE;
+    const firstPilotIssueSpecs = READERSBASE_DEEP_FICTION_PILOT.firstRunSequence.map((phaseSlug) => {
+      const phase = template.campaignTemplates[0].phases.find((candidate) => candidate.slug === phaseSlug);
+      return {
+        slug: `${READERSBASE_DEEP_FICTION_PILOT.campaignTemplateSlug}:${phaseSlug}`,
+        phaseSlug,
+        title: phase?.title ?? phaseSlug,
+        assigneeRoleSlug: phase?.ownerAgentSlug,
+        requiredArtifactKeys: phase?.requiredArtifactKeys ?? [],
+      };
+    });
+
+    return {
+      company: {
+        name: template.company.name,
+        issuePrefix: template.company.issuePrefix,
+      },
+      agents: template.agents.length,
+      projects: template.projects.length,
+      phases: template.campaignTemplates[0].phases.length,
+      artifactContracts: template.artifactContracts.length,
+      documents: template.documents?.length ?? 0,
+      firstPilotIssueSpecs,
+    };
+  }
+
   router.get("/", async (req, res) => {
     assertBoard(req);
     const result = await svc.list();
@@ -169,6 +202,49 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     await assertCanManagePortability(req, companyId, "exports");
     const result = await portability.exportBundle(companyId, req.body);
     res.json(result);
+  });
+
+  router.post("/templates/:templateSlug/install", async (req, res) => {
+    assertBoard(req);
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+      throw forbidden("Instance admin required");
+    }
+
+    const templateSlug = req.params.templateSlug as string;
+    if (templateSlug !== READERSBASE_PUBLISHING_TEMPLATE.slug) {
+      res.status(404).json({ error: "Company template not found" });
+      return;
+    }
+
+    const dryRun = req.body?.dryRun !== false;
+    const store = createDrizzleCompanyTemplateMaterializerStore(db);
+    const result = await materializeReadersBasePublishingPilot(store, { dryRun });
+    const response = {
+      ...result,
+      summary: buildReadersBaseTemplateInstallSummary(),
+    };
+
+    if (!dryRun && response.companyId) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: response.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company_template.installed",
+        entityType: "company",
+        entityId: response.companyId,
+        details: {
+          templateSlug,
+          templateVersion: response.templateVersion,
+          createdCount: response.created.length,
+          skippedCount: response.skipped.length,
+        },
+      });
+    }
+
+    res.json(response);
   });
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
