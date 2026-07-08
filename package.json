@@ -9,6 +9,7 @@
     "dev:once": "tsx scripts/dev-runner.ts dev",
     "dev:list": "tsx scripts/dev-service.ts list",
     "dev:stop": "tsx scripts/dev-service.ts stop",
+    "test:dev-runner-config": "node --test scripts/verify-dev-runner-config.test.mjs",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "storybook": "pnpm --filter @paperclipai/ui storybook",
@@ -56,19 +57,12 @@
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4",
-  "pnpm": {
-    "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
-    },
-    "overrides": {
-      "rollup": ">=4.59.0"
-    }
-  }
+  "packageManager": "pnpm@9.15.4"
 }

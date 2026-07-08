@@ -706,8 +706,11 @@ async function inspectMigrationsOnce(url: string): Promise<MigrationState> {
   }
 }
 
-export async function inspectMigrations(url: string): Promise<MigrationState> {
-  const deadline = Date.now() + POSTGRES_STARTUP_READY_TIMEOUT_MS;
+export async function inspectMigrations(
+  url: string,
+  options: { startupReadyTimeoutMs?: number } = {},
+): Promise<MigrationState> {
+  const deadline = Date.now() + (options.startupReadyTimeoutMs ?? POSTGRES_STARTUP_READY_TIMEOUT_MS);
   let attempt = 0;
   while (true) {
     try {
