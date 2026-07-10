@@ -3,6 +3,7 @@ import type { CompanyStatus, PauseReason } from "../constants.js";
 export interface Company {
   id: string;
   name: string;
+  maosCompanyId: string | null;
   description: string | null;
   status: CompanyStatus;
   pauseReason: PauseReason | null;

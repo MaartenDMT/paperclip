@@ -135,4 +135,14 @@ describeEmbeddedPostgres("goalService", () => {
     await expect(svc.update(goal.id, { parentId: fixture.otherCompanyGoalId })).rejects.toMatchObject({ status: 422 });
     await expect(svc.update(goal.id, { ownerAgentId: fixture.otherCompanyAgentId })).rejects.toMatchObject({ status: 422 });
   });
+
+  it("persists an optional MAOS system binding on a company goal", async () => {
+    const fixture = await seedFixture();
+    const goal = await goalService(db).create(fixture.companyId, {
+      title: "Improve qualified product discovery",
+      maosSystemId: "marketing",
+    });
+
+    expect(goal.maosSystemId).toBe("marketing");
+  });
 });

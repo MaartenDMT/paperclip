@@ -15,6 +15,7 @@ export const goals = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     title: text("title").notNull(),
+    maosSystemId: text("maos_system_id"),
     description: text("description"),
     level: text("level").notNull().default("task"),
     status: text("status").notNull().default("planned"),
