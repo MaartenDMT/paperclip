@@ -3,6 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+function runPnpm(args: string[], cwd: string): void {
+  if (process.platform === "win32") {
+    execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm", ...args], {
+      cwd,
+      stdio: "pipe",
+    });
+    return;
+  }
+
+  execFileSync("pnpm", args, { cwd, stdio: "pipe" });
+}
+
 const VALID_TEMPLATES = ["default", "connector", "workspace", "environment"] as const;
 type PluginTemplate = (typeof VALID_TEMPLATES)[number];
 const VALID_CATEGORIES = new Set(["connector", "workspace", "automation", "ui", "environment"] as const);
@@ -103,8 +115,8 @@ function packLocalPackage(packagePath: string, outputDir: string): string {
   const sdkBundleDir = path.join(outputDir, ".paperclip-sdk");
 
   fs.mkdirSync(sdkBundleDir, { recursive: true });
-  execFileSync("pnpm", ["build"], { cwd: packagePath, stdio: "pipe" });
-  execFileSync("pnpm", ["pack", "--pack-destination", sdkBundleDir], { cwd: packagePath, stdio: "pipe" });
+  runPnpm(["build"], packagePath);
+  runPnpm(["pack", "--pack-destination", sdkBundleDir], packagePath);
 
   const tarballPath = path.join(sdkBundleDir, tarballFileName);
   if (!fs.existsSync(tarballPath)) {
