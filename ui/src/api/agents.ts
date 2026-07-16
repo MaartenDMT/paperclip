@@ -16,6 +16,7 @@ import type {
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
+  ManagerOverview,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -99,6 +100,10 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
+  managerOverview: (companyId: string, managerAgentId: string) =>
+    api.get<ManagerOverview>(
+      `/companies/${encodeURIComponent(companyId)}/manager-overview?managerAgentId=${encodeURIComponent(managerAgentId)}`,
+    ),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
   get: async (id: string, companyId?: string) => {

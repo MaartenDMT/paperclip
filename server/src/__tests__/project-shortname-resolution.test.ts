@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProjectNameForUniqueShortname } from "../services/projects.ts";
+import { defaultExecutionWorkspacePolicyForCodebase, resolveProjectNameForUniqueShortname } from "../services/projects.ts";
 
 describe("resolveProjectNameForUniqueShortname", () => {
   it("keeps name when shortname is not used", () => {
@@ -41,5 +41,28 @@ describe("resolveProjectNameForUniqueShortname", () => {
       { id: "p1", name: "growth" },
     ]);
     expect(resolved).toBe("!!!");
+  });
+});
+
+describe("defaultExecutionWorkspacePolicyForCodebase", () => {
+  it("defaults Git-backed codebases to isolated worktree execution", () => {
+    expect(defaultExecutionWorkspacePolicyForCodebase({
+      repoUrl: "https://github.com/example/project.git",
+      sourceType: "git_repo",
+    })).toEqual({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+      allowIssueOverride: true,
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+    });
+  });
+
+  it("does not force isolated worktrees for plain local folders", () => {
+    expect(defaultExecutionWorkspacePolicyForCodebase({
+      cwd: "A:/tmp/plain-folder",
+      sourceType: "local_path",
+    })).toBeNull();
   });
 });

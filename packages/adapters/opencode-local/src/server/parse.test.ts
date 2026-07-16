@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, hasOpenCodeTerminalResult, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,21 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects terminal step output without treating tool-call steps as terminal", () => {
+    expect(
+      hasOpenCodeTerminalResult({
+        stdout: JSON.stringify({ type: "step_finish", part: { reason: "tool-calls" } }),
+      }),
+    ).toBe(false);
+    expect(
+      hasOpenCodeTerminalResult({
+        stdout: [
+          JSON.stringify({ type: "step_finish", part: { reason: "tool-calls" } }),
+          JSON.stringify({ type: "step_finish", part: { reason: "stop" } }),
+        ].join("\n"),
+      }),
+    ).toBe(true);
   });
 });

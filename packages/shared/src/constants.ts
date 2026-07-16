@@ -37,8 +37,10 @@ export const AGENT_ADAPTER_TYPES = [
   "grok_local",
   "hermes_gateway",
   "hermes_local",
+  "minimax_local",
   "opencode_local",
   "pi_local",
+  "zai_local",
   "cursor",
   "openclaw_gateway",
 ] as const;
@@ -75,7 +77,35 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
+export const AGENT_COORDINATION_MAX_CONCURRENT_RUNS = 2;
+export const AGENT_COORDINATION_ROLES = ["ceo", "cto", "cmo", "cfo", "pm", "manager"] as const;
+
+export function defaultAgentMaxConcurrentRuns(input: {
+  role?: unknown;
+  title?: unknown;
+  name?: unknown;
+} = {}) {
+  const role = typeof input.role === "string" ? input.role.trim().toLowerCase() : "";
+  const title = typeof input.title === "string" ? input.title.trim().toLowerCase() : "";
+  const name = typeof input.name === "string" ? input.name.trim().toLowerCase() : "";
+  const hasExecutiveTitle =
+    title.includes("chief executive officer") ||
+    title.includes("chief technology officer") ||
+    title.includes("chief marketing officer") ||
+    title.includes("chief financial officer");
+  if (
+    (AGENT_COORDINATION_ROLES as readonly string[]).includes(role) ||
+    (AGENT_COORDINATION_ROLES as readonly string[]).includes(name) ||
+    hasExecutiveTitle ||
+    title.includes("coordinator") ||
+    name.includes("coordinator") ||
+    title.includes("manager")
+  ) {
+    return AGENT_COORDINATION_MAX_CONCURRENT_RUNS;
+  }
+  return AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+}
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 // Config keys owned by Paperclip/company state rather than one concrete adapter.
@@ -92,7 +122,7 @@ export const ADAPTER_AGNOSTIC_KEYS = [
 ] as const;
 export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
 
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
+export const MODEL_PROFILE_KEYS = ["cheap", "fallback"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [
@@ -249,6 +279,7 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_confirmation",
   "request_checkbox_confirmation",
   "request_item_verdicts",
+  "agent_meeting",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
@@ -487,6 +518,20 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const CAMPAIGN_STATUSES = ["draft", "active", "paused", "completed", "cancelled", "archived"] as const;
+export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
+
+export const CAMPAIGN_PHASE_STATUSES = [
+  "planning",
+  "in_review",
+  "revision_requested",
+  "approved",
+  "executing",
+  "completed",
+  "cancelled",
+] as const;
+export type CampaignPhaseStatus = (typeof CAMPAIGN_PHASE_STATUSES)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -595,6 +640,7 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  "campaign_phase_plan",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 

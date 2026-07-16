@@ -1,6 +1,6 @@
 import type { IssuePriority, IssueStatus } from "../constants.js";
 
-export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "artifacts", "agents", "projects"] as const;
+export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "artifacts", "agents", "projects", "campaigns"] as const;
 export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
 
 export const COMPANY_SEARCH_SORTS = ["relevance", "updated", "created", "priority"] as const;
@@ -9,7 +9,7 @@ export type CompanySearchSort = (typeof COMPANY_SEARCH_SORTS)[number];
 export const COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS = ["24h", "7d", "30d", "90d"] as const;
 export type CompanySearchUpdatedWithinOption = (typeof COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS)[number];
 
-export type CompanySearchResultType = "issue" | "artifact" | "agent" | "project";
+export type CompanySearchResultType = "issue" | "artifact" | "agent" | "project" | "campaign";
 export type CompanySearchCountType = CompanySearchResultType | "comment" | "document";
 export type CompanySearchIssueFilterKey =
   | "status"
@@ -20,7 +20,6 @@ export type CompanySearchIssueFilterKey =
   | "priority"
   | "updatedWithin"
   | "updatedAfter";
-
 export interface CompanySearchHighlight {
   start: number;
   end: number;

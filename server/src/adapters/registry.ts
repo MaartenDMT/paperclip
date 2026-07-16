@@ -87,6 +87,49 @@ import {
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
 import {
+  detectModel as kimiDetectModel,
+  execute as kimiExecute,
+  sessionCodec as kimiSessionCodec,
+  testEnvironment as kimiTestEnvironment,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+  modelProfiles as kimiModelProfiles,
+} from "@paperclipai/adapter-kimi-local";
+import {
+  detectModel as minimaxDetectModel,
+  execute as minimaxExecute,
+  getQuotaWindows as minimaxGetQuotaWindows,
+  listMiniMaxModels,
+  testEnvironment as minimaxTestEnvironment,
+} from "@paperclipai/adapter-minimax-local/server";
+import {
+  agentConfigurationDoc as minimaxAgentConfigurationDoc,
+  models as minimaxModels,
+  modelProfiles as minimaxModelProfiles,
+} from "@paperclipai/adapter-minimax-local";
+import {
+  detectModel as zaiDetectModel,
+  execute as zaiExecute,
+  testEnvironment as zaiTestEnvironment,
+} from "@paperclipai/adapter-zai-local/server";
+import {
+  agentConfigurationDoc as zaiAgentConfigurationDoc,
+  models as zaiModels,
+  modelProfiles as zaiModelProfiles,
+} from "@paperclipai/adapter-zai-local";
+import {
+  detectModel as copilotLocalDetectModel,
+  execute as copilotLocalExecute,
+  testEnvironment as copilotLocalTestEnvironment,
+} from "@paperclipai/adapter-copilot-local/server";
+import {
+  agentConfigurationDoc as copilotLocalAgentConfigurationDoc,
+  models as copilotLocalModels,
+  modelProfiles as copilotLocalModelProfiles,
+} from "@paperclipai/adapter-copilot-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -370,6 +413,93 @@ const grokLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
 const hermesLocalAdapter = createHermesLocalServerAdapter();
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  modelProfiles: kimiModelProfiles,
+  detectModel: kimiDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "kimi");
+    const canSelfInstall = !hasPathSeparator(command) && command === "kimi";
+    return {
+      command,
+      detectCommand: command,
+      installCommand: canSelfInstall
+        ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then if command -v uv >/dev/null 2>&1; then uv tool install --python 3.13 kimi-cli; else curl -LsSf https://code.kimi.com/install.sh | bash; fi; fi`
+        : null,
+    };
+  },
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
+const minimaxLocalAdapter: ServerAdapterModule = {
+  type: "minimax_local",
+  execute: minimaxExecute,
+  testEnvironment: minimaxTestEnvironment,
+  listSkills: listOpenCodeSkills,
+  syncSkills: syncOpenCodeSkills,
+  sessionCodec: openCodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("minimax_local") ?? undefined,
+  models: minimaxModels,
+  listModels: listMiniMaxModels,
+  modelProfiles: minimaxModelProfiles,
+  detectModel: minimaxDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "opencode");
+    return buildNpmRuntimeCommandSpec(
+      { ...config, command: command === "mmx" ? "opencode" : command },
+      "opencode",
+      "opencode-ai",
+    );
+  },
+  agentConfigurationDoc: minimaxAgentConfigurationDoc,
+  getQuotaWindows: minimaxGetQuotaWindows,
+};
+
+const zaiLocalAdapter: ServerAdapterModule = {
+  type: "zai_local",
+  execute: zaiExecute,
+  testEnvironment: zaiTestEnvironment,
+  listSkills: listOpenCodeSkills,
+  syncSkills: syncOpenCodeSkills,
+  sessionCodec: openCodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("zai_local") ?? undefined,
+  models: zaiModels,
+  modelProfiles: zaiModelProfiles,
+  detectModel: zaiDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
+  agentConfigurationDoc: zaiAgentConfigurationDoc,
+};
+
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotLocalExecute,
+  testEnvironment: copilotLocalTestEnvironment,
+  models: copilotLocalModels,
+  modelProfiles: copilotLocalModelProfiles,
+  detectModel: copilotLocalDetectModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: copilotLocalAgentConfigurationDoc,
+};
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
@@ -444,6 +574,11 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     grokLocalAdapter,
     hermesGatewayAdapter,
+    kimiLocalAdapter,
+    minimaxLocalAdapter,
+    zaiLocalAdapter,
+    copilotLocalAdapter,
+    openclawGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,

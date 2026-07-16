@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -1664,6 +1666,19 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const issueId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const runtimeServiceId = randomUUID();
+  it("archives only stale shared project workspace sessions with no active issue or runtime service", async () => {
+    const now = new Date("2026-05-24T12:00:00.000Z");
+    const stale = new Date(now.getTime() - 49 * 60 * 60 * 1000);
+    const recent = new Date(now.getTime() - 30 * 60 * 1000);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const staleDoneWorkspaceId = randomUUID();
+    const staleOpenWorkspaceId = randomUUID();
+    const staleOpenSourceWorkspaceId = randomUUID();
+    const recentDoneWorkspaceId = randomUUID();
+    const isolatedDoneWorkspaceId = randomUUID();
+    const runningServiceWorkspaceId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -2238,6 +2253,106 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       },
     ]);
     await db.insert(workspaceRuntimeServices).values([
+      name: "Workspace cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/paperclip-primary",
+    });
+
+    const baseWorkspace = {
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      strategyType: "project_primary",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-primary",
+      status: "active",
+      openedAt: stale,
+      createdAt: stale,
+      updatedAt: stale,
+    };
+    await db.insert(executionWorkspaces).values([
+      {
+        ...baseWorkspace,
+        id: staleDoneWorkspaceId,
+        mode: "shared_workspace",
+        name: "Stale done shared workspace",
+        lastUsedAt: stale,
+      },
+      {
+        ...baseWorkspace,
+        id: staleOpenWorkspaceId,
+        mode: "shared_workspace",
+        name: "Stale open shared workspace",
+        lastUsedAt: stale,
+      },
+      {
+        ...baseWorkspace,
+        id: staleOpenSourceWorkspaceId,
+        mode: "shared_workspace",
+        name: "Stale open source shared workspace",
+        lastUsedAt: stale,
+      },
+      {
+        ...baseWorkspace,
+        id: recentDoneWorkspaceId,
+        mode: "shared_workspace",
+        name: "Recent done shared workspace",
+        lastUsedAt: recent,
+      },
+      {
+        ...baseWorkspace,
+        id: isolatedDoneWorkspaceId,
+        mode: "isolated_workspace",
+        name: "Stale isolated workspace",
+        lastUsedAt: stale,
+      },
+      {
+        ...baseWorkspace,
+        id: runningServiceWorkspaceId,
+        mode: "shared_workspace",
+        name: "Stale running service workspace",
+        lastUsedAt: stale,
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        title: "Done issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: staleDoneWorkspaceId,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        title: "Open issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId: staleOpenWorkspaceId,
+      },
+      {
+        id: staleOpenSourceWorkspaceId,
+        companyId,
+        projectId,
+        title: "Open source issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId: null,
+      },
       {
         id: randomUUID(),
         companyId,
@@ -2255,6 +2370,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         provider: "local_process",
         healthStatus: "healthy",
         updatedAt: new Date("2026-06-03T10:06:00.000Z"),
+        title: "Recent done issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: recentDoneWorkspaceId,
       },
       {
         id: randomUUID(),
@@ -2423,6 +2542,78 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(archivedOnly.total).toBe(1);
     expect(archivedOnly.items.map((item) => item.workspaceId)).toEqual([archivedWorkspaceId]);
+        title: "Isolated done issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: isolatedDoneWorkspaceId,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        title: "Running service done issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: runningServiceWorkspaceId,
+      },
+    ]);
+    await db.insert(workspaceRuntimeServices).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: runningServiceWorkspaceId,
+      scopeType: "execution_workspace",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      provider: "local_process",
+      lastUsedAt: stale,
+      startedAt: stale,
+    });
+
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: staleOpenSourceWorkspaceId })
+      .where(eq(executionWorkspaces.id, staleOpenSourceWorkspaceId));
+
+    const result = await svc.reconcileStaleSharedWorkspaces({ now, staleAfterMs: 48 * 60 * 60 * 1000 });
+
+    expect(result).toMatchObject({ archived: 2, detachedIssues: 1 });
+
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [
+        staleDoneWorkspaceId,
+        staleOpenWorkspaceId,
+        staleOpenSourceWorkspaceId,
+        recentDoneWorkspaceId,
+        isolatedDoneWorkspaceId,
+        runningServiceWorkspaceId,
+      ]));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(byId.get(staleDoneWorkspaceId)).toMatchObject({ status: "archived", closedAt: now });
+    expect(byId.get(staleOpenWorkspaceId)?.status).toBe("active");
+    expect(byId.get(staleOpenSourceWorkspaceId)).toMatchObject({ status: "archived", closedAt: now });
+    expect(byId.get(recentDoneWorkspaceId)?.status).toBe("active");
+    expect(byId.get(isolatedDoneWorkspaceId)?.status).toBe("active");
+    expect(byId.get(runningServiceWorkspaceId)?.status).toBe("active");
+
+    const linkedIssues = await db
+      .select({
+        title: issues.title,
+        executionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issues);
+    const issueByTitle = new Map(linkedIssues.map((issue) => [issue.title, issue.executionWorkspaceId]));
+    expect(issueByTitle.get("Done issue")).toBeNull();
+    expect(issueByTitle.get("Open issue")).toBe(staleOpenWorkspaceId);
   });
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {

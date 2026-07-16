@@ -84,7 +84,7 @@ const CSS_PATH = resolve(UI_SRC, "index.css");
 function loadAllowlist(cssPath) {
   const css = readFileSync(cssPath, "utf8");
   const entries = [];
-  const lineRe = /^\s*\*\s*allow\s+(\S+)\s+(?:—|-{1,2})\s*(.*)$/;
+  const lineRe = /^\s*\*\s*allow\s+(\S+)\s+(?:—|-{1,2})\s*(.*)\r?$/;
   for (const rawLine of css.split("\n")) {
     const m = rawLine.match(lineRe);
     if (m) {

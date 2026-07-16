@@ -38,11 +38,29 @@ import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
 export function resolveShell(): string {
-  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
   const shell = process.env.SHELL?.trim();
+  const fallback = resolveDefaultShell();
   if (!shell) return fallback;
   if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
   return shell;
+}
+
+function resolveDefaultShell(): string {
+  if (process.platform !== "win32") return "/bin/sh";
+
+  const candidates = [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "D:\\Program Files\\Git\\bin\\bash.exe",
+    "D:\\msys64\\usr\\bin\\bash.exe",
+    "C:\\msys64\\usr\\bin\\bash.exe",
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return "bash";
 }
 
 export interface ExecutionWorkspaceInput {
@@ -2191,7 +2209,7 @@ async function resolvePathForWorktreeComparison(value: string): Promise<string> 
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
   const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
   const paths = new Set<string>();
-  for (const line of output.split("\n")) {
+  for (const line of output.split(/\r?\n/)) {
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;

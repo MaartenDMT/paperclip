@@ -21,10 +21,15 @@ import type {
   IssueTreeHold,
   IssueWatchdog,
   IssueWorkProduct,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
+  MeetingWorkflowHealth,
+  MeetingWorkflowReconcileResult,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
+  WorkMeetingSummary,
 } from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
 
@@ -123,9 +128,11 @@ export const issuesApi = {
     filters: {
       attention: "blocked";
       status?: string;
+      projectId?: string;
+      goalId?: string;
+      parentId?: string;
       assigneeAgentId?: string;
       assigneeUserId?: string;
-      projectId?: string;
       labelId?: string;
       q?: string;
     },
@@ -136,6 +143,8 @@ export const issuesApi = {
     if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters.projectId) params.set("projectId", filters.projectId);
+    if (filters.goalId) params.set("goalId", filters.goalId);
+    if (filters.parentId) params.set("parentId", filters.parentId);
     if (filters.labelId) params.set("labelId", filters.labelId);
     if (filters.q) params.set("q", filters.q);
     return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
@@ -234,6 +243,52 @@ export const issuesApi = {
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
+  listWorkMeetings: (
+    companyId: string,
+    options?: {
+      limit?: number;
+      offset?: number;
+      status?: string;
+      agentId?: string;
+      expectedOutput?: string;
+      q?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set("limit", String(options.limit));
+    if (options?.offset) params.set("offset", String(options.offset));
+    if (options?.status) params.set("status", options.status);
+    if (options?.agentId) params.set("agentId", options.agentId);
+    if (options?.expectedOutput) params.set("expectedOutput", options.expectedOutput);
+    if (options?.q) params.set("q", options.q);
+    const qs = params.toString();
+    return api.get<WorkMeetingSummary[]>(`/companies/${companyId}/work-meetings${qs ? `?${qs}` : ""}`);
+  },
+  getWorkMeetingHealth: (companyId: string) =>
+    api.get<MeetingWorkflowHealth>(`/companies/${companyId}/work-meetings/health`),
+  reconcileWorkMeetings: (companyId: string) =>
+    api.post<MeetingWorkflowReconcileResult>(`/companies/${companyId}/work-meetings/reconcile`, {}),
+  contributeToMeeting: (meetingId: string, data: MeetingContributionPayload) =>
+    api.post<MeetingContributionSummary>(`/meetings/${meetingId}/contributions`, data),
+  linkWorkMeetingOutcome: (
+    companyId: string,
+    meetingId: string,
+    data: {
+      outcomeType:
+        | "action_item"
+        | "blocker"
+        | "workflow_correction"
+        | "memory_correction"
+        | "idea"
+        | "agent_performance_review";
+      index: number;
+      issueId: string;
+    },
+  ) =>
+    api.post<{ threadKind: "meeting" | "issue_interaction"; meetingId: string; issueId: string }>(
+      `/companies/${companyId}/work-meetings/${meetingId}/outcomes/link`,
+      data,
+    ),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

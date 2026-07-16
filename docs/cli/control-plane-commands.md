@@ -18,10 +18,10 @@ pnpm paperclipai issue get <issue-id-or-identifier>
 pnpm paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
 
 # Update issue
-pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."] [--blocked-by-issue-ids <id1,id2>|--clear-blockers] [--reopen|--resume]
 
 # Add comment
-pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
+pnpm paperclipai issue comment <issue-id> --body "..." [--reopen|--resume]
 
 # Checkout task
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id>

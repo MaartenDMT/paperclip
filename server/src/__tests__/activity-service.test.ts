@@ -7,6 +7,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunSkillEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -54,10 +55,11 @@ describeEmbeddedPostgres("activity service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-activity-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunSkillEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -213,6 +215,251 @@ describeEmbeddedPostgres("activity service", () => {
       nextAction: "Review the completed output.",
     });
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
+    expect(runs[0]?.skillActivations).toEqual([]);
+  });
+
+  it("includes skill activations on issue run ledger rows", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Agent",
+      adapterType: "codex",
+      mode: "build",
+      status: "idle",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wire skill chips",
+      body: "Show skills on runs",
+      status: "assigned",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(heartbeatRunSkillEvents).values([
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.skillActivations).toEqual([
+      {
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "SkillUse",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
+  });
+
+  it("returns skill activations for issue runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(heartbeatRunSkillEvents).values([
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        source: "adapter",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+      },
+      {
+        companyId,
+        runId,
+        agentId,
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "adapter",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+      },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.skillActivations).toEqual([
+      {
+        skillKey: "paperclip",
+        skillName: "paperclip",
+        activatedAt: new Date("2026-04-18T20:00:00.000Z"),
+        source: "adapter",
+      },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        activatedAt: new Date("2026-04-18T20:01:00.000Z"),
+        source: "adapter",
+      },
+    ]);
+  });
+
+  it("reports OpenCode-derived adapters as skill-sync and activation-telemetry capable", async () => {
+    const companyId = randomUUID();
+    const minimaxAgentId = randomUUID();
+    const zaiAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: minimaxAgentId,
+        companyId,
+        name: "MiniMax Writer",
+        role: "writer",
+        status: "idle",
+        adapterType: "minimax_local",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: ["paperclip"] } },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: zaiAgentId,
+        companyId,
+        name: "Z.ai QA",
+        role: "qa",
+        status: "idle",
+        adapterType: "zai_local",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: ["paperclip"] } },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const coverage = await activityService(db).skillCoverageForCompany(companyId);
+
+    expect(coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentName: "MiniMax Writer",
+        adapterSupportsSkillSync: true,
+        adapterSupportsActivationTelemetry: true,
+        runtimeSynced: true,
+      }),
+      expect.objectContaining({
+        agentName: "Z.ai QA",
+        adapterSupportsSkillSync: true,
+        adapterSupportsActivationTelemetry: true,
+        runtimeSynced: true,
+      }),
+    ]));
+  });
+
+  it("does not flag unsupported adapters as missing desired skills", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Kimi Frontend",
+      role: "engineer",
+      status: "idle",
+      adapterType: "kimi_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const coverage = await activityService(db).skillCoverageForCompany(companyId);
+
+    expect(coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentName: "Kimi Frontend",
+        adapterSupportsSkillSync: false,
+        missingDesiredSkills: false,
+      }),
+    ]));
   });
 
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {

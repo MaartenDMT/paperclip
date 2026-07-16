@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  defaultAgentMaxConcurrentRuns,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -938,12 +939,15 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
+function disableImportedTimerHeartbeat(
+  runtimeConfig: unknown,
+  agent?: { role?: unknown; title?: unknown; name?: unknown },
+) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = defaultAgentMaxConcurrentRuns(agent);
   }
   next.heartbeat = heartbeat;
   return next;
@@ -4672,34 +4676,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported with an empty managed bundle.`);
           }
 
-          // Apply adapter overrides from request if present
-          const adapterOverride = input.adapterOverrides?.[planAgent.slug];
-          const baseAdapterConfig = adapterOverride?.adapterConfig
-            ? { ...adapterOverride.adapterConfig }
-            : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
+        // Apply adapter overrides from request if present
+        const adapterOverride = input.adapterOverrides?.[planAgent.slug];
+        const baseAdapterConfig = adapterOverride?.adapterConfig
+          ? { ...adapterOverride.adapterConfig }
+          : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
-          const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
-          const normalizedAdapter = await prepareImportedAgentAdapter(
-            targetCompany.id,
-            adapterOverride?.adapterType ?? manifestAgent.adapterType,
-            baseAdapterConfig,
-            desiredSkills,
-            mode,
-          );
-          const patch = {
-            name: planAgent.plannedName,
+        const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
+        const normalizedAdapter = await prepareImportedAgentAdapter(
+          targetCompany.id,
+          adapterOverride?.adapterType ?? manifestAgent.adapterType,
+          baseAdapterConfig,
+          desiredSkills,
+          mode,
+        );
+        const patch = {
+          name: planAgent.plannedName,
+          role: manifestAgent.role,
+          title: manifestAgent.title,
+          icon: manifestAgent.icon,
+          capabilities: manifestAgent.capabilities,
+          reportsTo: null,
+          adapterType: normalizedAdapter.adapterType,
+          adapterConfig: normalizedAdapter.adapterConfig,
+          runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig, {
             role: manifestAgent.role,
             title: manifestAgent.title,
-            icon: manifestAgent.icon,
-            capabilities: manifestAgent.capabilities,
-            reportsTo: null,
-            adapterType: normalizedAdapter.adapterType,
-            adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
-            budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
-            permissions: manifestAgent.permissions,
-            metadata: manifestAgent.metadata,
-          };
+            name: planAgent.plannedName,
+          }),
+          budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
+          permissions: manifestAgent.permissions,
+          metadata: manifestAgent.metadata,
+        };
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
             let updated = await agents.update(planAgent.existingAgentId, patch);

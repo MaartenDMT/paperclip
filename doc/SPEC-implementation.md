@@ -217,6 +217,23 @@ Invariant:
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
+## 7.5.1 `campaigns`, `campaign_projects`, `campaign_phases`
+
+Campaigns are company-scoped Work section objects for reviewable, multi-phase work streams. They are not Projects. Projects remain operating domains such as Production, Remotion, and Social Media; campaigns can link one or more projects when a larger effort spans those domains.
+
+- `campaigns`: campaign identity, company, optional goal, optional lead agent, title, objective, status, creator/updater attribution, and archive timestamp
+- `campaign_projects`: many-to-many links between campaigns and projects within the same company
+- `campaign_phases`: ordered phase records with title/objective/status, plan and result document links, approval link, approved plan revision link, execution issue link, optional assignee, attribution, and start/complete timestamps
+
+Campaign status enum: `draft | active | paused | completed | cancelled | archived`.
+Campaign phase status enum: `planning | in_review | revision_requested | approved | executing | completed | cancelled`.
+
+Invariants:
+
+- campaign, linked projects, phases, documents, approvals, execution issues, and assignees must all belong to the same company
+- phase sequence numbers are unique within a campaign
+- phase plans and results are markdown documents, not a separate chat or execution system
+- approving a phase plan creates or reuses the phase execution issue; the generated issue remains the execution unit
 
 ## 7.6 `issues` (core task entity)
 
@@ -450,6 +467,7 @@ Operational policy:
 The current implementation includes additional V1-control-plane tables beyond the original February snapshot:
 
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
+- Campaigns: company-scoped Work section objects for reviewable, multi-phase work streams. Campaigns can span multiple projects, store phase plans/results as documents, use board approvals for phase plans, and create execution issues automatically when a phase plan is approved.
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
@@ -763,6 +781,20 @@ Request payload:
 ```
 
 Allowed states are `joined` and `left`. Endpoints require a concrete board user and active company membership, reject agent API keys, and only mutate the caller's own sidebar visibility state. Joining/leaving is idempotent; missing rows read as `joined`.
+## 10.6 Campaigns
+
+- `GET /companies/:companyId/campaigns`
+- `POST /companies/:companyId/campaigns`
+- `GET /campaigns/:campaignId`
+- `PATCH /campaigns/:campaignId`
+- `PUT /campaigns/:campaignId/projects`
+- `GET /campaigns/:campaignId/phases`
+- `POST /campaigns/:campaignId/phases`
+- `PATCH /campaign-phases/:phaseId`
+- `PUT /campaign-phases/:phaseId/plan`
+- `POST /campaign-phases/:phaseId/submit-plan`
+
+Campaign routes must enforce company access and write activity entries for mutating actions. Submitting a phase plan creates an `approval(type=campaign_phase_plan)` tied to the phase and current plan revision.
 
 ## 10.7 Approvals
 
@@ -808,11 +840,13 @@ The current app also exposes V1-supporting surfaces for:
 
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- campaigns, campaign/project links, phase plan document submission, and campaign-aware search
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
+- company-scoped control-plane recovery (`POST /companies/:companyId/control-plane/recovery/run`) for board users and same-company CEO agents to run stale-run cleanup, stranded issue recovery, and issue graph liveness normalization
 
 ## 11. Heartbeat and Adapter Contract
 
@@ -913,7 +947,20 @@ Board can bypass request flow and create agents directly via UI; direct create i
 
 Before first strategy approval, CEO may only draft tasks, not transition them to active execution states.
 
-## 12.3 Board Override
+## 12.3 Campaign Phase Plan Approval
+
+Campaign phase review uses the existing approvals system with `approval.type = campaign_phase_plan`.
+
+1. Board or agent creates a campaign and links zero or more projects.
+2. Board or agent creates a phase and writes/updates the phase plan document.
+3. The phase plan is submitted for review, creating a pending approval for the current plan revision.
+4. Board approves, rejects, or requests revision through the approval flow.
+5. Approval records the approved plan revision and creates or reuses the execution issue for that phase.
+6. Execution happens later through the generated issue; no second "start work" approval is required.
+
+Revision requests return the phase to `revision_requested` so the plan can be edited and resubmitted.
+
+## 12.4 Board Override
 
 Board can at any time:
 

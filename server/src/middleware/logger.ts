@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
@@ -21,6 +22,32 @@ const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
+const rotatingLogTransport = fileURLToPath(new URL("./rotating-log-transport.cjs", import.meta.url));
+
+function canWriteLogFile(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, "a");
+    fs.closeSync(fd);
+    return true;
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "unknown";
+    console.warn(`[paperclip] unable to open server log file (${code}); continuing with console logging only`);
+    return false;
+  }
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+const maxLogBytes = readPositiveIntEnv("PAPERCLIP_LOG_MAX_BYTES", 50 * 1024 * 1024);
+const maxLogFiles = readPositiveIntEnv("PAPERCLIP_LOG_MAX_FILES", 30);
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -28,22 +55,34 @@ const sharedOpts = {
   singleLine: true,
 };
 
+const transportTargets: pino.TransportTargetOptions[] = [
+  {
+    target: "pino-pretty",
+    options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+    level: "info",
+  },
+];
+
+if (canWriteLogFile(logFile)) {
+  transportTargets.push({
+    target: rotatingLogTransport,
+    options: {
+      ...sharedOpts,
+      colorize: false,
+      destination: logFile,
+      mkdir: true,
+      maxBytes: maxLogBytes,
+      maxFiles: maxLogFiles,
+    },
+    level: "debug",
+  });
+}
+
 export const logger = pino({
   level: "debug",
   redact: ["req.headers.authorization"],
 }, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
-    },
-  ],
+  targets: transportTargets,
 }));
 
 export const httpLogger = pinoHttp({

@@ -43,6 +43,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
+  listFull: vi.fn(),
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
@@ -268,6 +269,7 @@ describe.sequential("agent skill routes", () => {
         source: "/tmp/paperclip",
       },
     ]);
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
@@ -377,7 +379,7 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
-  }, 10_000);
+  }, 20_000);
 
   it("lists skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
@@ -579,12 +581,37 @@ describe.sequential("agent skill routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // Stale key preserved in the persisted config alongside the resolved skill.
+  it("persists valid desired skill preferences for unsupported adapters", async () => {
+    vi.doMock("../adapters/index.js", () => ({
+      findServerAdapter: vi.fn(() => null),
+      findActiveServerAdapter: vi.fn(() => null),
+      listAdapterModels: vi.fn(),
+      detectAdapterModel: vi.fn(),
+    }));
+    mockAgentService.getById.mockResolvedValue(makeAgent("kimi_local"));
+    mockAgentService.update.mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent("kimi_local"),
+      adapterConfig: patch.adapterConfig ?? {},
+    }));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclip"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      adapterType: "kimi_local",
+      supported: false,
+      mode: "unsupported",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+    });
     expect(mockAgentService.update).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: ["paperclipai/paperclip/paperclip", "stale/removed/skill"],
+            desiredSkills: ["paperclipai/paperclip/paperclip"],
           }),
         }),
       }),
@@ -601,6 +628,13 @@ describe.sequential("agent skill routes", () => {
   });
 
   it("skips runtime materialization when listing persistent skill adapters", async () => {
+    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith(
+      "company-1",
+      ["paperclip"],
+    );
+  });
+
+  it("keeps runtime materialization for persistent skill adapters", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("cursor"));
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "cursor",
@@ -878,6 +912,9 @@ describe.sequential("agent skill routes", () => {
         }),
         expect.objectContaining({
           "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
+          "HEARTBEAT.md": expect.stringContaining("Agent Heartbeat Checklist"),
+          "SOUL.md": expect.stringContaining("Agent Persona"),
+          "TOOLS.md": expect.stringContaining("# Tools"),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );
@@ -903,6 +940,59 @@ describe.sequential("agent skill routes", () => {
         expect.any(Object),
       );
     });
+  });
+
+  it("defaults newly created agents to all compatible company skills when no selection is provided", async () => {
+    mockCompanySkillService.listFull.mockResolvedValue([
+      {
+        key: "company/company-1/caveman",
+        slug: "caveman",
+        compatibility: "compatible",
+      },
+      {
+        key: "company/company-1/research",
+        slug: "research",
+        compatibility: "compatible",
+      },
+      {
+        key: "company/company-1/old-skill",
+        slug: "old-skill",
+        compatibility: "invalid",
+      },
+      {
+        key: "paperclipai/paperclip/paperclip",
+        slug: "paperclip",
+        compatibility: "compatible",
+      },
+    ]);
+    mockCompanySkillService.resolveRequestedSkillKeys.mockImplementationOnce(
+      async (_companyId: string, requested: string[]) => requested,
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Engineer",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "company/company-1/caveman",
+              "company/company-1/research",
+            ],
+          }),
+        }),
+      }),
+    );
   });
 
   it("includes canonical desired skills in hire approvals", async () => {

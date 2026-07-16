@@ -8,6 +8,7 @@ const MENTIONED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdentifier: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -43,8 +44,10 @@ vi.mock("../services/index.js", () => ({
     })),
     hasPermission: vi.fn(async () => true),
   }),
+  agentInstructionsService: () => ({}),
   agentService: () => ({
     getById: vi.fn(async () => null),
+    list: vi.fn(async () => []),
     resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
       ambiguous: false,
       agent: { id: raw },
@@ -115,8 +118,10 @@ function registerModuleMocks() {
       })),
       hasPermission: vi.fn(async () => true),
     }),
+    agentInstructionsService: () => ({}),
     agentService: () => ({
       getById: vi.fn(async () => null),
+      list: vi.fn(async () => []),
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
         ambiguous: false,
         agent: { id: raw },
@@ -190,7 +195,14 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: async () => [],
+      }),
+    }),
+  };
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -289,6 +301,11 @@ describe("issue update comment wakeups", () => {
       assigneeUserId: null,
       executionRunId: "run-1",
       status: "in_progress",
+  it("supports the company-scoped issue patch alias", async () => {
+    const existing = makeIssue();
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
     });
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
@@ -340,6 +357,28 @@ describe("issue update comment wakeups", () => {
       }),
     );
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      id: "comment-company-scope",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "write the company-scoped version",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/companies/${existing.companyId}/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        comment: "write the company-scoped version",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+      }),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -426,6 +465,11 @@ describe("issue update comment wakeups", () => {
       "stop here, I will take it",
     ));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+          commentId: "comment-company-scope",
+          mutation: "update",
+        }),
+      }),
+    );
   });
 
   it("wakes the assignee on comment-only issue updates", async () => {
@@ -472,6 +516,36 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  }, 20_000);
+
+  it("does not wake the assignee when an issue update comment closes the issue", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = {
+      ...existing,
+      status: "done",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "local fork path complete",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "local fork path complete",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the assignee on top-level board issue comments", async () => {
@@ -591,4 +665,36 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+  it("accepts identifier-based PATCH issue routes", async () => {
+    const existing = makeIssue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      identifier: "PC1A2-7",
+    });
+    const updated = {
+      ...existing,
+      priority: "high",
+    };
+    mockIssueService.getByIdentifier.mockResolvedValue(existing);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp()).patch("/api/issues/pc1a2-7").send({
+      priority: "high",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-7");
+    expect(mockIssueService.getById).toHaveBeenCalledWith(existing.id);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        priority: "high",
+      }),
+    );
+    expect(res.body).toMatchObject({
+      id: existing.id,
+      identifier: "PC1A2-7",
+      priority: "high",
+    });
+  }, 20_000);
 });

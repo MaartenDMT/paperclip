@@ -11,6 +11,7 @@ import type {
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
+  CompanyTemplateMaterializationResult,
 } from "@paperclipai/shared";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
@@ -86,6 +87,33 @@ interface CompanyImportOptions extends BaseClientOptions {
   yes?: boolean;
   dryRun?: boolean;
 }
+
+interface CompanyTemplateInstallOptions extends BaseClientOptions {
+  apply?: boolean;
+  yes?: boolean;
+}
+
+interface CompanyTemplateFirstPilotIssueSpecSummary {
+  slug: string;
+  phaseSlug?: string;
+  title?: string;
+  assigneeRoleSlug?: string;
+  requiredArtifactKeys?: string[];
+}
+
+interface CompanyTemplateInstallSummary {
+  company?: { name?: string; issuePrefix?: string };
+  agents?: number;
+  projects?: number;
+  phases?: number;
+  artifactContracts?: number;
+  documents?: number;
+  firstPilotIssueSpecs?: CompanyTemplateFirstPilotIssueSpecSummary[];
+}
+
+type CompanyTemplateInstallResult = CompanyTemplateMaterializationResult & {
+  summary?: CompanyTemplateInstallSummary;
+};
 
 const DEFAULT_EXPORT_INCLUDE: CompanyPortabilityInclude = {
   company: true,
@@ -791,6 +819,81 @@ export function resolveCompanyImportApplyConfirmationMode(input: {
   return "prompt";
 }
 
+export function resolveCompanyTemplateInstallApiPath(templateSlug: string): string {
+  const slug = templateSlug.trim();
+  if (!slug) {
+    throw new Error("Company template slug is required.");
+  }
+  return `/api/companies/templates/${encodeURIComponent(slug)}/install`;
+}
+
+export function resolveCompanyTemplateApplyConfirmationMode(input: {
+  apply?: boolean;
+  yes?: boolean;
+  interactive: boolean;
+  json: boolean;
+}): "skip" | "prompt" {
+  if (!input.apply) {
+    return "skip";
+  }
+  if (input.yes) {
+    return "skip";
+  }
+  if (input.json) {
+    throw new Error(
+      "Applying a company template with --json requires --yes. Run without --apply first to inspect the dry-run plan.",
+    );
+  }
+  if (!input.interactive) {
+    throw new Error(
+      "Applying a company template from a non-interactive terminal requires --yes. Run without --apply first to inspect the dry-run plan.",
+    );
+  }
+  return "prompt";
+}
+
+export function renderCompanyTemplateInstallResult(result: CompanyTemplateInstallResult): string {
+  const summary = result.summary;
+  const lines: string[] = [
+    `Template: ${result.templateSlug}@${result.templateVersion}`,
+    `Mode: ${result.applied ? "applied" : "dry-run"}`,
+  ];
+
+  if (summary?.company) {
+    const issuePrefix = summary.company.issuePrefix ? ` (${summary.company.issuePrefix})` : "";
+    lines.push(`Company: ${summary.company.name ?? "unknown"}${issuePrefix}`);
+  }
+  if (summary?.agents !== undefined) lines.push(`Agents: ${summary.agents}`);
+  if (summary?.projects !== undefined) lines.push(`Projects: ${summary.projects}`);
+  if (summary?.phases !== undefined) lines.push(`Phases: ${summary.phases}`);
+  if (summary?.artifactContracts !== undefined) lines.push(`Artifact contracts: ${summary.artifactContracts}`);
+  if (summary?.documents !== undefined) lines.push(`Documents: ${summary.documents}`);
+  if (summary?.firstPilotIssueSpecs !== undefined) {
+    lines.push(`First pilot issue specs: ${summary.firstPilotIssueSpecs.length}`);
+    for (const issueSpec of summary.firstPilotIssueSpecs.slice(0, IMPORT_PREVIEW_SAMPLE_LIMIT)) {
+      const phase = issueSpec.phaseSlug ? ` (${issueSpec.phaseSlug})` : "";
+      const title = issueSpec.title ? ` - ${issueSpec.title}` : "";
+      lines.push(`- ${issueSpec.slug}${phase}${title}`);
+    }
+    if (summary.firstPilotIssueSpecs.length > IMPORT_PREVIEW_SAMPLE_LIMIT) {
+      lines.push(`- +${summary.firstPilotIssueSpecs.length - IMPORT_PREVIEW_SAMPLE_LIMIT} more`);
+    }
+  }
+
+  lines.push(`Planned actions: ${result.plan.actions.length}`);
+  if (result.created.length > 0) lines.push(`Created: ${result.created.length}`);
+  if (result.updated.length > 0) lines.push(`Updated: ${result.updated.length}`);
+  if (result.skipped.length > 0) lines.push(`Skipped: ${result.skipped.length}`);
+  if (result.warnings.length > 0) {
+    lines.push("Warnings:");
+    for (const warning of result.warnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export function isHttpUrl(input: string): boolean {
   return /^https?:\/\//i.test(input.trim());
 }
@@ -1240,6 +1343,52 @@ export function registerCompanyCommands(program: Command): void {
   addCompanyJsonPost(company, "export:api", "Export a company through the raw API route", "exports");
   addCompanyJsonPost(company, "import:preview", "Preview a safe company import through the raw API route", "imports/preview");
   addCompanyJsonPost(company, "import:apply", "Apply a safe company import through the raw API route", "imports/apply");
+
+  addCommonClientOptions(
+    company
+      .command("template:install")
+      .description("Install a reusable company template (dry-run by default)")
+      .argument("<templateSlug>", "Template slug, for example readersbase-publishing")
+      .option("--apply", "Apply the template instead of only rendering the dry-run plan", false)
+      .option("--yes", "Confirm applying the template without an interactive prompt", false)
+      .action(async (templateSlug: string, opts: CompanyTemplateInstallOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const interactiveView = isInteractiveTerminal() && !ctx.json;
+          const apiPath = resolveCompanyTemplateInstallApiPath(templateSlug);
+          const apply = Boolean(opts.apply);
+          const confirmationMode = resolveCompanyTemplateApplyConfirmationMode({
+            apply,
+            yes: opts.yes,
+            interactive: interactiveView,
+            json: ctx.json,
+          });
+          if (confirmationMode === "prompt") {
+            const confirmed = await p.confirm({
+              message: `Apply company template '${templateSlug.trim()}'?`,
+              initialValue: false,
+            });
+            if (p.isCancel(confirmed) || !confirmed) {
+              p.log.warn("Template install cancelled.");
+              return;
+            }
+          }
+
+          const result = await ctx.api.post<CompanyTemplateInstallResult>(apiPath, { dryRun: !apply });
+          if (!result) {
+            throw new Error("Company template install request returned no data.");
+          }
+          if (ctx.json) {
+            printOutput(result, { json: true });
+          } else {
+            console.log(renderCompanyTemplateInstallResult(result));
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
 
   addCommonClientOptions(
     company

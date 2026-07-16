@@ -55,7 +55,11 @@
     "dotenv": "^17.4.2",
     "commander": "^13.1.0",
     "embedded-postgres": "^18.1.0-beta.16",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "@paperclipai/adapter-kimi-local": "workspace:*",
+    "@paperclipai/adapter-minimax-local": "workspace:*",
+    "@paperclipai/adapter-zai-local": "workspace:*",
+    "@paperclipai/adapter-copilot-local": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.19.21",

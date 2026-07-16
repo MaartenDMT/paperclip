@@ -94,7 +94,7 @@ describe("cli telemetry", () => {
 
     expect(client).toBeNull();
     expect(fs.existsSync(path.join(root, "home", "instances", "telemetry-test", "telemetry", "state.json"))).toBe(false);
-  });
+  }, process.platform === "win32" ? 20_000 : 5_000);
 
   it("creates telemetry state only after the first event is tracked", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { retryTransientFilesystemError } from "./transient-fs.js";
 
 export type WorkspaceOperationLogStoreType = "local_file";
 
@@ -101,7 +102,7 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
       await ensureDir(relDir);
 
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      await retryTransientFilesystemError(() => fs.writeFile(absPath, "", "utf8"));
 
       return { store: "local_file", logRef: relPath };
     },
@@ -114,7 +115,7 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
         stream: event.stream,
         chunk: event.chunk,
       });
-      await fs.appendFile(absPath, `${line}\n`, "utf8");
+      await retryTransientFilesystemError(() => fs.appendFile(absPath, `${line}\n`, "utf8"));
     },
 
     async finalize(handle) {

@@ -104,6 +104,7 @@ describe.sequential("execution workspace routes", () => {
       issueId: undefined,
       status: undefined,
       reuseEligible: true,
+      limit: undefined,
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
@@ -387,6 +388,13 @@ describe.sequential("execution workspace routes", () => {
         wakeReason: "issue_recovery_action_restored",
         source: "execution_workspace.quarantine_restore",
       }),
+  it("passes a bounded list limit to the workspace service", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/execution-workspaces?summary=true&limit=9999");
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.listSummaries).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      limit: 500,
     }));
   });
 });

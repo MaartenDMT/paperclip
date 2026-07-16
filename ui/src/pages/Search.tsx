@@ -67,11 +67,12 @@ const SCOPE_LABELS: Record<CompanySearchScope, string> = {
   artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
+  campaigns: "Campaigns",
 };
 
-type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
+type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects" | "campaigns";
 
-const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
+const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "campaigns", "agents", "projects"];
 
 const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
   issues: "Tasks",
@@ -80,12 +81,14 @@ const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
   artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
+  campaigns: "Campaigns",
 };
 
 function classifyResult(result: CompanySearchResult): SubGroupKey {
   if (result.type === "artifact") return "artifacts";
   if (result.type === "agent") return "agents";
   if (result.type === "project") return "projects";
+  if (result.type === "campaign") return "campaigns";
   const matched = new Set(result.matchedFields);
   if (matched.has("title") || matched.has("identifier") || matched.has("description")) return "issues";
   if (matched.has("comment")) return "comments";
@@ -484,7 +487,7 @@ export function Search() {
     return () => window.removeEventListener("keydown", handler);
   }, [focusInput]);
 
-  const counts = data?.countsByType ?? { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 };
+  const counts = data?.countsByType ?? { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0, campaign: 0 };
   const totalResults = data?.results.length ?? 0;
   const allMatchTotal = data ? totalMatchCount(counts) : 0;
   const previewTotal = previewData ? totalMatchCount(previewData.countsByType) : null;
@@ -517,6 +520,11 @@ export function Search() {
       // Issue-only filters don't constrain agents/projects, so show a dash there
       // rather than an unfiltered count that would misrepresent the result set.
       const dashOut = filtersActive && (value === "agents" || value === "projects");
+      if (value === "all") count = (counts.issue ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0) + (counts.campaign ?? 0);
+      else if (value === "issues") count = issuesTotal;
+      else if (value === "agents") count = counts.agent ?? 0;
+      else if (value === "projects") count = counts.project ?? 0;
+      else if (value === "campaigns") count = counts.campaign ?? 0;
       return {
         value,
         label: (
@@ -607,7 +615,7 @@ export function Search() {
                 }
               }
             }}
-            placeholder="Search tasks, comments, documents, artifacts, agents, projects…"
+              placeholder="Search tasks, comments, documents, artifacts, campaigns, agents, projects…"
             aria-label="Search query"
             className="h-10 pl-9 pr-20 text-sm"
           />
@@ -808,6 +816,7 @@ function SearchTabContent({
           <h2 className="text-lg font-semibold">Type to search company memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Tasks, comments, plan documents, artifacts, agents, projects — same surface, ranked by relevance.
+            Issues, comments, plan documents, campaigns, agents, projects — same surface, ranked by relevance.
           </p>
         </div>
         {recentSearches.length > 0 ? (

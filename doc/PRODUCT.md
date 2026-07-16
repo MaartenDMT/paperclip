@@ -58,6 +58,8 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Campaigns are a Work section surface for large efforts that need board oversight before execution. A campaign is not a Project: Projects remain operating domains such as Production, Remotion, and Social Media, while one campaign can link one or more of those projects. Campaigns advance through reviewable phase plans: create campaign, create phase/plan, submit the plan for review, approve or request revision, then execute later through the generated issue after approval. Approval of the phase plan is the execution gate; there is no second "start work" approval.
+
 ## Principles
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Paperclip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.

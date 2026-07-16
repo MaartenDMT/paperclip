@@ -12,3 +12,23 @@ packages:
   - server
   - ui
   - cli
+
+auto-install-peers: true
+# Cross-drive symlinks from A:\pnpm-store into the project node_modules\.pnpm
+# fail silently on this Windows host, leaving node_modules empty after install.
+# The hoisted linker copies files and keeps local executable shims available.
+node-linker: hoisted
+verify-deps-before-run: false
+
+onlyBuiltDependencies:
+  - "@embedded-postgres/windows-x64"
+  - es5-ext
+  - esbuild
+  - sharp
+  - sqlite3
+
+overrides:
+  rollup: ">=4.59.0"
+
+patchedDependencies:
+  embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch

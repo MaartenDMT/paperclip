@@ -8,10 +8,25 @@ import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+import {
+  createCapturedOutputBuffer,
+  parseJsonCommandOutput,
+  parseJsonResponseWithLimit,
+} from "./dev-runner-output.ts";
+import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
+import { createCompatibleDevServiceIdentities, createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { resolvePaperclipEnvPath } from "../server/src/paths.ts";
+import { config as loadDotenv } from "dotenv";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
+  terminateLocalService,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
@@ -29,16 +44,48 @@ if (worktreeEnvBootstrap.missingEnv) {
   process.exit(1);
 }
 
+// Load the resolved Paperclip instance .env (e.g. DATABASE_URL) into the
+// environment BEFORE spawning the migration preflight and server child. The
+// worktree bootstrap above only covers a linked worktree's repo-local
+// .paperclip/.env; for the default instance, DATABASE_URL lives in the instance
+// .env. Without it the preflight's migration-status falls back to embedded
+// Postgres and can hang. override:false so shell/worktree values still win.
+loadDotenv({ path: resolvePaperclipEnvPath(), override: false, quiet: true });
+
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
+const commandTimeoutTerminationGraceMs = 2_000;
+const existingRunnerHealthGraceMs = Number.parseInt(
+  process.env.PAPERCLIP_DEV_EXISTING_RUNNER_HEALTH_GRACE_MS ?? "90000",
+  10,
+) || 90_000;
+const existingRunnerHealthTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_DEV_EXISTING_RUNNER_HEALTH_TIMEOUT_MS ?? "1500",
+  10,
+) || 1_500;
+const migrationStatusTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_MIGRATION_STATUS_TIMEOUT_MS ?? "300000",
+  10,
+) || 300_000;
+const migrationStatusRecoveryRetries = Number.parseInt(
+  process.env.PAPERCLIP_MIGRATION_STATUS_RECOVERY_RETRIES ?? "6",
+  10,
+) || 6;
+const pluginSdkBuildTimeoutMs = Number.parseInt(
+  process.env.PAPERCLIP_PLUGIN_SDK_BUILD_TIMEOUT_MS ?? "120000",
+  10,
+) || 120_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
+const require = createRequire(import.meta.url);
+const tsxCliPath = require.resolve("tsx/cli");
+const serverRoot = path.join(repoRoot, "server");
 
 const watchedDirectories = [
   "cli",
@@ -134,7 +181,7 @@ if (bindMode === "custom" && !bindHost) {
 
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE ?? "true",
 };
 
 if (mode === "dev") {
@@ -147,6 +194,7 @@ if (mode === "watch") {
   delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  env.PAPERCLIP_PLUGIN_DEV_WATCHER ??= "false";
 }
 
 if (tailscaleAuth || bindMode) {
@@ -190,20 +238,72 @@ const devService = createDevServiceIdentity({
   port: serverPort,
 });
 
-const existingRunner = await findAdoptableLocalService({
-  serviceKey: devService.serviceKey,
-  cwd: repoRoot,
-  envFingerprint: devService.envFingerprint,
+async function isExistingDevRunnerHealthy(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), existingRunnerHealthTimeoutMs);
+  try {
+    const response = await fetch(`${url.replace(/\/$/, "")}/api/health`, {
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+let existingRunner: Awaited<ReturnType<typeof findAdoptableLocalService>> | null = null;
+for (const candidate of createCompatibleDevServiceIdentities({
+  mode,
+  forwardedArgs,
+  networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
-});
+})) {
+  existingRunner = await findAdoptableLocalService({
+    serviceKey: candidate.serviceKey,
+    cwd: repoRoot,
+    envFingerprint: candidate.envFingerprint,
+    port: serverPort,
+    minAgeMsBeforeHealthCheck: existingRunnerHealthGraceMs,
+    healthCheck: async (record) => {
+      const url = record.url ?? (typeof record.metadata?.url === "string" ? record.metadata.url : null);
+      return typeof url === "string" && await isExistingDevRunnerHealthy(url);
+    },
+    onUnhealthyRecord: async (record) => {
+      console.warn(
+        `[paperclip] ${record.serviceName} registry entry is alive but health check failed; stopping stale runner (pid ${record.pid}${typeof record.metadata?.childPid === "number" ? `, child ${record.metadata.childPid}` : ""})`,
+      );
+      await terminateLocalService(record);
+    },
+  });
+  if (existingRunner) {
+    break;
+  }
+}
 if (existingRunner) {
   console.log(
-    `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
+    `[paperclip] ${existingRunner.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
   );
   process.exit(0);
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+
+function createSpawnOptions(
+  options: {
+    stdio?: "inherit" | ["ignore", "pipe", "pipe"];
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+  } = {},
+) {
+  return {
+    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+    env: options.env ?? process.env,
+    cwd: options.cwd,
+  } as const;
+}
+
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
 let pendingMigrations: string[] = [];
@@ -217,6 +317,7 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let migrationPreflightUnavailable = false;
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -307,48 +408,61 @@ function consumeDevServerRestartRequest() {
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
-  await writeLocalServiceRegistryRecord({
-    version: 1,
-    serviceKey: devService.serviceKey,
-    profileKind: "paperclip-dev",
-    serviceName: devService.serviceName,
-    command: "dev-runner.ts",
-    cwd: repoRoot,
-    envFingerprint: devService.envFingerprint,
-    port: serverPort,
-    url: `http://127.0.0.1:${serverPort}`,
-    pid: process.pid,
-    processGroupId: null,
-    provider: "local_process",
-    runtimeServiceId: null,
-    reuseKey: null,
-    startedAt: lastRestartAt ?? new Date().toISOString(),
-    lastSeenAt: new Date().toISOString(),
-    metadata: {
-      repoRoot,
-      mode,
-      childPid: child?.pid ?? null,
+  try {
+    await writeLocalServiceRegistryRecord({
+      version: 1,
+      serviceKey: devService.serviceKey,
+      profileKind: "paperclip-dev",
+      serviceName: devService.serviceName,
+      command: "dev-runner.ts",
+      cwd: repoRoot,
+      envFingerprint: devService.envFingerprint,
+      port: serverPort,
       url: `http://127.0.0.1:${serverPort}`,
-      ...extra,
-    },
-  });
+      pid: process.pid,
+      processGroupId: null,
+      provider: "local_process",
+      runtimeServiceId: null,
+      reuseKey: null,
+      startedAt: lastRestartAt ?? new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: {
+        repoRoot,
+        mode,
+        childPid: child?.pid ?? null,
+        url: `http://127.0.0.1:${serverPort}`,
+        ...extra,
+      },
+    });
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    if (code !== "EACCES" && code !== "EPERM") {
+      throw error;
+    }
+    console.warn(
+      `[paperclip] unable to write dev service registry (${code}); continuing without duplicate-start detection`,
+    );
+  }
 }
 
 async function runPnpm(args: string[], options: {
   stdio?: "inherit" | ["ignore", "pipe", "pipe"];
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  timeoutMs?: number;
 } = {}) {
   return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const spawned = spawn(pnpmBin, args, {
-      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-      env: options.env ?? process.env,
-      cwd: options.cwd,
+      ...createSpawnOptions(options),
       shell: process.platform === "win32",
     });
 
     const stdoutBuffer = createCapturedOutputBuffer();
     const stderrBuffer = createCapturedOutputBuffer();
+    const timeout = createCommandTimeout(spawned, options.timeoutMs);
 
     if (spawned.stdout) {
       spawned.stdout.on("data", (chunk) => {
@@ -363,6 +477,7 @@ async function runPnpm(args: string[], options: {
 
     spawned.on("error", reject);
     spawned.on("exit", (code, signal) => {
+      timeout?.clear();
       const stdout = stdoutBuffer.finish();
       const stderr = stderrBuffer.finish();
       resolve({
@@ -375,22 +490,122 @@ async function runPnpm(args: string[], options: {
   });
 }
 
+async function runNode(args: string[], options: {
+  stdio?: "inherit" | ["ignore", "pipe", "pipe"];
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  timeoutMs?: number;
+} = {}) {
+  return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const spawned = spawn(process.execPath, args, createSpawnOptions(options));
+
+    const stdoutBuffer = createCapturedOutputBuffer();
+    const stderrBuffer = createCapturedOutputBuffer();
+    const timeout = createCommandTimeout(spawned, options.timeoutMs);
+
+    if (spawned.stdout) {
+      spawned.stdout.on("data", (chunk) => {
+        stdoutBuffer.append(chunk);
+      });
+    }
+    if (spawned.stderr) {
+      spawned.stderr.on("data", (chunk) => {
+        stderrBuffer.append(chunk);
+      });
+    }
+
+    spawned.on("error", reject);
+    spawned.on("exit", (code, signal) => {
+      timeout?.clear();
+      const stdout = stdoutBuffer.finish();
+      const stderr = stderrBuffer.finish();
+      resolve({
+        code: code ?? 0,
+        signal,
+        stdout: stdout.text,
+        stderr: stderr.text,
+      });
+    });
+  });
+}
+
+function createCommandTimeout(spawned: ReturnType<typeof spawn>, timeoutMs: number | undefined) {
+  if (!timeoutMs || timeoutMs <= 0) return null;
+  const timeoutTimer = setTimeout(() => {
+    if (process.platform === "win32" && spawned.pid) {
+      const killer = spawn("taskkill.exe", ["/PID", String(spawned.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.on("error", () => {});
+      return;
+    }
+    spawned.kill("SIGTERM");
+    setTimeout(() => {
+      spawned.kill("SIGKILL");
+    }, commandTimeoutTerminationGraceMs).unref?.();
+  }, timeoutMs);
+  timeoutTimer.unref?.();
+  return {
+    clear() {
+      clearTimeout(timeoutTimer);
+    },
+  };
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryMigrationStatusAfterRecovery(status: { code: number; stdout: string; stderr: string }) {
+  if (status.code === 0) return false;
+  const output = `${status.stderr}\n${status.stdout}`.toLowerCase();
+  return output.includes("recovered embedded postgresql startup") ||
+    output.includes("stale shared-memory") ||
+    output.includes("pre-existing shared memory block is still in use");
+}
+
 async function getMigrationStatusPayload() {
-  const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
-    { env },
+  let status = await runNode(
+    [
+      tsxCliPath,
+      path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+      "--json",
+      "--keep-embedded-postgres",
+    ],
+    { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
   );
+  for (let attempt = 1; attempt <= migrationStatusRecoveryRetries && shouldRetryMigrationStatusAfterRecovery(status); attempt += 1) {
+    process.stderr.write(
+      `[paperclip] embedded PostgreSQL recovery interrupted migration preflight; retrying (${attempt}/${migrationStatusRecoveryRetries})\n`,
+    );
+    await delay(Math.min(5_000, 500 * attempt));
+    status = await runNode(
+      [
+        tsxCliPath,
+        path.join(repoRoot, "packages", "db", "src", "migration-status.ts"),
+        "--json",
+        "--keep-embedded-postgres",
+      ],
+      { env, cwd: repoRoot, timeoutMs: migrationStatusTimeoutMs },
+    );
+  }
   if (status.code !== 0) {
     process.stderr.write(
       status.stderr ||
         status.stdout ||
-        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+        `[paperclip] Command failed with code ${status.code}: node ${toRelativePath(tsxCliPath)} packages/db/src/migration-status.ts --json\n`,
     );
     process.exit(status.code);
   }
 
   try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
+    return parseJsonCommandOutput<{ status?: string; pendingMigrations?: string[] }>({
+      stdout: status.stdout,
+      stderr: status.stderr,
+      signal: status.signal,
+      commandDescription: "migration-status",
+    });
   } catch (error) {
     process.stderr.write(
       status.stderr ||
@@ -402,7 +617,27 @@ async function getMigrationStatusPayload() {
 }
 
 async function refreshPendingMigrations() {
-  const payload = await getMigrationStatusPayload();
+  if (migrationPreflightUnavailable && mode === "watch") {
+    pendingMigrations = [];
+    writeDevServerStatus();
+    return { status: "unknown", pendingMigrations: [] };
+  }
+  let payload: { status?: string; pendingMigrations?: string[] };
+  try {
+    payload = await getMigrationStatusPayload();
+  } catch (error) {
+    if (mode !== "watch" || process.env.PAPERCLIP_DEV_STRICT_MIGRATION_PREFLIGHT === "true") {
+      throw error;
+    }
+    const err = toError(error, "Migration preflight failed");
+    console.warn(
+      `[paperclip] migration preflight did not complete (${err.message}); continuing startup and letting the server perform migration checks.`,
+    );
+    migrationPreflightUnavailable = true;
+    pendingMigrations = [];
+    writeDevServerStatus();
+    return { status: "unknown", pendingMigrations: [] };
+  }
   pendingMigrations =
     payload.status === "needsMigrations" && Array.isArray(payload.pendingMigrations)
       ? payload.pendingMigrations.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
@@ -470,16 +705,30 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 }
 
 async function buildPluginSdk() {
+  const pluginSdkDistEntry = path.join(repoRoot, "packages", "plugins", "sdk", "dist", "index.js");
+  if (existsSync(pluginSdkDistEntry)) {
+    console.log(
+      `[paperclip] plugin sdk build already exists at ${path.relative(repoRoot, pluginSdkDistEntry)}; skipping prebuild`,
+    );
+    return;
+  }
+
   console.log("[paperclip] building plugin sdk...");
   const result = await runPnpm(
     ["--filter", "@paperclipai/plugin-sdk", "build"],
-    { stdio: "inherit" },
+    { stdio: "inherit", timeoutMs: pluginSdkBuildTimeoutMs },
   );
   if (result.signal) {
     exitForSignal(result.signal);
     return;
   }
   if (result.code !== 0) {
+    if (existsSync(pluginSdkDistEntry)) {
+      console.warn(
+        `[paperclip] plugin sdk build failed or timed out; continuing with existing ${path.relative(repoRoot, pluginSdkDistEntry)}`,
+      );
+      return;
+    }
     console.error("[paperclip] plugin sdk build failed");
     process.exit(result.code);
   }
@@ -490,6 +739,7 @@ async function markChildAsCurrent() {
   dirtyPaths = new Set();
   lastChangedAt = null;
   lastRestartAt = new Date().toISOString();
+  await updateDevServiceRecord();
   await refreshPendingMigrations();
   await updateDevServiceRecord();
 }
@@ -549,11 +799,22 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const command =
+    mode === "watch"
+      ? {
+          command: process.execPath,
+          args: [tsxCliPath, path.join(serverRoot, "scripts", "dev-watch.ts"), ...forwardedArgs],
+          cwd: serverRoot,
+        }
+      : {
+          command: process.execPath,
+          args: [tsxCliPath, path.join(serverRoot, "scripts", "start-server-launcher.ts"), ...forwardedArgs],
+          cwd: serverRoot,
+        };
   child = spawn(
-    pnpmBin,
-    ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    command.command,
+    command.args,
+    createSpawnOptions({ stdio: "inherit", env, cwd: command.cwd }),
   );
 
   childExitPromise = new Promise((resolve, reject) => {
@@ -570,7 +831,7 @@ async function startServerChild() {
           childPid: null,
           url: `http://127.0.0.1:${serverPort}`,
         },
-      });
+      }).catch(() => {});
       resolve({ code: code ?? 0, signal });
 
       if (restartInFlight || expected || shuttingDown) {

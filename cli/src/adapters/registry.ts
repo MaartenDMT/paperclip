@@ -7,6 +7,10 @@ import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
 import { formatStdoutEvent as printHermesGatewayStreamEvent } from "@paperclipai/hermes-paperclip-adapter/gateway/cli";
 import { printHermesStreamEvent } from "@paperclipai/hermes-paperclip-adapter/cli";
+import { printKimiStreamEvent } from "@paperclipai/adapter-kimi-local/cli";
+import { printMiniMaxStreamEvent } from "@paperclipai/adapter-minimax-local/cli";
+import { printZaiStreamEvent } from "@paperclipai/adapter-zai-local/cli";
+import { printCopilotLocalStreamEvent } from "@paperclipai/adapter-copilot-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
@@ -61,6 +65,24 @@ const hermesGatewayCLIAdapter: CLIAdapterModule = {
 const hermesLocalCLIAdapter: CLIAdapterModule = {
   type: "hermes_local",
   formatStdoutEvent: printHermesStreamEvent,
+const kimiLocalCLIAdapter: CLIAdapterModule = {
+  type: "kimi_local",
+  formatStdoutEvent: printKimiStreamEvent,
+};
+
+const minimaxLocalCLIAdapter: CLIAdapterModule = {
+  type: "minimax_local",
+  formatStdoutEvent: printMiniMaxStreamEvent,
+};
+
+const zaiLocalCLIAdapter: CLIAdapterModule = {
+  type: "zai_local",
+  formatStdoutEvent: printZaiStreamEvent,
+};
+
+const copilotLocalCLIAdapter: CLIAdapterModule = {
+  type: "copilot_local",
+  formatStdoutEvent: printCopilotLocalStreamEvent,
 };
 
 const openclawGatewayCLIAdapter: CLIAdapterModule = {
@@ -80,6 +102,10 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     grokLocalCLIAdapter,
     hermesGatewayCLIAdapter,
     hermesLocalCLIAdapter,
+    kimiLocalCLIAdapter,
+    minimaxLocalCLIAdapter,
+    zaiLocalCLIAdapter,
+    copilotLocalCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,

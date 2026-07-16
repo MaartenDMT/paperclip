@@ -1,4 +1,21 @@
 export {
+  companyTemplateAgentDefinitionSchema,
+  companyTemplateArtifactContractSchema,
+  companyTemplateArtifactKindSchema,
+  companyTemplateArtifactLifecycleStatusSchema,
+  companyTemplateArtifactReviewGateSchema,
+  companyTemplateCampaignDefinitionSchema,
+  companyTemplateCampaignPhaseDefinitionSchema,
+  companyTemplateCompanyDefinitionSchema,
+  companyTemplateDefinitionSchema,
+  companyTemplateDocumentDefinitionSchema,
+  companyTemplateDocumentScopeSchema,
+  companyTemplateGoalDefinitionSchema,
+  companyTemplateIssueDefinitionSchema,
+  companyTemplateProjectDefinitionSchema,
+  type CompanyTemplateDefinitionInput,
+} from "./company-template.js";
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -318,6 +335,29 @@ export {
 } from "./document-annotation.js";
 
 export {
+  createCampaignSchema,
+  updateCampaignSchema,
+  replaceCampaignProjectsSchema,
+  createCampaignPhaseSchema,
+  updateCampaignPhaseSchema,
+  linkCampaignPhaseExecutionIssueSchema,
+  upsertCampaignPhasePlanSchema,
+  submitCampaignPhasePlanForReviewSchema,
+  approveCampaignPhasePlanSchema,
+  completeCampaignPhaseSchema,
+  type CreateCampaign,
+  type UpdateCampaign,
+  type ReplaceCampaignProjects,
+  type CreateCampaignPhase,
+  type UpdateCampaignPhase,
+  type LinkCampaignPhaseExecutionIssue,
+  type UpsertCampaignPhasePlan,
+  type SubmitCampaignPhasePlanForReview,
+  type ApproveCampaignPhasePlan,
+  type CompleteCampaignPhase,
+} from "./campaign.js";
+
+export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
@@ -369,6 +409,10 @@ export {
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultItemSchema,
   requestItemVerdictsResultSchema,
+  agentMeetingExpectedOutputSchema,
+  agentMeetingPayloadSchema,
+  agentMeetingResultSchema,
+  meetingContributionPayloadSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
@@ -453,6 +497,13 @@ export {
   companyArtifactsResponseSchema,
   type CompanyArtifactsQuery,
 } from "./artifact.js";
+
+export {
+  READERSBASE_ARTIFACT_CONTRACT_VERSION,
+  readersBaseArtifactBridgeContractRefSchema,
+  readersBaseArtifactBridgeMetadataSchema,
+  type ReadersBaseArtifactBridgeMetadataInput,
+} from "./readersbase-artifact-bridge.js";
 
 export {
   executionWorkspaceConfigSchema,

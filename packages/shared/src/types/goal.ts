@@ -4,6 +4,7 @@ export interface Goal {
   id: string;
   companyId: string;
   title: string;
+  maosSystemId: string | null;
   description: string | null;
   level: GoalLevel;
   status: GoalStatus;

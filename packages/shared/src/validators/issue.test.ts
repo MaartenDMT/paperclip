@@ -346,6 +346,17 @@ describe("issue validators", () => {
     expect(parsed.assigneeAdapterOverrides?.modelProfile).toBe("cheap");
   });
 
+  it("accepts the fallback model profile in issue assignee adapter overrides", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Run a fallback heartbeat",
+      assigneeAdapterOverrides: {
+        modelProfile: "fallback",
+      },
+    });
+
+    expect(parsed.assigneeAdapterOverrides?.modelProfile).toBe("fallback");
+  });
+
   it("rejects unknown issue model profile keys", () => {
     const parsed = updateIssueSchema.safeParse({
       assigneeAdapterOverrides: {
@@ -367,7 +378,7 @@ describe("issue validators", () => {
             enabled: true,
             label: "Cheap Codex",
             adapterConfig: {
-              model: "gpt-5.3-codex-spark",
+              model: "gpt-5.4-mini",
             },
           },
         },
@@ -375,9 +386,32 @@ describe("issue validators", () => {
     });
 
     expect(parsed.runtimeConfig.modelProfiles?.cheap?.adapterConfig).toEqual({
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.4-mini",
     });
     expect(parsed.runtimeConfig.heartbeat).toEqual({ enabled: true });
+  });
+
+  it("validates agent runtime fallback model profile config", () => {
+    const parsed = createAgentSchema.parse({
+      name: "Coder",
+      adapterType: "codex_local",
+      runtimeConfig: {
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.runtimeConfig.modelProfiles?.fallback?.adapterConfig).toEqual({
+      adapterType: "codex_local",
+      model: "gpt-5.4-mini",
+    });
   });
 
   it("validates cheap model profile env bindings like top-level adapter config", () => {

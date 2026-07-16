@@ -3,7 +3,7 @@
 Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
 
 A routine has:
-- One assigned agent and one project
+- One assigned agent and one project when active automation is expected; drafts may omit either
 - One or more triggers (`schedule`, `webhook`, or `api`)
 - A concurrency policy (what to do when a previous run is still active)
 - A catch-up policy (what to do with missed scheduled runs)
@@ -16,10 +16,10 @@ A routine has:
 
 ```
 active <-> paused
-active  -> archived  (terminal — cannot be reactivated)
+active  -> archived -> active
 ```
 
-Paused routines do not fire. Archived routines do not fire and cannot be unarchived.
+Paused routines do not fire. Archived routines do not fire until restored.
 
 ---
 
@@ -173,6 +173,18 @@ All create fields are updatable. Agents cannot reassign a routine to another age
 PATCH /api/routines/{routineId}
 { "status": "paused", "title": "New title" }
 ```
+
+---
+
+## Deleting a Routine
+
+Deleting is permanent. It removes the routine definition, triggers, revisions, and routine run rows. Existing task issues created by earlier routine runs remain available as normal issues for audit/history.
+
+```
+DELETE /api/routines/{routineId}
+```
+
+Use `status: "archived"` when you need a reversible stop instead.
 
 ---
 

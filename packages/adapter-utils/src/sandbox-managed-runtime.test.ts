@@ -7,12 +7,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
 
 import {
+  listBrokenSymlinkTarExcludes,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
+import {
+  resolveTestPosixShell,
+  translateWindowsPathsForTestPosixShell,
+  withTestPosixShellPath,
+} from "./test-posix-shell.js";
 
 const execFile = promisify(execFileCallback);
+const itLocalPosixSandbox = process.platform === "win32" ? it.skip : it;
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFile("git", ["-C", cwd, ...args], {
@@ -64,7 +71,33 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
+  it("lists broken symlinks as tar excludes for dereferenced uploads", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-broken-links-"));
+    cleanupDirs.push(rootDir);
+    const assetsDir = path.join(rootDir, "assets");
+    const nestedDir = path.join(assetsDir, "nested");
+    const validTarget = path.join(rootDir, "valid.md");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(validTarget, "valid\n", "utf8");
+
+    try {
+      await symlink(validTarget, path.join(assetsDir, "valid.md"));
+      await symlink(path.join(rootDir, "missing.md"), path.join(nestedDir, "missing.md"));
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+      if (process.platform === "win32" && (code === "EPERM" || code === "EINVAL")) return;
+      throw error;
+    }
+
+    await expect(listBrokenSymlinkTarExcludes(assetsDir)).resolves.toEqual(
+      expect.arrayContaining(["nested/missing.md", "./nested/missing.md"]),
+    );
+    await expect(listBrokenSymlinkTarExcludes(assetsDir)).resolves.not.toContain("valid.md");
+  });
+
+  itLocalPosixSandbox("syncs workspace and assets through a provider-neutral sandbox client", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-managed-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -99,7 +132,8 @@ describe("sandbox managed runtime", () => {
         await rm(remotePath, { recursive: true, force: true });
       },
       run: async (command) => {
-        await execFile("sh", ["-c", command], {
+        await execFile(resolveTestPosixShell("sh"), ["-c", translateWindowsPathsForTestPosixShell(command)], {
+          env: withTestPosixShellPath(),
           maxBuffer: 32 * 1024 * 1024,
         });
       },

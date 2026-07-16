@@ -1,15 +1,51 @@
-import type { AdapterModel } from "./types.js";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
-import { readConfigFile } from "../config-file.js";
+import type { AdapterModel } from "./types.js";
 
-const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
-const OPENAI_MODELS_TIMEOUT_MS = 5000;
-const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
+const CODEX_MODELS_CACHE_TTL_MS = 60_000;
 
-let cached: { keyFingerprint: string; expiresAt: number; models: AdapterModel[] } | null = null;
+let cached: { expiresAt: number; models: AdapterModel[] } | null = null;
 
-function fingerprint(apiKey: string): string {
-  return `${apiKey.length}:${apiKey.slice(-6)}`;
+interface CodexModelListEntry {
+  id?: unknown;
+  model?: unknown;
+  displayName?: unknown;
+  hidden?: unknown;
+}
+
+interface CodexModelListResult {
+  data?: unknown;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveCodexCommand(): string {
+  const explicit = (
+    asNonEmptyString(process.env.PAPERCLIP_CODEX_COMMAND) ??
+    asNonEmptyString(process.env.CODEX_COMMAND) ??
+    null
+  );
+  if (explicit) return explicit;
+
+  const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const pathValue = asNonEmptyString(process.env[pathKey]) ?? asNonEmptyString(process.env.PATH) ?? "";
+  const pathEntries = pathValue.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  const candidates = process.platform === "win32"
+    ? ["codex.cmd", "codex.exe", "codex.ps1", "codex"]
+    : ["codex"];
+
+  for (const dir of pathEntries) {
+    for (const candidate of candidates) {
+      const absolute = path.join(dir, candidate);
+      if (existsSync(absolute)) return absolute;
+    }
+  }
+
+  return process.platform === "win32" ? "codex.cmd" : "codex";
 }
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
@@ -24,76 +60,155 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   return deduped;
 }
 
-function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
-  return dedupeModels([
-    ...models,
-    ...codexFallbackModels,
-  ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
+function parseCodexModelListResult(payload: Record<string, unknown> | null | undefined): AdapterModel[] {
+  const result =
+    payload && typeof payload.result === "object" && payload.result !== null
+      ? (payload.result as CodexModelListResult)
+      : null;
+  const data = Array.isArray(result?.data) ? result.data : [];
+  const models: AdapterModel[] = [];
+
+  for (const entry of data) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as CodexModelListEntry;
+    if (record.hidden === true) continue;
+    const id = typeof record.id === "string" && record.id.trim().length > 0
+      ? record.id.trim()
+      : (typeof record.model === "string" && record.model.trim().length > 0 ? record.model.trim() : "");
+    if (!id) continue;
+    const label = typeof record.displayName === "string" && record.displayName.trim().length > 0
+      ? record.displayName.trim()
+      : id;
+    models.push({ id, label });
+  }
+
+  return dedupeModels(models);
 }
 
-function resolveOpenAiApiKey(): string | null {
-  const envKey = process.env.OPENAI_API_KEY?.trim();
-  if (envKey) return envKey;
+type CodexRpcMessage = Record<string, unknown>;
 
-  const config = readConfigFile();
-  if (config?.llm?.provider !== "openai") return null;
-  const configKey = config.llm.apiKey?.trim();
-  return configKey && configKey.length > 0 ? configKey : null;
-}
+async function requestCodexRpc(method: string, params: Record<string, unknown> = {}): Promise<CodexRpcMessage | null> {
+  const command = resolveCodexCommand();
+  // Node 20.12+ refuses to spawn .cmd/.bat/.ps1 without shell:true (CVE-2024-27980).
+  const needsShell = process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(command);
+  const proc = spawn(command, ["-s", "read-only", "-a", "untrusted", "app-server"], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env,
+    shell: needsShell,
+  });
 
-async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
-  try {
-    const response = await fetch(OPENAI_MODELS_ENDPOINT, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-    });
-    if (!response.ok) return [];
+  let nextId = 1;
+  let buffer = "";
+  let settled = false;
+  const pending = new Map<number, { resolve: (value: CodexRpcMessage) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
 
-    const payload = (await response.json()) as { data?: unknown };
-    const data = Array.isArray(payload.data) ? payload.data : [];
-    const models: AdapterModel[] = [];
-    for (const item of data) {
-      if (typeof item !== "object" || item === null) continue;
-      const id = (item as { id?: unknown }).id;
-      if (typeof id !== "string" || id.trim().length === 0) continue;
-      models.push({ id, label: id });
+  const cleanup = () => {
+    if (!proc.killed) {
+      proc.kill("SIGTERM");
     }
-    return dedupeModels(models);
+  };
+
+  const finishPending = (error: Error) => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pending.clear();
+  };
+
+  proc.on("error", (error) => {
+    settled = true;
+    finishPending(error instanceof Error ? error : new Error(String(error)));
+  });
+
+  proc.stdout.setEncoding("utf8");
+  proc.stdout.on("data", (chunk: string) => {
+    buffer += chunk;
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex < 0) break;
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      let parsed: CodexRpcMessage;
+      try {
+        parsed = JSON.parse(line) as CodexRpcMessage;
+      } catch {
+        continue;
+      }
+      const id = typeof parsed.id === "number" ? parsed.id : null;
+      if (id == null) continue;
+      const request = pending.get(id);
+      if (!request) continue;
+      pending.delete(id);
+      clearTimeout(request.timer);
+      request.resolve(parsed);
+    }
+  });
+
+  const request = (requestMethod: string, requestParams: Record<string, unknown>, timeoutMs: number): Promise<CodexRpcMessage> => {
+    const id = nextId++;
+    const payload = JSON.stringify({ id, method: requestMethod, params: requestParams }) + "\n";
+    return new Promise<CodexRpcMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`codex app-server timed out on ${requestMethod}`));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      proc.stdin.write(payload);
+    });
+  };
+
+  try {
+    const initialize = await request("initialize", {
+      clientInfo: { name: "paperclip", version: "0.0.0" },
+    }, 6_000);
+    if ("error" in initialize) return null;
+    proc.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
+    const result = await request(method, params, 20_000);
+    settled = true;
+    return "error" in result ? null : result;
   } catch {
-    return [];
+    return null;
   } finally {
-    clearTimeout(timeout);
+    finishPending(new Error("codex app-server request canceled"));
+    cleanup();
+    if (!settled) {
+      proc.stdin.end();
+    }
   }
 }
+
+async function defaultCodexModelsFetcher(): Promise<AdapterModel[]> {
+  const response = await requestCodexRpc("model/list");
+  if (!response) return [];
+  return parseCodexModelListResult(response);
+}
+
+let codexModelsFetcher: () => Promise<AdapterModel[]> = defaultCodexModelsFetcher;
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
-  if (!apiKey) return fallback;
-
   const now = Date.now();
-  const keyFingerprint = fingerprint(apiKey);
-  if (!forceRefresh && cached && cached.keyFingerprint === keyFingerprint && cached.expiresAt > now) {
+
+  if (!forceRefresh && cached && cached.expiresAt > now) {
     return cached.models;
   }
 
-  const fetched = await fetchOpenAiModels(apiKey);
+  const fetched = await codexModelsFetcher();
   if (fetched.length > 0) {
-    const merged = mergedWithFallback(fetched);
+    const discovered = dedupeModels(fetched).sort((a, b) =>
+      a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }),
+    );
     cached = {
-      keyFingerprint,
-      expiresAt: now + OPENAI_MODELS_CACHE_TTL_MS,
-      models: merged,
+      expiresAt: now + CODEX_MODELS_CACHE_TTL_MS,
+      models: discovered,
     };
-    return merged;
+    return discovered;
   }
 
-  if (cached && cached.keyFingerprint === keyFingerprint && cached.models.length > 0) {
+  if (cached && cached.models.length > 0) {
     return cached.models;
   }
 
@@ -110,4 +225,8 @@ export async function refreshCodexModels(): Promise<AdapterModel[]> {
 
 export function resetCodexModelsCacheForTests() {
   cached = null;
+}
+
+export function setCodexModelsFetcherForTests(fetcher: (() => Promise<AdapterModel[]>) | null) {
+  codexModelsFetcher = fetcher ?? defaultCodexModelsFetcher;
 }

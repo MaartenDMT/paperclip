@@ -102,6 +102,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
 const mockCompanySkillService = vi.hoisted(() => ({
+  listFull: vi.fn(),
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
@@ -338,6 +339,7 @@ describe.sequential("agent permission routes", () => {
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
+    mockCompanySkillService.listFull.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockReset();
     mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
     mockLogActivity.mockReset();
@@ -384,6 +386,7 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
@@ -400,6 +403,7 @@ describe.sequential("agent permission routes", () => {
         },
       }),
     );
+    mockCompanySkillService.listFull.mockResolvedValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => requested,
@@ -695,7 +699,7 @@ describe.sequential("agent permission routes", () => {
           modelProfiles: {
             cheap: {
               adapterConfig: {
-                model: "gpt-5.3-codex-spark",
+                model: "gpt-5.4-mini",
                 env: {
                   API_TOKEN: {
                     type: "secret_ref",
@@ -713,7 +717,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
       companyId,
       expect.objectContaining({
-        model: "gpt-5.3-codex-spark",
+        model: "gpt-5.4-mini",
         env: expect.any(Object),
       }),
       { strictMode: false, adapterType: "codex_local" },
@@ -725,7 +729,7 @@ describe.sequential("agent permission routes", () => {
           modelProfiles: {
             cheap: {
               adapterConfig: {
-                model: "gpt-5.3-codex-spark",
+                model: "gpt-5.4-mini",
                 env: {
                   API_TOKEN: {
                     type: "secret_ref",
@@ -958,7 +962,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
-  it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
+  it("normalizes direct specialist agent creation to one active run by default", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -989,7 +993,45 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
+          },
+        },
+      }),
+    );
+  });
+
+  it("normalizes direct CEO agent creation to two active runs by default", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            intervalSec: 3600,
+          },
+        },
+      }));
+
+    expect([200, 201]).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 3600,
+            maxConcurrentRuns: 2,
           },
         },
       }),
@@ -1068,7 +1110,7 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
-  it("normalizes hire requests to disable timer heartbeats by default", async () => {
+  it("normalizes specialist hire requests to one active run by default", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -1099,7 +1141,46 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
+          },
+        },
+      }),
+    );
+  });
+
+  it("normalizes coordinator hire requests to two active runs by default", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Delivery Coordinator",
+        role: "general",
+        title: "Coordinator",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            intervalSec: 3600,
+          },
+        },
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 3600,
+            maxConcurrentRuns: 2,
           },
         },
       }),
@@ -1554,6 +1635,12 @@ describe.sequential("agent permission routes", () => {
   }, 15_000);
 
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {
+  it("exposes manager-role task assignment access on agent detail", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    });
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
 
     const app = await createApp({
@@ -1569,6 +1656,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("simple_default");
+    expect(res.body.access.taskAssignSource).toBe("manager_role");
   }, 15_000);
 
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
@@ -1606,6 +1694,16 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,
       permissions: { canCreateAgents: false, canCreateSkills: false },
+  it("keeps task assignment enabled for manager roles", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    });
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      role: "cto",
+      permissions: { canCreateAgents: false },
     });
 
     const app = await createApp({
@@ -1645,6 +1743,19 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.error).toContain("another company");
     expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+      .send({ canCreateAgents: false, canAssignTasks: false }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      "board-user",
+    );
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("manager_role");
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

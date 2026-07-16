@@ -7,6 +7,10 @@ import { geminiLocalUIAdapter } from "./gemini-local";
 import { grokLocalUIAdapter } from "./grok-local";
 import { hermesGatewayUIAdapter } from "./hermes-gateway";
 import { hermesLocalUIAdapter } from "./hermes-local";
+import { kimiLocalUIAdapter } from "./kimi-local";
+import { minimaxLocalUIAdapter } from "./minimax-local";
+import { zaiLocalUIAdapter } from "./zai-local";
+import { copilotLocalUIAdapter } from "./copilot-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
@@ -58,6 +62,10 @@ function registerBuiltInUIAdapters() {
     geminiLocalUIAdapter,
     grokLocalUIAdapter,
     hermesGatewayUIAdapter,
+    kimiLocalUIAdapter,
+    minimaxLocalUIAdapter,
+    zaiLocalUIAdapter,
+    copilotLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,

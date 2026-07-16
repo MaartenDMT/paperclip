@@ -80,6 +80,9 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const ROUTINE_HEALTH_WINDOW = 20;
+const ROUTINE_FAILURE_AUTO_PAUSE_THRESHOLD = 5;
+const ROUTINE_NOOP_AUTO_PAUSE_THRESHOLD = 0.8;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -132,6 +135,18 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+type RoutineHealthStatus = {
+  routineId: string;
+  title: string;
+  status: string;
+  lastFiredAt: Date | null;
+  lastSuccessAt: Date | null;
+  consecutiveFailures: number;
+  avgDurationMs: number | null;
+  noopRate: number;
+  runCount: number;
+  shouldAutoPause: boolean;
+};
 
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 
@@ -1313,8 +1328,40 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function autoPauseUnhealthyRoutine(routineId: string, executor: Db = db) {
+    const routine = await executor
+      .select({ id: routines.id, status: routines.status })
+      .from(routines)
+      .where(eq(routines.id, routineId))
+      .then((rows) => rows[0] ?? null);
+    if (!routine || routine.status !== "active") return;
+
+    const recentRuns = await executor
+      .select({ status: routineRuns.status })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routineId))
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.createdAt))
+      .limit(ROUTINE_HEALTH_WINDOW);
+    let consecutiveFailures = 0;
+    for (const run of recentRuns) {
+      if (run.status !== "failed") break;
+      consecutiveFailures += 1;
+    }
+    const noopRate = recentRuns.length > 0
+      ? recentRuns.filter((run) => run.status === "skipped" || run.status === "coalesced").length / recentRuns.length
+      : 0;
+    const shouldPause =
+      consecutiveFailures >= ROUTINE_FAILURE_AUTO_PAUSE_THRESHOLD ||
+      (recentRuns.length >= ROUTINE_HEALTH_WINDOW && noopRate > ROUTINE_NOOP_AUTO_PAUSE_THRESHOLD);
+    if (!shouldPause) return;
+    await executor
+      .update(routines)
+      .set({ status: "paused", updatedAt: new Date() })
+      .where(and(eq(routines.id, routineId), eq(routines.status, "active")));
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
-    return executor
+    const updated = await executor
       .update(routineRuns)
       .set({
         ...patch,
@@ -1323,6 +1370,10 @@ export function routineService(
       .where(eq(routineRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+    if (updated && ["failed", "skipped", "coalesced", "issue_created"].includes(updated.status)) {
+      await autoPauseUnhealthyRoutine(updated.routineId, executor);
+    }
+    return updated;
   }
 
   async function createWebhookSecret(
@@ -1817,6 +1868,69 @@ export function routineService(
       }));
     },
 
+    listHealth: async (companyId: string): Promise<RoutineHealthStatus[]> => {
+      const routineRows = await db
+        .select({ id: routines.id, title: routines.title, status: routines.status })
+        .from(routines)
+        .where(eq(routines.companyId, companyId))
+        .orderBy(asc(routines.title));
+      if (routineRows.length === 0) return [];
+
+      const runRows = await db
+        .select({
+          routineId: routineRuns.routineId,
+          status: routineRuns.status,
+          triggeredAt: routineRuns.triggeredAt,
+          completedAt: routineRuns.completedAt,
+          createdAt: routineRuns.createdAt,
+        })
+        .from(routineRuns)
+        .where(and(eq(routineRuns.companyId, companyId), inArray(routineRuns.routineId, routineRows.map((row) => row.id))))
+        .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.createdAt));
+
+      const runsByRoutine = new Map<string, typeof runRows>();
+      for (const run of runRows) {
+        const existing = runsByRoutine.get(run.routineId) ?? [];
+        if (existing.length < ROUTINE_HEALTH_WINDOW) existing.push(run);
+        runsByRoutine.set(run.routineId, existing);
+      }
+
+      return routineRows.map((routine) => {
+        const runs = runsByRoutine.get(routine.id) ?? [];
+        const lastFiredAt = runs[0]?.triggeredAt ?? null;
+        const lastSuccessAt = runs.find((run) => run.status === "issue_created")?.triggeredAt ?? null;
+        let consecutiveFailures = 0;
+        for (const run of runs) {
+          if (run.status !== "failed") break;
+          consecutiveFailures += 1;
+        }
+        const durations = runs
+          .filter((run) => run.completedAt)
+          .map((run) => Math.max(0, run.completedAt!.getTime() - run.triggeredAt.getTime()));
+        const avgDurationMs = durations.length > 0
+          ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+          : null;
+        const noopRate = runs.length > 0
+          ? runs.filter((run) => run.status === "skipped" || run.status === "coalesced").length / runs.length
+          : 0;
+        return {
+          routineId: routine.id,
+          title: routine.title,
+          status: routine.status,
+          lastFiredAt,
+          lastSuccessAt,
+          consecutiveFailures,
+          avgDurationMs,
+          noopRate,
+          runCount: runs.length,
+          shouldAutoPause:
+            routine.status === "active" &&
+            (consecutiveFailures >= ROUTINE_FAILURE_AUTO_PAUSE_THRESHOLD ||
+              (runs.length >= ROUTINE_HEALTH_WINDOW && noopRate > ROUTINE_NOOP_AUTO_PAUSE_THRESHOLD)),
+        };
+      });
+    },
+
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
@@ -2141,6 +2255,30 @@ export function routineService(
         return routine;
       });
       return updatedRoutine;
+    },
+
+    delete: async (id: string): Promise<{ deleted: boolean }> => {
+      const existing = await getRoutineById(id);
+      if (!existing) return { deleted: false };
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${id} for update`);
+        await txDb
+          .delete(pluginManagedResources)
+          .where(and(eq(pluginManagedResources.resourceKind, "routine"), eq(pluginManagedResources.resourceId, id)));
+        await txDb
+          .update(issues)
+          .set({
+            originKind: "manual",
+            originId: null,
+            originRunId: null,
+            originFingerprint: "default",
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.companyId, existing.companyId), eq(issues.originKind, "routine_execution"), eq(issues.originId, id)));
+        await txDb.delete(routines).where(eq(routines.id, id));
+      });
+      return { deleted: true };
     },
 
     createTrigger: async (

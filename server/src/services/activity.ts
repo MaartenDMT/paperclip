@@ -1,11 +1,13 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   activityLog,
   agents,
   documentRevisions,
   environmentLeases,
   environments,
+  heartbeatRunSkillEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -29,6 +31,34 @@ export interface ActivityFilters {
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
+const DEFAULT_ISSUE_RUN_LIMIT = 50;
+const MAX_ISSUE_RUN_LIMIT = 200;
+const SKILL_SYNC_ADAPTERS = new Set([
+  "acpx_local",
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "minimax_local",
+  "opencode_local",
+  "pi_local",
+  "zai_local",
+]);
+const SKILL_ACTIVATION_TELEMETRY_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "minimax_local",
+  "opencode_local",
+  "zai_local",
+]);
+
+export function adapterSupportsSkillSync(adapterType: string) {
+  return SKILL_SYNC_ADAPTERS.has(adapterType);
+}
+
+export function adapterSupportsSkillActivationTelemetry(adapterType: string) {
+  return SKILL_ACTIVATION_TELEMETRY_ADAPTERS.has(adapterType);
+}
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
@@ -139,6 +169,10 @@ export function activityService(db: Db) {
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
+  }
+
+  function readDesiredSkills(config: unknown) {
+    return readPaperclipSkillSyncPreference(asRecord(config) ?? {}).desiredSkills;
   }
 
   function readNumber(value: unknown) {
@@ -364,6 +398,311 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
+    skillUsageForCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+          doneCount: sql<number>`count(distinct case when ${issues.status} = 'done' then ${heartbeatRunSkillEvents.runId} end)::int`,
+          blockedCount: sql<number>`count(distinct case when ${issues.status} = 'blocked' then ${heartbeatRunSkillEvents.runId} end)::int`,
+          cancelledCount: sql<number>`count(distinct case when ${issues.status} = 'cancelled' then ${heartbeatRunSkillEvents.runId} end)::int`,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, heartbeatRunSkillEvents.runId))
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, heartbeatRunSkillEvents.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text`,
+          ),
+        )
+        .where(eq(heartbeatRunSkillEvents.companyId, companyId))
+        .groupBy(heartbeatRunSkillEvents.skillKey, heartbeatRunSkillEvents.skillName)
+        .orderBy(desc(sql`count(distinct ${heartbeatRunSkillEvents.runId})`), asc(heartbeatRunSkillEvents.skillName));
+
+      return rows.map((row) => ({
+        skillKey: row.skillKey,
+        skillName: row.skillName,
+        runCount: Number(row.runCount ?? 0),
+        doneCount: Number(row.doneCount ?? 0),
+        blockedCount: Number(row.blockedCount ?? 0),
+        cancelledCount: Number(row.cancelledCount ?? 0),
+        noopCount: 0,
+      }));
+    },
+
+    skillUsageByAgent: async (companyId: string) => {
+      const rows = await db
+        .select({
+          agentId: heartbeatRunSkillEvents.agentId,
+          agentName: agents.name,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+          activationCount: sql<number>`count(*)::int`,
+          lastActivatedAt: sql<Date>`max(${heartbeatRunSkillEvents.activatedAt})`,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(
+          agents,
+          and(
+            eq(agents.id, heartbeatRunSkillEvents.agentId),
+            eq(agents.companyId, heartbeatRunSkillEvents.companyId),
+          ),
+        )
+        .where(eq(heartbeatRunSkillEvents.companyId, companyId))
+        .groupBy(
+          heartbeatRunSkillEvents.agentId,
+          agents.name,
+          heartbeatRunSkillEvents.skillKey,
+          heartbeatRunSkillEvents.skillName,
+        )
+        .orderBy(desc(sql`max(${heartbeatRunSkillEvents.activatedAt})`), asc(agents.name), asc(heartbeatRunSkillEvents.skillName));
+
+      return rows.map((row) => ({
+        agentId: row.agentId,
+        agentName: row.agentName,
+        skillKey: row.skillKey,
+        skillName: row.skillName,
+        runCount: Number(row.runCount ?? 0),
+        activationCount: Number(row.activationCount ?? 0),
+        lastActivatedAt: row.lastActivatedAt,
+      }));
+    },
+
+    skillActivationsForAgent: async (companyId: string, agentId: string, limit: number | undefined) => {
+      const normalizedLimit = normalizeActivityLimit(limit);
+      return db
+        .select({
+          id: heartbeatRunSkillEvents.id,
+          runId: heartbeatRunSkillEvents.runId,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          source: heartbeatRunSkillEvents.source,
+          activatedAt: heartbeatRunSkillEvents.activatedAt,
+          runStatus: heartbeatRuns.status,
+          invocationSource: heartbeatRuns.invocationSource,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+        })
+        .from(heartbeatRunSkillEvents)
+        .innerJoin(
+          heartbeatRuns,
+          and(
+            eq(heartbeatRuns.id, heartbeatRunSkillEvents.runId),
+            eq(heartbeatRuns.companyId, heartbeatRunSkillEvents.companyId),
+          ),
+        )
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, heartbeatRunSkillEvents.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text`,
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .where(
+          and(
+            eq(heartbeatRunSkillEvents.companyId, companyId),
+            eq(heartbeatRunSkillEvents.agentId, agentId),
+          ),
+        )
+        .orderBy(desc(heartbeatRunSkillEvents.activatedAt), desc(heartbeatRunSkillEvents.id))
+        .limit(normalizedLimit);
+    },
+
+    skillCoverageForCompany: async (companyId: string) => {
+      const [agentRows, activationRows] = await Promise.all([
+        db
+          .select({
+            agentId: agents.id,
+            agentName: agents.name,
+            adapterType: agents.adapterType,
+            status: agents.status,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), sql`${agents.status} != 'terminated'`))
+          .orderBy(asc(agents.name)),
+        db
+          .select({
+            agentId: heartbeatRunSkillEvents.agentId,
+            skillKey: heartbeatRunSkillEvents.skillKey,
+            skillName: heartbeatRunSkillEvents.skillName,
+            activationCount: sql<number>`count(*)::int`,
+            runCount: sql<number>`count(distinct ${heartbeatRunSkillEvents.runId})::int`,
+            lastActivatedAt: sql<Date>`max(${heartbeatRunSkillEvents.activatedAt})`,
+          })
+          .from(heartbeatRunSkillEvents)
+          .where(
+            and(
+              eq(heartbeatRunSkillEvents.companyId, companyId),
+              sql`${heartbeatRunSkillEvents.activatedAt} >= now() - interval '7 days'`,
+            ),
+          )
+          .groupBy(
+            heartbeatRunSkillEvents.agentId,
+            heartbeatRunSkillEvents.skillKey,
+            heartbeatRunSkillEvents.skillName,
+          ),
+      ]);
+
+      const activationsByAgent = new Map<string, typeof activationRows>();
+      for (const row of activationRows) {
+        const rows = activationsByAgent.get(row.agentId) ?? [];
+        rows.push(row);
+        activationsByAgent.set(row.agentId, rows);
+      }
+
+      return agentRows.map((agent) => {
+        const desiredSkills = readDesiredSkills(agent.adapterConfig);
+        const activatedSkills = (activationsByAgent.get(agent.agentId) ?? [])
+          .map((row) => ({
+            skillKey: row.skillKey,
+            skillName: row.skillName,
+            activationCount: Number(row.activationCount ?? 0),
+            runCount: Number(row.runCount ?? 0),
+            lastActivatedAt: row.lastActivatedAt,
+          }))
+          .sort((a, b) => b.activationCount - a.activationCount || a.skillName.localeCompare(b.skillName));
+        const activatedKeys = new Set(activatedSkills.map((skill) => skill.skillKey));
+        const neverUsedSkills = desiredSkills.filter((skill) => !activatedKeys.has(skill));
+        const adapterSupportsSkillSyncForAgent = adapterSupportsSkillSync(agent.adapterType);
+        const adapterSupportsActivationTelemetry = adapterSupportsSkillActivationTelemetry(agent.adapterType);
+
+        return {
+          agentId: agent.agentId,
+          agentName: agent.agentName,
+          adapterType: agent.adapterType,
+          status: agent.status,
+          desiredSkills,
+          desiredSkillCount: desiredSkills.length,
+          runtimeSynced: adapterSupportsSkillSyncForAgent && desiredSkills.length > 0,
+          adapterSupportsSkillSync: adapterSupportsSkillSyncForAgent,
+          adapterSupportsActivationTelemetry,
+          activatedLast7d: activatedSkills,
+          activatedLast7dCount: activatedSkills.reduce((sum, skill) => sum + skill.activationCount, 0),
+          neverUsedSkills,
+          neverUsedCount: neverUsedSkills.length,
+          missingDesiredSkills: adapterSupportsSkillSyncForAgent && desiredSkills.length === 0,
+        };
+      });
+    },
+
+    recoveryDismissalsForCompany: async (companyId: string) => {
+      const recoveryRows = await db
+        .select({
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          originId: issues.originId,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          cancelledAt: issues.cancelledAt,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+          cancelledByKind: issues.cancelledByKind,
+          assigneeAgentName: agents.name,
+        })
+        .from(issues)
+        .leftJoin(
+          agents,
+          and(
+            eq(agents.id, issues.assigneeAgentId),
+            eq(agents.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.status, "cancelled"),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(desc(issues.updatedAt))
+        .limit(200);
+
+      const sourceIds = [
+        ...new Set(
+          recoveryRows
+            .flatMap((row) => [row.originId, row.parentId])
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      ];
+      const sourceRows = sourceIds.length > 0
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, sourceIds)))
+        : [];
+      const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
+
+      return recoveryRows.map((row) => {
+        const sourceIssue = (row.originId ? sourceById.get(row.originId) : null)
+          ?? (row.parentId ? sourceById.get(row.parentId) : null)
+          ?? null;
+        return {
+          ...row,
+          sourceIssue,
+        };
+      });
+    },
+
+    wakeSuppressionsForCompany: async (companyId: string) => {
+      const windowSeconds = 60;
+      const rows = await db
+        .select({
+          agentId: issues.assigneeAgentId,
+          agentName: agents.name,
+          dismissalCount: sql<number>`count(*)::int`,
+          latestDismissedAt: sql<Date>`max(${issues.updatedAt})`,
+        })
+        .from(issues)
+        .leftJoin(
+          agents,
+          and(
+            eq(agents.id, issues.assigneeAgentId),
+            eq(agents.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.status, "cancelled"),
+            isNull(issues.hiddenAt),
+            sql`${issues.updatedAt} >= now() - interval '60 seconds'`,
+          ),
+        )
+        .groupBy(issues.assigneeAgentId, agents.name)
+        .orderBy(desc(sql`max(${issues.updatedAt})`));
+
+      return rows
+        .filter((row) => row.agentId)
+        .map((row) => {
+          const latestDismissedAt = row.latestDismissedAt;
+          const suppressUntil = new Date(latestDismissedAt.getTime() + windowSeconds * 1000);
+          return {
+            agentId: row.agentId,
+            agentName: row.agentName,
+            dismissalCount: Number(row.dismissalCount ?? 0),
+            latestDismissedAt,
+            suppressUntil,
+            suppressedWakeReasonPrefix: "issue_",
+          };
+        });
+    },
+
     forIssue: (issueId: string) =>
       db
         .select()
@@ -376,7 +715,13 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: async (companyId: string, issueId: string) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      options: { limit?: number; offset?: number } = {},
+    ) => {
+      const limit = Math.max(1, Math.min(MAX_ISSUE_RUN_LIMIT, Math.floor(options.limit ?? DEFAULT_ISSUE_RUN_LIMIT)));
+      const offset = Math.max(0, Math.floor(options.offset ?? 0));
       scheduleRunLivenessBackfill(companyId, issueId);
       const runs = await db
         .select({
@@ -427,11 +772,42 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(limit)
+        .offset(offset);
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);
       if (runIds.length === 0) return runs;
+
+      const skillRows = await db
+        .select({
+          runId: heartbeatRunSkillEvents.runId,
+          skillKey: heartbeatRunSkillEvents.skillKey,
+          skillName: heartbeatRunSkillEvents.skillName,
+          activatedAt: heartbeatRunSkillEvents.activatedAt,
+          source: heartbeatRunSkillEvents.source,
+        })
+        .from(heartbeatRunSkillEvents)
+        .where(
+          and(
+            eq(heartbeatRunSkillEvents.companyId, companyId),
+            inArray(heartbeatRunSkillEvents.runId, runIds),
+          ),
+        )
+        .orderBy(asc(heartbeatRunSkillEvents.activatedAt), asc(heartbeatRunSkillEvents.id));
+
+      const skillActivationsByRunId = new Map<string, Array<Omit<(typeof skillRows)[number], "runId">>>();
+      for (const row of skillRows) {
+        const existing = skillActivationsByRunId.get(row.runId) ?? [];
+        existing.push({
+          skillKey: row.skillKey,
+          skillName: row.skillName,
+          activatedAt: row.activatedAt,
+          source: row.source,
+        });
+        skillActivationsByRunId.set(row.runId, existing);
+      }
 
       const exhaustionRows = await db
         .select({
@@ -514,6 +890,7 @@ export function activityService(db: Db) {
               }
             : null,
           retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+          skillActivations: skillActivationsByRunId.get(run.runId) ?? [],
         };
       });
     },

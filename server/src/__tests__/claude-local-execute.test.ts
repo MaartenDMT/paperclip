@@ -9,6 +9,11 @@ import {
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
 } from "@paperclipai/adapter-claude-local/server";
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
+import { execute } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
   commandPath: string,
@@ -67,6 +72,10 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  paperclipAgentId: process.env.PAPERCLIP_AGENT_ID || null,
+  paperclipCompanyId: process.env.PAPERCLIP_COMPANY_ID || null,
+  paperclipRunId: process.env.PAPERCLIP_RUN_ID || null,
+  paperclipTaskId: process.env.PAPERCLIP_TASK_ID || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -168,6 +177,10 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
+  paperclipAgentId?: string | null;
+  paperclipCompanyId?: string | null;
+  paperclipRunId?: string | null;
+  paperclipTaskId?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
@@ -324,22 +337,27 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return runChildProcess(
-        `sandbox-run-${counter}`,
-        input.command,
-        input.args ?? [],
-        {
-          cwd: input.cwd ?? process.cwd(),
-          env: input.env ?? {},
-          stdin: input.stdin,
-          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-          graceSec: 5,
-          onLog: input.onLog ?? (async () => {}),
-          onSpawn: input.onSpawn
-            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-            : undefined,
-        },
-      );
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(
+          `sandbox-run-${counter}`,
+          target.command,
+          target.args,
+          {
+            cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+            env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+            stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+            graceSec: 5,
+            onLog: input.onLog ?? (async () => {}),
+            onSpawn: input.onSpawn
+              ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+              : undefined,
+          },
+        );
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -377,6 +395,44 @@ describe("claude execute", () => {
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
       expect(captured.argv).toContain("--append-system-prompt-file");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves runtime-owned Paperclip env over adapter config env", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-env-guard-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const result = await execute({
+        runId: "run-actual",
+        agent: { id: "agent-actual", companyId: "company-actual", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_AGENT_ID: "agent-ceo",
+            PAPERCLIP_COMPANY_ID: "company-ceo",
+            PAPERCLIP_RUN_ID: "run-ceo",
+            PAPERCLIP_TASK_ID: "task-ceo",
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: { taskId: "task-actual" },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      expect(capture.paperclipAgentId).toBe("agent-actual");
+      expect(capture.paperclipCompanyId).toBe("company-actual");
+      expect(capture.paperclipRunId).toBe("run-actual");
+      expect(capture.paperclipTaskId).toBe("task-actual");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -705,6 +761,7 @@ describe("claude execute", () => {
           command: "claude",
           cwd: workspace,
           env: {
+            CLAUDE_CONFIG_DIR: claudeConfigDir,
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
@@ -743,8 +800,11 @@ describe("claude execute", () => {
     const commandPath = path.join(binDir, "claude");
     const capturePath1 = path.join(remoteWorkspace, "capture-1.json");
     const claudeRoot = path.join(root, ".claude");
+    const paperclipHome = path.join(root, "paperclip-home");
     const previousHome = process.env.HOME;
     const previousPath = process.env.PATH;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
 
     await fs.mkdir(localWorkspace, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
@@ -754,6 +814,8 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     process.env.HOME = root;
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot;
+    process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 
     try {
@@ -814,6 +876,10 @@ describe("claude execute", () => {
       );
       expect(capture.argv).not.toContain("--dangerously-skip-permissions");
       expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.claudeConfigDir.replaceAll("\\", "/")).toBe(
+        path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config").replaceAll("\\", "/"),
+      );
       expect(capture.claudeConfigEntries).toContain("settings.json");
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
@@ -823,6 +889,10 @@ describe("claude execute", () => {
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 10_000);

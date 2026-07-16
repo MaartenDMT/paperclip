@@ -5,6 +5,7 @@ export const companies = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
+    maosCompanyId: text("maos_company_id"),
     description: text("description"),
     status: text("status").notNull().default("active"),
     pauseReason: text("pause_reason"),
@@ -32,5 +33,6 @@ export const companies = pgTable(
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    maosCompanyIdUniqueIdx: uniqueIndex("companies_maos_company_id_idx").on(table.maosCompanyId),
   }),
 );

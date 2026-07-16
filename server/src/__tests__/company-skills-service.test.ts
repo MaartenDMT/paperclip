@@ -35,7 +35,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     db = createDb(tempDb.connectionString);
     svc = companySkillService(db);
-  }, 20_000);
+  }, process.platform === "win32" ? 60_000 : 20_000);
 
   afterEach(async () => {
     await db.delete(agents);
@@ -1483,6 +1483,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-restored-skill-"));
     cleanupDirs.add(skillDir);
     await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Restored Skill\n", "utf8");
+  it("lists runtime skill entries from stored rows without pruning missing local paths", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const missingSkillDir = path.join(os.tmpdir(), `paperclip-missing-skill-${randomUUID()}`);
 
     await db.insert(companies).values({
       id: companyId,
@@ -1542,6 +1546,14 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Reflection Coach",
       description: null,
       markdown: "# Reflection Coach\n",
+
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/stored-skill`,
+      slug: "stored-skill",
+      name: "Stored Skill",
+      markdown: "# Stored Skill\n",
       sourceType: "local_path",
       sourceLocator: missingSkillDir,
       trustLevel: "markdown_only",
@@ -1736,6 +1748,19 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const companyId = randomUUID();
     const rootSkillId = randomUUID();
     const slugSkillId = randomUUID();
+
+    const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+
+    expect(entries).toContainEqual(expect.objectContaining({
+      key: `company/${companyId}/stored-skill`,
+      source: path.resolve(missingSkillDir),
+      required: false,
+    }));
+  });
+
+  it("seeds bundled memory skills when listing runtime entries for heartbeats", async () => {
+    const companyId = randomUUID();
+
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -1838,5 +1863,17 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await svc.updateFile(companyId, skill.id, "SKILL.md", editedMarkdown, { type: "user", userId: "board" });
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
+
+    const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    const keys = entries.map((entry) => entry.key);
+
+    expect(keys).toContain("paperclipai/paperclip/para-memory-files");
+    expect(keys).toContain("paperclipai/paperclip/karpathy-obsidian-memory");
+    expect(entries.find((entry) => entry.runtimeName === "para-memory-files")).toMatchObject({
+      required: true,
+    });
+    expect(entries.find((entry) => entry.runtimeName === "karpathy-obsidian-memory")).toMatchObject({
+      required: true,
+    });
   });
 });

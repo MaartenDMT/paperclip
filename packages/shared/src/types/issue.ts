@@ -744,10 +744,12 @@ export interface Issue {
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
+  cancelledByKind?: "agent" | "user" | "recovery" | "cycle_detector" | null;
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  blockedByIssueIds?: string[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
@@ -1146,6 +1148,112 @@ export interface RequestItemVerdictsResult {
   staleTarget?: RequestConfirmationTarget | null;
 }
 
+export type AgentMeetingExpectedOutput =
+  | "decisions"
+  | "tasks"
+  | "blockers"
+  | "questions"
+  | "plan_update"
+  | "goals"
+  | "targets"
+  | "kpis"
+  | "finance"
+  | "problems"
+  | "optimization"
+  | "right_track"
+  | "workflow_corrections"
+  | "memory_corrections"
+  | "idea_sharing"
+  | "business_requirements"
+  | "agent_performance"
+  | "workflows"
+  | "process";
+
+export interface AgentMeetingPayload {
+  version: 1;
+  purpose: string;
+  participantAgentIds: string[];
+  agenda: string[];
+  expectedOutputs: AgentMeetingExpectedOutput[];
+  contextMarkdown?: string | null;
+}
+
+export interface AgentMeetingResult {
+  version: 1;
+  summaryMarkdown: string;
+  decisions: string[];
+  actionItems: Array<{
+    title: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
+  blockers: Array<{
+    summary: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
+  openQuestions: string[];
+  rightTrack?: {
+    status: "on_track" | "at_risk" | "off_track";
+    rationale: string;
+    corrections?: string[];
+  } | null;
+  businessReview?: {
+    goalAlignment: string;
+    targetOrKpiImpact?: string | null;
+    financeOrBudgetImpact?: string | null;
+    customerOrBusinessValue?: string | null;
+    requirements?: string[];
+    risks?: string[];
+  } | null;
+  agentPerformanceReviews?: Array<{
+    agentId: string;
+    assessment: "exceeds" | "on_track" | "at_risk" | "blocked" | "needs_attention";
+    summary: string;
+    evidence?: string[];
+    corrections?: string[];
+    issueId?: string | null;
+  }>;
+  workflowCorrections?: Array<{
+    summary: string;
+    target?: string | null;
+    issueId?: string | null;
+  }>;
+  memoryCorrections?: Array<{
+    system: "karpathy-memory" | "para-memory" | "other";
+    filePath?: string | null;
+    correction: string;
+    rationale?: string | null;
+    issueId?: string | null;
+  }>;
+  ideas?: Array<{
+    title: string;
+    summary: string;
+    ownerAgentId?: string | null;
+    issueId?: string | null;
+  }>;
+}
+
+export interface MeetingContributionPayload {
+  summaryMarkdown: string;
+  progress: string[];
+  blockers: string[];
+  risks: string[];
+  nextActions: string[];
+  proposedDecisions: string[];
+  betterAlternatives: string[];
+}
+
+export interface MeetingContributionSummary extends MeetingContributionPayload {
+  id: string;
+  meetingId: string;
+  agentId: string;
+  agentName: string | null;
+  agentRole: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -1193,26 +1301,165 @@ export interface RequestItemVerdictsInteraction extends IssueThreadInteractionBa
   result?: RequestItemVerdictsResult | null;
 }
 
+export interface AgentMeetingInteraction extends IssueThreadInteractionBase {
+  kind: "agent_meeting";
+  payload: AgentMeetingPayload;
+  result?: AgentMeetingResult | null;
+}
+
+export interface WorkMeetingSummary {
+  id: string;
+  companyId: string;
+  threadKind?: "meeting" | "issue_interaction";
+  projectId?: string | null;
+  goalId?: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueStatus: IssueStatus | null;
+  linkedIssues?: Array<{
+    issueId: string;
+    identifier: string | null;
+    title: string;
+    status: IssueStatus;
+    linkKind: string;
+  }>;
+  sourceIssueId?: string | null;
+  meetingType?: string | null;
+  chairAgentId?: string | null;
+  title: string | null;
+  status: IssueThreadInteractionStatus;
+  purpose: string;
+  agenda: string[];
+  participantAgentIds: string[];
+  participants: Array<{
+    id: string;
+    name: string;
+    role: string;
+    title: string | null;
+    status: string;
+  }>;
+  contributions?: MeetingContributionSummary[];
+  contributedAgentIds?: string[];
+  pendingParticipantAgentIds?: string[];
+  expectedOutputs: AgentMeetingExpectedOutput[];
+  result: AgentMeetingResult | null;
+  resultSummaryMarkdown: string | null;
+  pendingAgeHours: number | null;
+  unlinkedActionItems: number;
+  unlinkedBlockers: number;
+  unlinkedWorkflowCorrections: number;
+  unlinkedMemoryCorrections: number;
+  unlinkedIdeas: number;
+  unlinkedAgentPerformanceReviews: number;
+  unlinkedOutcomeItems: number;
+  createdAt: Date | string;
+  resolvedAt: Date | string | null;
+}
+
+export type MeetingWorkflowTrigger =
+  | "blocked_without_edge"
+  | "stale_review"
+  | "stale_in_progress"
+  | "active_work_pressure"
+  | "failed_run_review"
+  | "campaign_phase_review"
+  | "productivity_review"
+  | "fiction_story_alignment"
+  | "no_recent_meetings";
+
+export interface MeetingWorkflowPolicyTrigger {
+  id: MeetingWorkflowTrigger;
+  label: string;
+  when: string;
+  chair: string;
+  expectedOutputs: AgentMeetingExpectedOutput[];
+}
+
+export interface MeetingWorkflowLifecycleStep {
+  status: "triggered" | "pending" | "answered" | "operationalized";
+  label: string;
+  description: string;
+}
+
+export interface MeetingWorkflowRecommendation {
+  id: string;
+  trigger: MeetingWorkflowTrigger;
+  severity: "info" | "warning" | "urgent";
+  reason: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueStatus: IssueStatus | null;
+  suggestedHeadAgentId: string | null;
+  suggestedHeadName: string | null;
+  participantAgentIds: string[];
+  participantNames: string[];
+  expectedOutputs: AgentMeetingExpectedOutput[];
+}
+
+export interface MeetingWorkflowHealth {
+  companyId: string;
+  metrics: {
+    totalMeetings: number;
+    pendingMeetings: number;
+    resolvedMeetings: number;
+    stalePendingMeetings: number;
+    meetingsLast7Days: number;
+    openMeetingGaps: number;
+    unlinkedOutcomeItems: number;
+    lastMeetingAt: Date | string | null;
+  };
+  policy: {
+    purpose: string;
+    chairRule: string;
+    triggerRules: MeetingWorkflowPolicyTrigger[];
+    lifecycle: MeetingWorkflowLifecycleStep[];
+    doneDefinition: string;
+  };
+  recommendations: MeetingWorkflowRecommendation[];
+}
+
+export interface MeetingWorkflowReconcileResult {
+  checked: number;
+  created: number;
+  requeuedPending: number;
+  cancelledUnrunnable: number;
+  resolvedTerminal: number;
+  skipped: number;
+  wakeupsRequested: number;
+  wakeupsFailed: number;
+  meetings: Array<{
+    id: string;
+    issueId: string | null;
+    participantAgentIds: string[];
+    chairAgentId: string | null;
+  }>;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction
-  | RequestItemVerdictsInteraction;
+  | RequestItemVerdictsInteraction
+  | AgentMeetingInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
   | RequestCheckboxConfirmationPayload
-  | RequestItemVerdictsPayload;
+  | RequestItemVerdictsPayload
+  | AgentMeetingPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
   | RequestCheckboxConfirmationResult
-  | RequestItemVerdictsResult;
+  | RequestItemVerdictsResult
+  | AgentMeetingResult;
 
 export interface IssueAttachment {
   id: string;

@@ -5,18 +5,27 @@ import {
   isSandboxProviderSupportedForAdapter,
   supportedEnvironmentDriversForAdapter,
 } from "./environment-support.js";
+  AGENT_ADAPTER_TYPES,
+  supportedEnvironmentDriversForAdapter,
+} from "./index.js";
 
-describe("isSandboxProviderSupportedForAdapter", () => {
-  it("accepts additional sandbox providers for remote-managed adapters", () => {
-    expect(
-      isSandboxProviderSupportedForAdapter("codex_local", "fake-plugin", ["fake-plugin"]),
-    ).toBe(true);
+describe("adapter environment support", () => {
+  it("treats minimax_local as a first-class remote-managed local adapter", () => {
+    expect(AGENT_ADAPTER_TYPES).toContain("minimax_local");
+    expect(supportedEnvironmentDriversForAdapter("minimax_local")).toEqual([
+      "local",
+      "ssh",
+      "sandbox",
+    ]);
   });
 
-  it("rejects providers for adapters without remote-managed environment support", () => {
-    expect(
-      isSandboxProviderSupportedForAdapter("openclaw", "fake-plugin", ["fake-plugin"]),
-    ).toBe(false);
+  it("treats zai_local as a first-class remote-managed local adapter", () => {
+    expect(AGENT_ADAPTER_TYPES).toContain("zai_local");
+    expect(supportedEnvironmentDriversForAdapter("zai_local")).toEqual([
+      "local",
+      "ssh",
+      "sandbox",
+    ]);
   });
 
   it("treats grok_local as a remote-managed local adapter", () => {

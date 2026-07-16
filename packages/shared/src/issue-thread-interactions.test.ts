@@ -4,6 +4,9 @@ import {
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  createIssueThreadInteractionSchema,
+  meetingContributionPayloadSchema,
+  respondIssueThreadInteractionSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
@@ -37,6 +40,128 @@ describe("issue thread interaction schemas", () => {
         supersedeOnUserComment: true,
       },
     });
+  });
+
+  it("parses structured agent meeting interactions", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "agent_meeting",
+      title: "Cover incident triage",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        purpose: "Decide owner and next tasks for the cover-image incident.",
+        participantAgentIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        agenda: ["Review evidence", "Choose owner", "Create follow-up tasks"],
+        expectedOutputs: [
+          "goals",
+          "targets",
+          "kpis",
+          "finance",
+          "business_requirements",
+          "agent_performance",
+          "decisions",
+          "tasks",
+          "blockers",
+          "memory_corrections",
+          "idea_sharing",
+        ],
+      },
+    });
+
+    expect(parsed.kind).toBe("agent_meeting");
+    if (parsed.kind !== "agent_meeting") return;
+    expect(parsed.payload.expectedOutputs).toContain("business_requirements");
+    expect(parsed.payload.expectedOutputs).toContain("agent_performance");
+  });
+
+  it("validates structured meeting contribution payloads", () => {
+    expect(meetingContributionPayloadSchema.parse({
+      summaryMarkdown: "Progress is healthy but the API decision is blocked.",
+      progress: ["Finished schema review."],
+      blockers: ["Need API owner."],
+      risks: ["Review may slip."],
+      nextActions: ["Assign owner."],
+      proposedDecisions: ["Split API and UI work."],
+      betterAlternatives: ["Move API work to platform team."],
+    })).toMatchObject({
+      summaryMarkdown: "Progress is healthy but the API decision is blocked.",
+      blockers: ["Need API owner."],
+    });
+  });
+
+  it("parses board meeting contribution override controls", () => {
+    const parsed = respondIssueThreadInteractionSchema.parse({
+      overrideMissingContributions: true,
+      overrideReason: "Contributor timed out; board accepted the available evidence.",
+    });
+
+    expect(parsed.overrideMissingContributions).toBe(true);
+    expect(parsed.overrideReason).toBe("Contributor timed out; board accepted the available evidence.");
+  });
+
+  it("parses rich agent meeting results with memory and workflow corrections", () => {
+    const parsed = respondIssueThreadInteractionSchema.parse({
+      meetingResult: {
+        version: 1,
+        summaryMarkdown: "We are at risk, but the fix path is clear.",
+        decisions: ["Keep the current owner and add a memory correction follow-up."],
+        actionItems: [{
+          title: "Create a child issue for the workflow correction",
+          ownerAgentId: null,
+          issueId: null,
+        }],
+        blockers: [],
+        openQuestions: ["Should para-memory keep this as an evergreen rule?"],
+        rightTrack: {
+          status: "at_risk",
+          rationale: "The issue is valid, but stale memory is causing repeated wrong writes.",
+          corrections: ["Update the affected memory file before the next implementation run."],
+        },
+        businessReview: {
+          goalAlignment: "The fix keeps the launch-quality goal from being blocked by stale memory.",
+          targetOrKpiImpact: "Reduces rework before the next release milestone.",
+          financeOrBudgetImpact: "Avoids repeated token spend on the same incorrect owner lookup.",
+          customerOrBusinessValue: "Keeps the incident response path reliable.",
+          requirements: ["Meeting outcomes must identify stale shared memory when it affects work."],
+          risks: ["If this is not linked to an issue, the correction may be forgotten."],
+        },
+        agentPerformanceReviews: [{
+          agentId: "11111111-1111-4111-8111-111111111111",
+          assessment: "at_risk",
+          summary: "The agent found the right fix path but relied on stale memory before escalation.",
+          evidence: ["The meeting identified a stale memory file as the repeated failure source."],
+          corrections: ["Verify memory before assigning ownership-sensitive follow-up work."],
+          issueId: null,
+        }],
+        workflowCorrections: [{
+          summary: "Require agents to verify memory writes after updating meeting notes.",
+          target: "meeting workflow",
+          issueId: null,
+        }],
+        memoryCorrections: [{
+          system: "karpathy-memory",
+          filePath: "memory/agents/meetings.md",
+          correction: "The previous meeting note points at the wrong owner.",
+          rationale: "Agents are using that stale owner in follow-up tasks.",
+          issueId: null,
+        }],
+        ideas: [{
+          title: "Meeting digest",
+          summary: "Create a lightweight digest issue after cross-agent meetings.",
+          ownerAgentId: null,
+          issueId: null,
+        }],
+      },
+    });
+
+    expect(parsed.meetingResult?.rightTrack?.status).toBe("at_risk");
+    expect(parsed.meetingResult?.businessReview?.goalAlignment).toContain("launch-quality goal");
+    expect(parsed.meetingResult?.agentPerformanceReviews?.[0]?.assessment).toBe("at_risk");
+    expect(parsed.meetingResult?.memoryCorrections?.[0]?.system).toBe("karpathy-memory");
+    expect(parsed.meetingResult?.ideas?.[0]?.title).toBe("Meeting digest");
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {

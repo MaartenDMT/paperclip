@@ -72,6 +72,37 @@ export {
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {
+  CompanyTemplateAgentDefinition,
+  CompanyTemplateArtifactContract,
+  CompanyTemplateArtifactKind,
+  CompanyTemplateArtifactLifecycleStatus,
+  CompanyTemplateArtifactReviewGate,
+  CompanyTemplateCampaignDefinition,
+  CompanyTemplateCampaignPhaseDefinition,
+  CompanyTemplateCompanyDefinition,
+  CompanyTemplateDefinition,
+  CompanyTemplateDocumentDefinition,
+  CompanyTemplateDocumentScope,
+  CompanyTemplateGoalDefinition,
+  CompanyTemplateIssueDefinition,
+  CompanyTemplateMaterializationAction,
+  CompanyTemplateMaterializationActionKind,
+  CompanyTemplateMaterializationPlan,
+  CompanyTemplateMaterializationResult,
+  CompanyTemplateMetadata,
+  CompanyTemplateProjectDefinition,
+  CompanyTemplateSchemaVersion,
+  CompanyTemplateSeedOptions,
+} from "./company-template.js";
+export { READERSBASE_ARTIFACT_CONTRACT_VERSION } from "./readersbase-artifact-bridge.js";
+export type {
+  ReadersBaseArtifactBridgeContractRef,
+  ReadersBaseArtifactBridgeFollowUpContext,
+  ReadersBaseArtifactBridgeMetadata,
+  ReadersBaseArtifactBridgeSourceRefs,
+  ReadersBaseArtifactContractVersion,
+} from "./readersbase-artifact-bridge.js";
+export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillCompatibility,
@@ -209,6 +240,15 @@ export type {
 } from "../agent-eligibility.js";
 export type { AssetImage } from "./asset.js";
 export type {
+  Project,
+  ProjectCodebase,
+  ProjectCodebaseOrigin,
+  ProjectGoalRef,
+  ProjectManagedByPlugin,
+  ProjectWorkspace,
+  ProjectBudgetSummary,
+} from "./project.js";
+export type {
   CreateDocumentAnnotationCommentRequest,
   CreateDocumentAnnotationThreadRequest,
   DocumentAnnotationAnchorRemapSnapshot,
@@ -231,7 +271,6 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchCountType,
   CompanySearchFilterOptionCounts,
@@ -425,12 +464,25 @@ export type {
   AcceptedPlanDecompositionResult,
   AcceptedPlanDecompositionChildIssue,
   AcceptedPlanDecompositionSummary,
+  AgentMeetingExpectedOutput,
+  AgentMeetingPayload,
+  AgentMeetingResult,
+  MeetingContributionPayload,
+  MeetingContributionSummary,
+  WorkMeetingSummary,
+  MeetingWorkflowTrigger,
+  MeetingWorkflowPolicyTrigger,
+  MeetingWorkflowLifecycleStep,
+  MeetingWorkflowRecommendation,
+  MeetingWorkflowHealth,
+  MeetingWorkflowReconcileResult,
   IssueThreadInteractionBase,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestItemVerdictsInteraction,
+  AgentMeetingInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -529,8 +581,23 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
-export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
+export type {
+  CostEvent,
+  CostSummary,
+  IssueCostSummary,
+  CostByAgent,
+  CostByProviderModel,
+  CostByBiller,
+  CostByAgentModel,
+  CostWindowSpendRow,
+  CostByProject,
+} from "./cost.js";
+export type {
+  FinanceEvent,
+  FinanceSummary,
+  FinanceByBiller,
+  FinanceByKind,
+} from "./finance.js";
 export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
@@ -538,6 +605,7 @@ export type {
   GitWorktreeBranchIncoherenceEvidence,
   GitWorktreeInProgressOperation,
   HeartbeatRun,
+  HeartbeatRunSkillActivation,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
   AgentRuntimeState,
@@ -546,7 +614,6 @@ export type {
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
-export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
 export type {
   TimelineActorType,
   TimelineEventKind,
@@ -557,6 +624,17 @@ export type {
   WorkTimelineEdge,
   WorkTimelineResult,
 } from "./work-timeline.js";
+export type {
+  DashboardRunActivityDay,
+  DashboardSummary,
+  ManagerOverviewAttention,
+  ManagerOverviewIssueWorkloadKind,
+  ManagerOverviewIssue,
+  ManagerOverviewMeeting,
+  ManagerOverviewAgent,
+  ManagerOverviewReport,
+  ManagerOverview,
+} from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,
@@ -678,3 +756,4 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export * from "./campaign.js";

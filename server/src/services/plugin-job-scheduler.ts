@@ -49,11 +49,17 @@ import { logger } from "../middleware/logger.js";
 /** Default interval between scheduler ticks (30 seconds). */
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
 
+/** Maximum time to wait for the due-jobs query before abandoning the tick. */
+const DEFAULT_DUE_JOBS_QUERY_TIMEOUT_MS = 10_000;
+
 /** Default timeout for a runJob RPC call (5 minutes). */
 const DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Maximum number of concurrent job executions across all plugins. */
 const DEFAULT_MAX_CONCURRENT_JOBS = 10;
+
+/** Default timeout before a wedged tick is treated as stale and recovered. */
+const DEFAULT_STALE_TICK_TIMEOUT_MS = 6 * 60 * 1_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +81,10 @@ export interface PluginJobSchedulerOptions {
   jobTimeoutMs?: number;
   /** Maximum number of concurrent job executions (default: 10). */
   maxConcurrentJobs?: number;
+  /** Maximum time a single tick may stay in progress before recovery (default: 6min). */
+  staleTickTimeoutMs?: number;
+  /** Maximum time to wait for the due-jobs query before failing the tick (default: 10s). */
+  dueJobsQueryTimeoutMs?: number;
 }
 
 /**
@@ -210,6 +220,8 @@ export function createPluginJobScheduler(
     tickIntervalMs = DEFAULT_TICK_INTERVAL_MS,
     jobTimeoutMs = DEFAULT_JOB_TIMEOUT_MS,
     maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS,
+    staleTickTimeoutMs = DEFAULT_STALE_TICK_TIMEOUT_MS,
+    dueJobsQueryTimeoutMs = DEFAULT_DUE_JOBS_QUERY_TIMEOUT_MS,
   } = options;
 
   const log = logger.child({ service: "plugin-job-scheduler" });
@@ -236,6 +248,33 @@ export function createPluginJobScheduler(
   /** Guard against concurrent tick execution. */
   let tickInProgress = false;
 
+  /** Timestamp when the current tick started. */
+  let tickStartedAt: Date | null = null;
+
+  /** Monotonic id for the in-flight tick, used to ignore stale completions. */
+  let currentTickGeneration = 0;
+
+  async function withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Core: tick
   // -----------------------------------------------------------------------
@@ -246,13 +285,25 @@ export function createPluginJobScheduler(
   async function tick(): Promise<void> {
     // Prevent overlapping ticks (in case a tick takes longer than the interval)
     if (tickInProgress) {
-      log.debug("skipping tick — previous tick still in progress");
-      return;
+      const tickAgeMs = tickStartedAt ? Date.now() - tickStartedAt.getTime() : 0;
+      if (tickAgeMs > staleTickTimeoutMs) {
+        log.error(
+          { tickAgeMs, staleTickTimeoutMs, activeJobCount: activeJobs.size },
+          "recovering stale scheduler tick after timeout",
+        );
+        tickInProgress = false;
+        tickStartedAt = null;
+      } else {
+        log.debug("skipping tick — previous tick still in progress");
+        return;
+      }
     }
 
+    const tickGeneration = ++currentTickGeneration;
     tickInProgress = true;
+    tickStartedAt = new Date();
     tickCount++;
-    lastTickAt = new Date();
+    lastTickAt = tickStartedAt;
 
     try {
       const now = new Date();
@@ -260,15 +311,25 @@ export function createPluginJobScheduler(
       // Query for jobs whose nextRunAt has passed and are active.
       // We include jobs with null nextRunAt since they may have just been
       // registered and need their first run calculated.
-      const dueJobs = await db
-        .select()
-        .from(pluginJobs)
-        .where(
-          and(
-            eq(pluginJobs.status, "active"),
-            lte(pluginJobs.nextRunAt, now),
+      const dueJobs = await withTimeout(
+        db
+          .select()
+          .from(pluginJobs)
+          .where(
+            and(
+              eq(pluginJobs.status, "active"),
+              lte(pluginJobs.nextRunAt, now),
+            ),
           ),
-        );
+        dueJobsQueryTimeoutMs,
+        "plugin job scheduler due-jobs query",
+      );
+
+      // A newer tick recovered this one while the DB call was still pending.
+      if (tickGeneration !== currentTickGeneration) {
+        log.warn({ tickGeneration }, "aborting stale recovered scheduler tick");
+        return;
+      }
 
       if (dueJobs.length === 0) {
         return;
@@ -280,6 +341,12 @@ export function createPluginJobScheduler(
       const dispatches: Promise<void>[] = [];
 
       for (const job of dueJobs) {
+        // A newer tick recovered this one while we were iterating due jobs.
+        if (tickGeneration !== currentTickGeneration) {
+          log.warn({ tickGeneration }, "stopping stale recovered scheduler tick before dispatch");
+          return;
+        }
+
         // Concurrency limit
         if (activeJobs.size >= maxConcurrentJobs) {
           log.warn(
@@ -328,7 +395,10 @@ export function createPluginJobScheduler(
         "scheduler tick error",
       );
     } finally {
-      tickInProgress = false;
+      if (tickGeneration === currentTickGeneration) {
+        tickInProgress = false;
+        tickStartedAt = null;
+      }
     }
   }
 

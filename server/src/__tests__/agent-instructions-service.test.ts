@@ -162,6 +162,48 @@ describe("agent instructions service", () => {
     ]);
   });
 
+  it("archives stale issue-scoped files while preserving active issue files", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-stale-issues-");
+    cleanupDirs.add(externalRoot);
+
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA-10-checklist.md"), "done checklist\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA_11_STATUS.md"), "cancelled status\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "REA-12-active.md"), "active checklist\n", "utf8");
+    await fs.mkdir(path.join(externalRoot, "outputs"), { recursive: true });
+    await fs.writeFile(path.join(externalRoot, "outputs", "summary_REA-13.md"), "missing issue\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "RUNBOOK.md"), "durable notes\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    const result = await svc.pruneStaleIssueScopedFiles(agent, {
+      "REA-10": "done",
+      "REA-11": "cancelled",
+      "REA-12": "blocked",
+    });
+
+    expect(result.pruned.map((file) => file.path).sort()).toEqual([
+      "REA-10-checklist.md",
+      "REA_11_STATUS.md",
+      "outputs/summary_REA-13.md",
+    ]);
+    expect(result.retained.map((file) => file.path)).toEqual(["REA-12-active.md"]);
+    await expect(fs.stat(path.join(externalRoot, "REA-10-checklist.md"))).rejects.toThrow();
+    await expect(fs.stat(path.join(externalRoot, "REA_11_STATUS.md"))).rejects.toThrow();
+    await expect(fs.stat(path.join(externalRoot, "outputs", "summary_REA-13.md"))).rejects.toThrow();
+    await expect(fs.readFile(path.join(externalRoot, "REA-12-active.md"), "utf8")).resolves.toBe("active checklist\n");
+    await expect(fs.readFile(path.join(externalRoot, "RUNBOOK.md"), "utf8")).resolves.toBe("durable notes\n");
+
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "REA-12-active.md", "RUNBOOK.md"]);
+  });
+
   it("recovers a managed bundle from disk when bundle config metadata is missing", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-recover-");
     cleanupDirs.add(paperclipHome);
@@ -357,5 +399,113 @@ describe("agent instructions service", () => {
       "Recovered managed instructions entry file from disk as AGENTS.md; previous entry docs/MISSING.md was missing.",
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
+  });
+
+  it("replaces a managed bundle only when the files match the expected stock bundle", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-replace-stock-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+    const oldFiles = {
+      "AGENTS.md": "# Old default\n",
+      "TOOLS.md": "# Tools\n",
+    };
+    const newFiles = {
+      "AGENTS.md": "# Manager default\n",
+      "TOOLS.md": "# Tools\n",
+    };
+    const materialized = await svc.materializeManagedBundle(agent, oldFiles);
+
+    const result = await svc.replaceBundleIfFilesMatch(
+      { ...agent, adapterConfig: materialized.adapterConfig },
+      oldFiles,
+      newFiles,
+    );
+
+    expect(result.updated).toBe(true);
+    const exported = await svc.exportFiles({ ...agent, adapterConfig: result.adapterConfig });
+    expect(exported.files).toEqual(newFiles);
+  });
+
+  it("does not replace customized managed instructions", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-preserve-custom-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+    const oldFiles = { "AGENTS.md": "# Old default\n" };
+    const customFiles = { "AGENTS.md": "# Custom manager instructions\n" };
+    const newFiles = { "AGENTS.md": "# Manager default\n" };
+    const materialized = await svc.materializeManagedBundle(agent, customFiles);
+
+    const result = await svc.replaceBundleIfFilesMatch(
+      { ...agent, adapterConfig: materialized.adapterConfig },
+      oldFiles,
+      newFiles,
+    );
+
+    expect(result.updated).toBe(false);
+    const exported = await svc.exportFiles({ ...agent, adapterConfig: result.adapterConfig });
+    expect(exported.files).toEqual(customFiles);
+  });
+
+  it("replaces an external bundle only when the files match the expected stock bundle", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-external-stock-");
+    cleanupDirs.add(externalRoot);
+
+    const oldFiles = {
+      "AGENTS.md": "# Old default\n",
+      "TOOLS.md": "# Tools\n",
+    };
+    const newFiles = {
+      "AGENTS.md": "# Manager default\n",
+      "TOOLS.md": "# Tools\n",
+    };
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), oldFiles["AGENTS.md"], "utf8");
+    await fs.writeFile(path.join(externalRoot, "TOOLS.md"), oldFiles["TOOLS.md"], "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    const result = await svc.replaceBundleIfFilesMatch(agent, oldFiles, newFiles);
+
+    expect(result.updated).toBe(true);
+    expect(result.adapterConfig).toEqual(agent.adapterConfig);
+    const exported = await svc.exportFiles(agent);
+    expect(exported.files).toEqual(newFiles);
+  });
+
+  it("does not replace customized external instructions", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-external-custom-");
+    cleanupDirs.add(externalRoot);
+
+    const oldFiles = { "AGENTS.md": "# Old default\n" };
+    const customFiles = { "AGENTS.md": "# Custom external instructions\n" };
+    const newFiles = { "AGENTS.md": "# Manager default\n" };
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), customFiles["AGENTS.md"], "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    const result = await svc.replaceBundleIfFilesMatch(agent, oldFiles, newFiles);
+
+    expect(result.updated).toBe(false);
+    const exported = await svc.exportFiles(agent);
+    expect(exported.files).toEqual(customFiles);
   });
 });

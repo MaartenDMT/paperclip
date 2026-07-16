@@ -97,7 +97,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     mockAdapterExecute.mockReset();
@@ -421,11 +421,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const blockerId = randomUUID();
     const blockedIssueId = randomUUID();
     const activeRunId = randomUUID();
+  it("does not auto-checkout blocked issues for comment wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const commentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values({
@@ -529,6 +535,57 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, activeRunId));
+    await db.insert(issues).values({
+      id: blockedIssueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "Can you respond while this task is blocked?",
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+    });
+    expect(wake).not.toBeNull();
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    const issue = await db
+      .select({ status: issues.status, checkoutRunId: issues.checkoutRunId, startedAt: issues.startedAt })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({ status: "blocked", checkoutRunId: null, startedAt: null });
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
@@ -677,6 +734,186 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
       finishFirstRun();
+    }
+  }, 40_000);
+
+  it("prefers ready queued issues over blocked issues without interaction context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const firstIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const readyIssueId = randomUUID();
+    let finishFirstRun!: () => void;
+    let finishReadyRun!: () => void;
+    const firstRunFinished = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+    const readyRunFinished = new Promise<void>((resolve) => {
+      finishReadyRun = resolve;
+    });
+
+    mockAdapterExecute
+      .mockImplementationOnce(async () => {
+        await firstRunFinished;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "First queued scheduling run completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      })
+      .mockImplementationOnce(async () => {
+        await readyRunFinished;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Ready queued scheduling run completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "Long running assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked assignment without interaction",
+        status: "blocked",
+        priority: "critical",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: readyIssueId,
+        companyId,
+        title: "Ready assignment",
+        status: "todo",
+        priority: "low",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: firstIssueId },
+        contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+      await db.insert(issueComments).values({
+        companyId,
+        issueId: firstIssueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: firstWake!.id,
+        body: "First queued scheduling run completed.",
+      });
+
+      const firstRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      expect(firstRunStarted).toBe(true);
+
+      const blockedWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: blockedIssueId },
+        contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(blockedWake).not.toBeNull();
+
+      const readyWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: readyIssueId },
+        contextSnapshot: { issueId: readyIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(readyWake).not.toBeNull();
+      await db.insert(issueComments).values({
+        companyId,
+        issueId: readyIssueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: readyWake!.id,
+        body: "Ready queued scheduling run completed.",
+      });
+
+      finishFirstRun();
+
+      const readyRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, readyWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      expect(readyRunStarted).toBe(true);
+
+      const blockedRunWhileReadyRuns = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, blockedWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(blockedRunWhileReadyRuns?.status).toBe("queued");
+
+      finishReadyRun();
+
+      const readyRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, readyWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+      expect(readyRunSucceeded).toBe(true);
+    } finally {
+      finishFirstRun();
+      finishReadyRun();
     }
   }, 40_000);
 
@@ -882,6 +1119,276 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+
+  it("allows a manager-owned blocked issue to run when the unresolved blocker belongs to a non-invokable direct report", async () => {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const reportId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "ReadersBase",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "ReadersBase QA Director",
+        role: "qa",
+        title: "QA Director",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+      {
+        id: reportId,
+        companyId,
+        name: "QA Engineer",
+        role: "qa",
+        status: "paused",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Execute authenticated QA artifact",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: reportId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Coordinate authenticated QA artifact",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: managerId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: managerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_promoted",
+      payload: { issueId: blockedIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const runStarted = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: agentWakeupRequests.status,
+          error: agentWakeupRequests.error,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(runStarted, JSON.stringify({ run, wakeup })).toBe(true);
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(wakeup).toMatchObject({ status: "completed", error: null });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a manager-owned blocked issue to run when the unresolved blocker belongs to a non-invokable direct report", async () => {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const reportId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "ReadersBase",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "ReadersBase QA Director",
+        role: "qa",
+        title: "QA Director",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+      {
+        id: reportId,
+        companyId,
+        name: "QA Engineer",
+        role: "qa",
+        status: "paused",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Execute authenticated QA artifact",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: reportId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Coordinate authenticated QA artifact",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: managerId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: managerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_promoted",
+      payload: { issueId: blockedIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const runStarted = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: agentWakeupRequests.status,
+          error: agentWakeupRequests.error,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(runStarted, JSON.stringify({ run, wakeup })).toBe(true);
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(wakeup).toMatchObject({ status: "completed", error: null });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {

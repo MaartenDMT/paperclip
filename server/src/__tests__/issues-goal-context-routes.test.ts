@@ -46,6 +46,10 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  pruneStaleIssueScopedFiles: vi.fn(async () => ({ removed: [] })),
+}));
+
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(async () => []),
   saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
@@ -103,6 +107,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
   accessService: () => mockAccessService,
+  agentInstructionsService: () => mockAgentInstructionsService,
   agentService: () => mockAgentService,
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
@@ -205,6 +210,7 @@ describe.sequential("issue goal context routes", () => {
       totalComments: 0,
       latestCommentId: null,
       latestCommentAt: null,
+      firstUnreadCommentIndex: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
@@ -440,6 +446,26 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces the first unread comment index for board heartbeat context", async () => {
+    mockIssueService.getCommentCursor.mockResolvedValue({
+      totalComments: 4,
+      latestCommentId: "comment-4",
+      latestCommentAt: new Date("2026-04-20T12:00:00.000Z"),
+      firstUnreadCommentIndex: 2,
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getCommentCursor).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { userId: "local-board" },
+    );
+    expect(res.body.commentCursor.firstUnreadCommentIndex).toBe(2);
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

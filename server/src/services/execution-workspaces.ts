@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -102,6 +102,8 @@ export type ExecutionWorkspaceGitWorktreeContention = {
     issueIdentifier: string | null;
   } | null;
 } | null;
+const DEFAULT_STALE_SHARED_WORKSPACE_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_STALE_SHARED_WORKSPACE_LIMIT = 500;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -913,6 +915,7 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
@@ -1162,13 +1165,17 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      const query = db
         .select()
         .from(executionWorkspaces)
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+      const rows = typeof filters?.limit === "number"
+        ? await query.limit(filters.limit)
+        : await query;
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
       return rows.map((row) =>
         toExecutionWorkspace(
@@ -1184,9 +1191,10 @@ export function executionWorkspaceService(db: Db) {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      const query = db
         .select({
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
@@ -1200,6 +1208,9 @@ export function executionWorkspaceService(db: Db) {
         .from(executionWorkspaces)
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+      const rows = typeof filters?.limit === "number"
+        ? await query.limit(filters.limit)
+        : await query;
       return rows.map((row) => toExecutionWorkspaceSummary(row));
     },
 
@@ -1941,6 +1952,81 @@ export function executionWorkspaceService(db: Db) {
         }
 
         return cleared;
+      });
+    },
+
+    reconcileStaleSharedWorkspaces: async (options?: {
+      now?: Date;
+      staleAfterMs?: number;
+      limit?: number;
+    }) => {
+      const now = options?.now ?? new Date();
+      const staleAfterMs = Math.max(60_000, options?.staleAfterMs ?? DEFAULT_STALE_SHARED_WORKSPACE_MS);
+      const limit = Math.max(1, Math.min(5_000, Math.trunc(options?.limit ?? DEFAULT_STALE_SHARED_WORKSPACE_LIMIT)));
+      const cutoff = new Date(now.getTime() - staleAfterMs);
+      const cleanupReason = `Archived by stale shared workspace reconciliation after ${Math.round(staleAfterMs / (60 * 60 * 1000))}h idle`;
+
+      return db.transaction(async (tx) => {
+        const candidates = await tx
+          .select({ id: executionWorkspaces.id })
+          .from(executionWorkspaces)
+          .where(
+            and(
+              inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+              eq(executionWorkspaces.mode, "shared_workspace"),
+              eq(executionWorkspaces.strategyType, "project_primary"),
+              eq(executionWorkspaces.providerType, "local_fs"),
+              lte(executionWorkspaces.lastUsedAt, cutoff),
+              sql`not exists (
+                select 1
+                from "issues" linked_issue
+                where linked_issue."company_id" = ${executionWorkspaces.companyId}
+                  and linked_issue."execution_workspace_id" = ${executionWorkspaces.id}
+                  and linked_issue."status" not in ('done', 'cancelled')
+              )`,
+              sql`not exists (
+                select 1
+                from "workspace_runtime_services" runtime_service
+                where runtime_service."execution_workspace_id" = ${executionWorkspaces.id}
+                  and runtime_service."status" in ('starting', 'running')
+              )`,
+            ),
+          )
+          .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt))
+          .limit(limit);
+
+        const ids = candidates.map((candidate) => candidate.id);
+        if (ids.length === 0) {
+          return { archived: 0, detachedIssues: 0, cutoff, limit };
+        }
+
+        const archived = await tx
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            closedAt: now,
+            cleanupEligibleAt: null,
+            cleanupReason,
+            updatedAt: now,
+          })
+          .where(inArray(executionWorkspaces.id, ids))
+          .returning({ id: executionWorkspaces.id });
+
+        const detachedIssues = await tx
+          .update(issues)
+          .set({
+            executionWorkspaceId: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              inArray(issues.executionWorkspaceId, ids),
+              inArray(issues.status, ["done", "cancelled"]),
+            ),
+          )
+          .returning({ id: issues.id });
+
+        return { archived: archived.length, detachedIssues: detachedIssues.length, cutoff, limit };
       });
     },
   };

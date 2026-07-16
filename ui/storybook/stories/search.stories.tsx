@@ -208,6 +208,7 @@ const fixtureResponse: CompanySearchResponse = {
     artifact: 0,
     agent: fixtureAgents.length,
     project: fixtureProjects.length,
+    campaign: 0,
   },
   filterOptionCounts: {
     status: {},
@@ -700,6 +701,7 @@ function SearchStories() {
               onClearAll={noop}
             />
           </div>
+          <SearchPagePreview response={{ ...fixtureResponse, results: [], countsByType: { issue: 0, agent: 0, project: 0, campaign: 0 } }} state="empty" query="ghostbuster" />
         </section>
 
         <section className="paperclip-story__frame overflow-hidden p-4">

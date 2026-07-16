@@ -13,10 +13,65 @@ const CODEX_USAGE_LIMIT_RE =
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
 
+type ParsedSkillActivation = {
+  skillKey: string;
+  skillName: string;
+  source: "codex";
+};
+
+function readSkillName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function parseToolInput(value: unknown): Record<string, unknown> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    return parseObject(parseJson(value));
+  }
+  return {};
+}
+
+function extractCodexSkillActivation(item: Record<string, unknown>): ParsedSkillActivation | null {
+  const call = parseObject(item.call);
+  const state = parseObject(item.state);
+  const toolName =
+    asString(item.name, "") ||
+    asString(item.tool_name, "") ||
+    asString(item.tool, "") ||
+    asString(call.name, "") ||
+    asString(call.tool_name, "") ||
+    asString(call.tool, "");
+  if (!/^skill$/i.test(toolName.trim())) return null;
+  const inputCandidates = [
+    item.input,
+    item.arguments,
+    item.args,
+    state.input,
+    state.arguments,
+    state.args,
+    call.input,
+    call.arguments,
+    call.args,
+  ];
+  for (const candidate of inputCandidates) {
+    const input = parseToolInput(candidate);
+    const skillName = readSkillName(input.skill ?? input.skill_name ?? input.name);
+    if (skillName) return { skillKey: skillName, skillName, source: "codex" };
+  }
+  const skillName = readSkillName(item.skill ?? item.skill_name ?? call.skill ?? call.skill_name);
+  if (!skillName) return null;
+  return { skillKey: skillName, skillName, source: "codex" };
+}
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  const skillActivations: ParsedSkillActivation[] = [];
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -44,6 +99,8 @@ export function parseCodexJsonl(stdout: string) {
 
     if (type === "item.completed") {
       const item = parseObject(event.item);
+      const skillActivation = extractCodexSkillActivation(item);
+      if (skillActivation) skillActivations.push(skillActivation);
       if (asString(item.type, "") === "agent_message") {
         const text = asString(item.text, "");
         if (text) finalMessage = text;
@@ -71,6 +128,7 @@ export function parseCodexJsonl(stdout: string) {
     summary: finalMessage?.trim() ?? "",
     usage,
     errorMessage,
+    skillActivations,
   };
 }
 

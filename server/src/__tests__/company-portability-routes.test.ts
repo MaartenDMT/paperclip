@@ -82,6 +82,13 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+vi.mock("../services/heartbeat.js", () => ({
+  heartbeatService: () => ({
+    cancelBudgetScopeWork: vi.fn(),
+    drainActiveRunExecutions: vi.fn(),
+  }),
+}));
+
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -92,6 +99,12 @@ function registerCompanyRouteMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
+  }));
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => ({
+      cancelBudgetScopeWork: vi.fn(),
+      drainActiveRunExecutions: vi.fn(),
+    }),
   }));
 }
 

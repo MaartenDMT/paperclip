@@ -90,6 +90,12 @@ export interface AdapterExecutionResult {
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  skillActivations?: Array<{
+    skillKey: string;
+    skillName?: string | null;
+    source?: string | null;
+    activatedAt?: string | Date | null;
+  }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {
@@ -147,7 +153,7 @@ export interface AdapterModel {
   label: string;
 }
 
-export type AdapterModelProfileKey = "cheap";
+export type AdapterModelProfileKey = "cheap" | "fallback";
 
 export interface AdapterModelProfileDefinition {
   key: AdapterModelProfileKey;
@@ -490,6 +496,21 @@ export interface CreateConfigValues {
    */
   cheapModel?: string;
   cheapModelEnabled?: boolean;
+  cheapModelAdapterType?: string;
+  cheapModelCommand?: string;
+  cheapModelProvider?: string;
+  cheapModelReasoningEffort?: string;
+  /**
+   * Optional fallback model profile config for provider/model failover.
+   * Persisted under `runtimeConfig.modelProfiles.fallback.adapterConfig`,
+   * never on the primary `adapterConfig`.
+   */
+  fallbackModel?: string;
+  fallbackModelEnabled?: boolean;
+  fallbackModelAdapterType?: string;
+  fallbackModelCommand?: string;
+  fallbackModelProvider?: string;
+  fallbackModelReasoningEffort?: string;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   claudeEngine?: "auto" | "cli" | "acp";

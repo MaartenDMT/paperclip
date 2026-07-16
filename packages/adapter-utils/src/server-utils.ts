@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
@@ -15,6 +15,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  timeoutReason?: "run_timeout" | "startup_no_output_timeout";
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -78,6 +79,24 @@ export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
+  if (process.platform === "win32" && typeof running.child.pid === "number" && running.child.pid > 0) {
+    const args = ["/PID", String(running.child.pid), "/T", "/F"];
+    try {
+      const killer = spawn("taskkill", args, {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.on("error", () => {
+        if (!running.child.killed) {
+          running.child.kill(signal);
+        }
+      });
+      killer.unref();
+      return;
+    } catch {
+      // Fall back to Node's direct child signal below.
+    }
+  }
   if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
     try {
       process.kill(-running.processGroupId, signal);
@@ -136,6 +155,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Do not report product facts from stale memory when a fresh check failed. If an API/site fetch returns HTML, auth, login, permission, timeout, or non-parseable output, treat that as an access/runtime blocker and say the audit could not be verified from live data.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
@@ -371,11 +391,6 @@ export function appendWithByteCap(prev: string, chunk: string, cap = MAX_CAPTURE
   let start = Math.max(0, bytes - cap);
   while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start += 1;
   return buffer.subarray(start).toString("utf8");
-}
-
-function resumeReadable(readable: { resume: () => unknown; destroyed?: boolean } | null | undefined) {
-  if (!readable || readable.destroyed) return;
-  readable.resume();
 }
 
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
@@ -615,6 +630,25 @@ type PaperclipWakeExecutionWorkspace = {
   branchName: string | null;
 };
 
+type PaperclipWakeManagerReport = {
+  id: string | null;
+  name: string | null;
+  role: string | null;
+  title: string | null;
+  status: string | null;
+  openIssues: number;
+  activeRuns: number;
+};
+
+type PaperclipWakeManagerDelegation = {
+  managerAgentId: string | null;
+  managerOpenIssues: number;
+  delegatedOpenIssues: number;
+  wipCap: number;
+  currentIssueAssignedToManager: boolean;
+  directReports: PaperclipWakeManagerReport[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -622,6 +656,7 @@ type PaperclipWakePayload = {
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
   activeTreeHold: PaperclipWakeTreeHoldSummary | null;
+  managerDelegation: PaperclipWakeManagerDelegation | null;
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
@@ -629,6 +664,8 @@ type PaperclipWakePayload = {
   planReviewContext: PaperclipWakePlanReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
+  meetingId: string | null;
+  interactionId: string | null;
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
@@ -1001,6 +1038,44 @@ function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeC
   };
 }
 
+function normalizePaperclipWakeManagerReport(value: unknown): PaperclipWakeManagerReport | null {
+  const report = parseObject(value);
+  const id = asString(report.id, "").trim() || null;
+  const name = asString(report.name, "").trim() || null;
+  const role = asString(report.role, "").trim() || null;
+  const title = asString(report.title, "").trim() || null;
+  const status = asString(report.status, "").trim() || null;
+  if (!id && !name) return null;
+  return {
+    id,
+    name,
+    role,
+    title,
+    status,
+    openIssues: Math.max(0, asNumber(report.openIssues, 0)),
+    activeRuns: Math.max(0, asNumber(report.activeRuns, 0)),
+  };
+}
+
+function normalizePaperclipWakeManagerDelegation(value: unknown): PaperclipWakeManagerDelegation | null {
+  const delegation = parseObject(value);
+  const directReports = Array.isArray(delegation.directReports)
+    ? delegation.directReports
+        .map((entry) => normalizePaperclipWakeManagerReport(entry))
+        .filter((entry): entry is PaperclipWakeManagerReport => Boolean(entry))
+    : [];
+  const managerAgentId = asString(delegation.managerAgentId, "").trim() || null;
+  if (!managerAgentId && directReports.length === 0) return null;
+  return {
+    managerAgentId,
+    managerOpenIssues: Math.max(0, asNumber(delegation.managerOpenIssues, 0)),
+    delegatedOpenIssues: Math.max(0, asNumber(delegation.delegatedOpenIssues, 0)),
+    wipCap: Math.max(1, asNumber(delegation.wipCap, 2)),
+    currentIssueAssignedToManager: asBoolean(delegation.currentIssueAssignedToManager, false),
+    directReports,
+  };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -1210,7 +1285,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
+  const managerDelegation = normalizePaperclipWakeManagerDelegation(payload.managerDelegation);
+  const meetingId = asString(payload.meetingId, "").trim() || null;
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !managerDelegation && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !meetingId && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1221,6 +1298,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
     activeTreeHold,
+    managerDelegation,
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
@@ -1229,6 +1307,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     annotationDeltas,
     livenessContinuation,
     taskWatchdog,
+    meetingId,
+    interactionId: asString(payload.interactionId, "").trim() || null,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
@@ -1299,14 +1379,17 @@ export function renderPaperclipWakePrompt(
         "## Paperclip Resume Delta",
         "",
         "You are resuming an existing Paperclip session.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        normalized.meetingId
+          ? "This heartbeat is scoped to the company meeting below. Handle that meeting before switching context."
+          : "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves. If a fresh API/site check failed and returned HTML, auth, login, timeout, permission, or non-parseable output, treat that as an access/runtime blocker instead of restating stale product findings as current fact.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? (normalized.meetingId ? "none (company meeting)" : "unknown")}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        ...(normalized.meetingId ? [`- meeting id: ${normalized.meetingId}`] : []),
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
@@ -1315,15 +1398,18 @@ export function renderPaperclipWakePrompt(
         "## Paperclip Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        normalized.meetingId
+          ? "This heartbeat is scoped to the company meeting below. Handle that meeting before switching context."
+          : "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves. If a fresh API/site check failed and returned HTML, auth, login, timeout, permission, or non-parseable output, treat that as an access/runtime blocker instead of restating stale product findings as current fact.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? (normalized.meetingId ? "none (company meeting)" : "unknown")}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        ...(normalized.meetingId ? [`- meeting id: ${normalized.meetingId}`] : []),
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
@@ -1353,7 +1439,65 @@ export function renderPaperclipWakePrompt(
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);
   }
-  if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
+  if (normalized.managerDelegation) {
+    const delegation = normalized.managerDelegation;
+    const shouldRouteFirst =
+      delegation.currentIssueAssignedToManager ||
+      delegation.managerOpenIssues > delegation.wipCap;
+    lines.push(
+      "",
+      "Manager delegation pressure:",
+      `- direct reports: ${delegation.directReports.length}`,
+      `- manager-held open issues: ${delegation.managerOpenIssues}`,
+      `- delegated open issues: ${delegation.delegatedOpenIssues}`,
+      `- current issue assigned to manager: ${delegation.currentIssueAssignedToManager ? "yes" : "no"}`,
+      `- manager WIP cap: ${delegation.wipCap}`,
+      shouldRouteFirst
+        ? "Route specialist work before doing it yourself. If a direct report can own the next concrete step, create or route a child issue and keep this issue for coordination, unblock decisions, or review."
+        : "If a direct report can own the next concrete step, create or route a child issue and keep this issue for coordination, unblock decisions, or review.",
+    );
+    if (delegation.directReports.length > 0) {
+      lines.push(
+        `- direct report capacity: ${delegation.directReports
+          .slice(0, 8)
+          .map((report) => {
+            const label = report.name ?? report.id ?? "unknown";
+            const roleLabel = [report.title, report.role].filter(Boolean).join(", ");
+            const statusLabel = report.status ?? "unknown";
+            return `${label}${roleLabel ? ` (${roleLabel})` : ""}: ${statusLabel}, open ${report.openIssues}, active runs ${report.activeRuns}`;
+          })
+          .join("; ")}`,
+      );
+    }
+  }
+  if (normalized.interactionKind === "agent_meeting" && normalized.interactionStatus === "pending") {
+    lines.push(
+      "",
+      "Pending agent meeting response:",
+      "This wake is for a pending agent meeting. Resolve the meeting before treating the heartbeat as complete.",
+    );
+    if (normalized.meetingId) {
+      lines.push(
+        `- Respond with POST /api/meetings/${normalized.meetingId}/respond`,
+        `- If this wake is for your participant update rather than chair synthesis, submit POST /api/meetings/${normalized.meetingId}/contributions first and do not close the meeting.`,
+        "- Meetings are first-class company coordination threads. They may link to issues, create issues, update workflows, correct memory, or capture ideas, but they are not issue comments.",
+        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      );
+    } else if (normalized.issue?.id && normalized.interactionId) {
+      lines.push(
+        `- Respond with POST /api/issues/${normalized.issue.id}/interactions/${normalized.interactionId}/respond`,
+        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      );
+    } else if (normalized.issue?.id) {
+      lines.push(
+        `- Fetch /api/issues/${normalized.issue.id}/interactions and find the pending agent_meeting interaction before responding.`,
+        "- Body shape: { \"meetingResult\": { \"version\": 1, \"summaryMarkdown\": \"...\", \"decisions\": [\"...\"], \"actionItems\": [{ \"title\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"blockers\": [{ \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }], \"openQuestions\": [\"...\"], \"rightTrack\": { \"status\": \"on_track\", \"rationale\": \"...\", \"corrections\": [] }, \"workflowCorrections\": [{ \"summary\": \"...\", \"target\": \"...\", \"issueId\": null }], \"memoryCorrections\": [{ \"system\": \"karpathy-memory\", \"filePath\": \"...\", \"correction\": \"...\", \"rationale\": \"...\", \"issueId\": null }], \"ideas\": [{ \"title\": \"...\", \"summary\": \"...\", \"ownerAgentId\": null, \"issueId\": null }] } }",
+      );
+    } else {
+      lines.push("- Find the pending agent_meeting interaction for this wake and respond with a meetingResult object.");
+    }
+  }
+  if (normalized.issue?.workMode === "planning") {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
       !hasWakeComments &&
@@ -1710,6 +1854,17 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+  const readRuntimeApiCandidates = (): string[] => {
+    const raw = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    } catch {
+      return [];
+    }
+  };
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -1729,7 +1884,69 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  const apiCandidates = [apiUrl, ...readRuntimeApiCandidates()];
+  const seenCandidates = new Set<string>();
+  const normalizedCandidates = apiCandidates.flatMap((candidate) => {
+    try {
+      const origin = new URL(candidate.trim()).origin;
+      if (seenCandidates.has(origin)) return [];
+      seenCandidates.add(origin);
+      return [origin];
+    } catch {
+      return [];
+    }
+  });
+  if (normalizedCandidates.length > 0) {
+    vars.PAPERCLIP_API_CANDIDATES_JSON = JSON.stringify(normalizedCandidates);
+  }
   return vars;
+}
+
+const PAPERCLIP_RUNTIME_OWNED_ENV_KEYS = new Set([
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_ISSUE_WORK_MODE",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_RUNTIME_PRIMARY_URL",
+  "PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON",
+  "PAPERCLIP_RUNTIME_SERVICES_JSON",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_REPO_URL",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_STRATEGY",
+  "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
+  "PAPERCLIP_WORKSPACES_JSON",
+]);
+
+export function isPaperclipRuntimeOwnedEnvKey(key: string): boolean {
+  return PAPERCLIP_RUNTIME_OWNED_ENV_KEYS.has(key.toUpperCase());
+}
+
+export function applyAdapterConfigEnv(
+  env: Record<string, string>,
+  envConfig: Record<string, unknown>,
+): string[] {
+  const ignoredKeys: string[] = [];
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value !== "string") continue;
+    if (isPaperclipRuntimeOwnedEnvKey(key)) {
+      ignoredKeys.push(key);
+      continue;
+    }
+    env[key] = value;
+  }
+  return ignoredKeys;
 }
 
 export function applyPaperclipWorkspaceEnv(
@@ -1931,9 +2148,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote: input.executionTargetIsRemote,
   });
-  for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    input.env[key] = value;
-  }
+  applyAdapterConfigEnv(input.env, shapedEnvConfig);
 
   return shapedWorkspaceEnv;
 }
@@ -1943,6 +2158,7 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (key === "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];
@@ -1955,6 +2171,39 @@ export function defaultPathForPlatform() {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
   }
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
+}
+
+function localCliPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const homeDir = env.HOME || env.USERPROFILE || os.homedir();
+  if (process.platform === "win32") {
+    const userProfile = env.USERPROFILE || homeDir;
+    const appData = env.APPDATA || (userProfile ? path.join(userProfile, "AppData", "Roaming") : "");
+    const localAppData = env.LOCALAPPDATA || (userProfile ? path.join(userProfile, "AppData", "Local") : "");
+    return [
+      userProfile ? path.join(userProfile, ".local", "bin") : "",
+      appData ? path.join(appData, "npm") : "",
+      appData ? path.join(appData, "Python", "Scripts") : "",
+      localAppData ? path.join(localAppData, "pnpm") : "",
+    ].filter(Boolean);
+  }
+  return [
+    homeDir ? path.join(homeDir, ".local", "bin") : "",
+    homeDir ? path.join(homeDir, "bin") : "",
+  ].filter(Boolean);
+}
+
+function appendPathEntries(pathValue: string, entries: string[]): string {
+  const existing = pathValue.split(path.delimiter).filter(Boolean);
+  const seen = new Set(existing.map((entry) =>
+    process.platform === "win32" ? entry.toLowerCase() : entry,
+  ));
+  for (const entry of entries) {
+    const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+    if (seen.has(key)) continue;
+    existing.push(entry);
+    seen.add(key);
+  }
+  return existing.join(path.delimiter);
 }
 
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
@@ -1988,7 +2237,7 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
       process.platform === "win32"
         ? hasExtension
           ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+          : [path.join(dir, command), ...exts.map((ext) => path.join(dir, `${command}${ext}`))]
         : [path.join(dir, command)];
     for (const candidate of candidates) {
       if (await pathExists(candidate)) return candidate;
@@ -2029,6 +2278,45 @@ export function sanitizeSshRemoteEnv(
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
   return path.join(fallbackRoot, "System32", "cmd.exe");
+}
+
+function resolveWindowsBashShell(): string {
+  const candidates = [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "D:\\Program Files\\Git\\bin\\bash.exe",
+    "D:\\msys64\\usr\\bin\\bash.exe",
+    "C:\\msys64\\usr\\bin\\bash.exe",
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return "bash";
+}
+
+async function resolveWindowsShebangSpawnTarget(
+  executable: string,
+  args: string[],
+): Promise<SpawnTarget | null> {
+  if (path.extname(executable)) return null;
+
+  let firstLine = "";
+  try {
+    const contents = await fs.readFile(executable, "utf8");
+    firstLine = contents.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  } catch {
+    return null;
+  }
+
+  if (!firstLine.startsWith("#!")) return null;
+  const normalized = firstLine.toLowerCase();
+  if (/\b(?:node|nodejs)\b/.test(normalized)) {
+    return { command: process.execPath, args: [executable, ...args] };
+  }
+  if (/\b(?:bash|sh|zsh)\b/.test(normalized)) {
+    return { command: resolveWindowsBashShell(), args: [executable, ...args] };
+  }
+  return null;
 }
 
 async function resolveSpawnTarget(
@@ -2081,13 +2369,21 @@ async function resolveSpawnTarget(
     };
   }
 
+  const shebangTarget = await resolveWindowsShebangSpawnTarget(executable, args);
+  if (shebangTarget) return shebangTarget;
+
   return { command: executable, args };
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const additions = localCliPathEntries(env);
+  if (typeof env.PATH === "string" && env.PATH.length > 0) {
+    return { ...env, PATH: appendPathEntries(env.PATH, additions) };
+  }
+  if (typeof env.Path === "string" && env.Path.length > 0) {
+    return { ...env, Path: appendPathEntries(env.Path, additions) };
+  }
+  return { ...env, PATH: appendPathEntries(defaultPathForPlatform(), additions) };
 }
 
 export async function ensureAbsoluteDirectory(
@@ -2879,6 +3175,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    startupNoOutputTimeoutSec?: number;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
   },
@@ -2931,17 +3228,69 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timeoutReason: RunProcessResult["timeoutReason"];
         let stdout = "";
         let stderr = "";
-        let logChain: Promise<void> = Promise.resolve();
+        const logQueue: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+        let logQueueBytes = 0;
+        let logDrainPromise: Promise<void> | null = null;
+        let droppedLogBytes = 0;
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupSignal: NodeJS.Signals | null = null;
         let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let timeoutKillTimer: NodeJS.Timeout | null = null;
+        let timeoutForceResolveTimer: NodeJS.Timeout | null = null;
+        let settled = false;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+
+        const drainLogQueue = async () => {
+          while (logQueue.length > 0) {
+            const entry = logQueue.shift()!;
+            logQueueBytes -= Buffer.byteLength(entry.chunk, "utf8");
+            try {
+              await opts.onLog(entry.stream, entry.chunk);
+            } catch (err) {
+              onLogError(err, runId, `failed to append ${entry.stream} log chunk`);
+            } finally {
+              maybeArmTerminalResultCleanup();
+            }
+          }
+          if (droppedLogBytes > 0) {
+            const dropped = droppedLogBytes;
+            droppedLogBytes = 0;
+            try {
+              await opts.onLog(
+                "stderr",
+                `[paperclip] Dropped ${dropped} byte(s) of live process log output because logging fell behind; captured stdout/stderr remains capped separately.\n`,
+              );
+            } catch (err) {
+              onLogError(err, runId, "failed to append process log drop notice");
+            }
+          }
+        };
+
+        const scheduleLog = (stream: "stdout" | "stderr", chunk: string) => {
+          const chunkBytes = Buffer.byteLength(chunk, "utf8");
+          if (logQueueBytes + chunkBytes <= MAX_CAPTURE_BYTES) {
+            logQueue.push({ stream, chunk });
+            logQueueBytes += chunkBytes;
+          } else {
+            droppedLogBytes += chunkBytes;
+          }
+          if (!logDrainPromise) {
+            logDrainPromise = (async () => {
+              do {
+                await drainLogQueue();
+              } while (logQueue.length > 0 || droppedLogBytes > 0);
+            })().finally(() => {
+              logDrainPromise = null;
+            });
+          }
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2988,48 +3337,103 @@ export async function runChildProcess(
           }, graceMs);
         };
 
+        const clearStartupNoOutputTimeout = () => {
+          if (startupNoOutputTimeout) clearTimeout(startupNoOutputTimeout);
+          startupNoOutputTimeout = null;
+        };
+
+        const clearTimeoutKillTimers = () => {
+          if (timeoutKillTimer) clearTimeout(timeoutKillTimer);
+          if (timeoutForceResolveTimer) clearTimeout(timeoutForceResolveTimer);
+          timeoutKillTimer = null;
+          timeoutForceResolveTimer = null;
+        };
+
+        const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+          if (settled) return;
+          settled = true;
+          if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
+          clearTerminalCleanupTimers();
+          clearTimeoutKillTimers();
+          runningProcesses.delete(runId);
+          void (logDrainPromise ?? Promise.resolve()).then(() => drainLogQueue()).finally(() => {
+            void Promise.resolve()
+              .then(() => target.cleanup?.())
+              .finally(() => {
+                resolve({
+                  exitCode: code,
+                  signal,
+                  timedOut,
+                  timeoutReason,
+                  stdout,
+                  stderr,
+                  pid: child.pid ?? null,
+                  startedAt,
+                  terminalResultCleanup: terminalCleanupStarted
+                    ? {
+                        kind: "terminal_result_cleanup",
+                        stopped: true,
+                        stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                        reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                        terminalResultSeen,
+                        signal: terminalCleanupSignal,
+                        forceKilled: terminalCleanupForceKilled,
+                      }
+                    : null,
+                });
+              });
+          });
+        };
+
+        const terminateForTimeout = (reason: NonNullable<RunProcessResult["timeoutReason"]>) => {
+          if (timedOut || settled) return;
+          timedOut = true;
+          timeoutReason = reason;
+          if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
+          clearTerminalCleanupTimers();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          const killDelayMs = Math.max(1, opts.graceSec) * 1000;
+          timeoutKillTimer = setTimeout(() => {
+            timeoutKillTimer = null;
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, killDelayMs);
+          timeoutForceResolveTimer = setTimeout(() => {
+            timeoutForceResolveTimer = null;
+            finish(null, "SIGKILL");
+          }, killDelayMs + 1_000);
+        };
+
+        let startupNoOutputTimeout =
+          opts.startupNoOutputTimeoutSec && opts.startupNoOutputTimeoutSec > 0
+            ? setTimeout(() => {
+                if (stdout.length > 0 || stderr.length > 0) return;
+                terminateForTimeout("startup_no_output_timeout");
+              }, opts.startupNoOutputTimeoutSec * 1000)
+            : null;
+
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
+                terminateForTimeout("run_timeout");
               }, opts.timeoutSec * 1000)
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
-          const readable = child.stdout;
-          if (!readable) return;
-          readable.pause();
           const text = String(chunk);
+          clearStartupNoOutputTimeout();
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          scheduleLog("stdout", text);
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
-          const readable = child.stderr;
-          if (!readable) return;
-          readable.pause();
           const text = String(chunk);
+          clearStartupNoOutputTimeout();
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          scheduleLog("stderr", text);
         });
 
         const stdin = child.stdin;
@@ -3043,7 +3447,9 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearStartupNoOutputTimeout();
           clearTerminalCleanupTimers();
+          clearTimeoutKillTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -3060,35 +3466,7 @@ export async function runChildProcess(
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
-          runningProcesses.delete(runId);
-          void logChain.finally(() => {
-            void Promise.resolve()
-              .then(() => target.cleanup?.())
-              .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-                terminalResultCleanup: terminalCleanupStarted
-                  ? {
-                    kind: "terminal_result_cleanup",
-                    stopped: true,
-                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                    terminalResultSeen,
-                    signal: terminalCleanupSignal,
-                    forceKilled: terminalCleanupForceKilled,
-                  }
-                  : null,
-              });
-              });
-          });
+          finish(code, signal);
         });
       })
       .catch(reject);

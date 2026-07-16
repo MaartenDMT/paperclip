@@ -35,7 +35,7 @@ describe("buildNewAgentRuntimeConfig", () => {
     });
   });
 
-  it("stores cheap model under modelProfiles.cheap, not primary adapterConfig", () => {
+  it("stores only the cheap model when only the cheap lane is configured", () => {
     const config = buildNewAgentRuntimeConfig({
       heartbeatEnabled: true,
       intervalSec: 600,
@@ -51,6 +51,46 @@ describe("buildNewAgentRuntimeConfig", () => {
     });
     // primary heartbeat config still present
     expect(config.heartbeat).toMatchObject({ enabled: true, intervalSec: 600 });
+  });
+
+  it("stores provider-aware cheap and fallback profile configs independently when provided", () => {
+    const config = buildNewAgentRuntimeConfig({
+      cheapModel: "gpt-5.3-codex",
+      cheapModelEnabled: true,
+      cheapModelAdapterType: "codex_local",
+      cheapModelCommand: "codex",
+      cheapModelProvider: "openai",
+      cheapModelReasoningEffort: "high",
+      fallbackModel: "gpt-5.4-mini",
+      fallbackModelEnabled: true,
+      fallbackModelAdapterType: "codex_local",
+      fallbackModelCommand: "codex",
+      fallbackModelProvider: "openai",
+      fallbackModelReasoningEffort: "low",
+    });
+
+    expect(config.modelProfiles).toEqual({
+      cheap: {
+        enabled: true,
+        adapterConfig: {
+          adapterType: "codex_local",
+          command: "codex",
+          provider: "openai",
+          model: "gpt-5.3-codex",
+          modelReasoningEffort: "high",
+        },
+      },
+      fallback: {
+        enabled: true,
+        adapterConfig: {
+          adapterType: "codex_local",
+          command: "codex",
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          modelReasoningEffort: "low",
+        },
+      },
+    });
   });
 
   it("omits modelProfiles when no cheap model is configured", () => {

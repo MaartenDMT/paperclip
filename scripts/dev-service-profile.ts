@@ -5,12 +5,16 @@ import { createLocalServiceKey } from "../server/src/services/local-service-supe
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-export function createDevServiceIdentity(input: {
-  mode: "watch" | "dev";
+export type DevRunnerMode = "watch" | "dev";
+
+type DevServiceIdentityInput = {
+  mode: DevRunnerMode;
   forwardedArgs: string[];
   networkProfile: string;
   port: number;
-}) {
+};
+
+export function createDevServiceIdentity(input: DevServiceIdentityInput) {
   const envFingerprint = createHash("sha256")
     .update(
       JSON.stringify({
@@ -41,4 +45,14 @@ export function createDevServiceIdentity(input: {
     serviceName,
     envFingerprint,
   };
+}
+
+export function createCompatibleDevServiceIdentities(input: DevServiceIdentityInput) {
+  const alternateMode: DevRunnerMode = input.mode === "watch" ? "dev" : "watch";
+  return [input.mode, alternateMode].map((mode) =>
+    createDevServiceIdentity({
+      ...input,
+      mode,
+    }),
+  );
 }

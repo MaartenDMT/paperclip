@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { badRequest, forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
 
@@ -21,7 +21,6 @@ function throwOrShadowResponsibleUserCompanyAccessDeny(
   if (responsibleUserAuthzShadowMode()) return;
   throw new HttpError(403, message, { code });
 }
-
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();
@@ -73,6 +72,9 @@ export function assertInstanceAdmin(req: Request) {
 
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
+  if (companyId.length === 0 || companyId.trim() !== companyId || /[\s\x00-\x1f\x7f]/.test(companyId)) {
+    throw badRequest("Company id must be a single route parameter");
+  }
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }

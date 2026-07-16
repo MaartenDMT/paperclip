@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { retryTransientFilesystemError } from "./transient-fs.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -21,6 +22,10 @@ export interface RunLogReadResult {
   nextOffset?: number;
 }
 
+export interface RunLogStatResult {
+  bytes: number;
+}
+
 export interface RunLogFinalizeSummary {
   bytes: number;
   sha256?: string;
@@ -34,6 +39,7 @@ export interface RunLogStore {
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
+  stat(handle: RunLogHandle): Promise<RunLogStatResult>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
 }
 
@@ -50,7 +56,7 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileRunLogStore(basePath: string): RunLogStore {
+export function createLocalFileRunLogStore(basePath: string): RunLogStore {
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -101,7 +107,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       await ensureDir(relDir);
 
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      await retryTransientFilesystemError(() => fs.writeFile(absPath, "", "utf8"));
 
       return { store: "local_file", logRef: relPath };
     },
@@ -119,7 +125,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
+      await retryTransientFilesystemError(() => fs.appendFile(absPath, persisted, "utf8"));
       return Buffer.byteLength(persisted, "utf8");
     },
 
@@ -147,6 +153,16 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const offset = opts?.offset ?? 0;
       const limitBytes = opts?.limitBytes ?? 256_000;
       return readFileRange(absPath, offset, limitBytes);
+    },
+
+    async stat(handle) {
+      if (handle.store !== "local_file") {
+        throw notFound("Run log not found");
+      }
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (!stat) throw notFound("Run log not found");
+      return { bytes: stat.size };
     },
   };
 }

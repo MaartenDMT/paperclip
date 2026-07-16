@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "../../../scripts/dev-runner-output.mjs";
+import {
+  createCapturedOutputBuffer,
+  parseJsonCommandOutput,
+  parseJsonResponseWithLimit,
+} from "../../../scripts/dev-runner-output.mjs";
 
 describe("createCapturedOutputBuffer", () => {
   it("keeps small output unchanged", () => {
@@ -41,5 +45,27 @@ describe("createCapturedOutputBuffer", () => {
     });
 
     await expect(parseJsonResponseWithLimit(response, 32)).rejects.toThrow("Response exceeds 32 bytes");
+  });
+
+  it("rejects command output when the JSON-producing helper was terminated", () => {
+    expect(() =>
+      parseJsonCommandOutput({
+        stdout: "",
+        stderr: "",
+        signal: "SIGTERM",
+        commandDescription: "migration-status",
+      })
+    ).toThrow("migration-status terminated by SIGTERM");
+  });
+
+  it("rejects command output when the helper exits without JSON", () => {
+    expect(() =>
+      parseJsonCommandOutput({
+        stdout: "   ",
+        stderr: "",
+        signal: null,
+        commandDescription: "migration-status",
+      })
+    ).toThrow("migration-status produced no JSON output");
   });
 });

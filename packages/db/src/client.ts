@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
@@ -9,9 +10,28 @@ import * as schema from "./schema/index.js";
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
+const POSTGRES_STARTUP_READY_TIMEOUT_MS = Math.max(
+  15_000,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_STARTUP_READY_TIMEOUT_MS ?? "", 10) || 60_000,
+);
+const POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS = Math.max(
+  1,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS ?? "", 10) || 5,
+);
+const POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.PAPERCLIP_POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS ?? "", 10) || 60_000,
+);
 
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  return postgres(url, {
+    max: 1,
+    connect_timeout: POSTGRES_UTILITY_CONNECT_TIMEOUT_SECONDS,
+    onnotice: () => {},
+    connection: {
+      idle_in_transaction_session_timeout: POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    },
+  });
 }
 
 function isSafeIdentifier(value: string): boolean {
@@ -25,6 +45,21 @@ function quoteIdentifier(value: string): string {
 
 function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+function isPostgresStartupNotReadyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    code === "57P03" ||
+    code === "ECONNREFUSED" ||
+    code === "CONNECT_TIMEOUT" ||
+    message.toLowerCase().includes("not yet accepting connections") ||
+    message.toLowerCase().includes("connect econnrefused") ||
+    message.toLowerCase().includes("connect_timeout")
+  );
 }
 
 function splitMigrationStatements(content: string): string[] {
@@ -45,8 +80,13 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+export function createDb(url: string, options: { max?: number } = {}) {
+  const sql = postgres(url, {
+    ...(options.max ? { max: options.max } : {}),
+    connection: {
+      idle_in_transaction_session_timeout: POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    },
+  });
   return drizzlePg(sql, { schema });
 }
 
@@ -60,6 +100,15 @@ export async function getPostgresDataDirectory(url: string): Promise<string | nu
     return typeof actual === "string" && actual.length > 0 ? actual : null;
   } catch {
     return null;
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function checkPostgresConnection(url: string): Promise<void> {
+  const sql = createUtilitySql(url);
+  try {
+    await sql`select 1`;
   } finally {
     await sql.end();
   }
@@ -597,7 +646,7 @@ async function discoverMigrationTableSchema(sql: ReturnType<typeof postgres>): P
   return rows[0]?.schemaName ?? null;
 }
 
-export async function inspectMigrations(url: string): Promise<MigrationState> {
+async function inspectMigrationsOnce(url: string): Promise<MigrationState> {
   const sql = createUtilitySql(url);
 
   try {
@@ -654,6 +703,25 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
     };
   } finally {
     await sql.end();
+  }
+}
+
+export async function inspectMigrations(
+  url: string,
+  options: { startupReadyTimeoutMs?: number } = {},
+): Promise<MigrationState> {
+  const deadline = Date.now() + (options.startupReadyTimeoutMs ?? POSTGRES_STARTUP_READY_TIMEOUT_MS);
+  let attempt = 0;
+  while (true) {
+    try {
+      return await inspectMigrationsOnce(url);
+    } catch (error) {
+      if (!isPostgresStartupNotReadyError(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      attempt += 1;
+      await delay(Math.min(1_000, 100 + attempt * 100));
+    }
   }
 }
 
@@ -762,6 +830,25 @@ export async function ensurePostgresDatabase(
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
 
+  const deadline = Date.now() + POSTGRES_STARTUP_READY_TIMEOUT_MS;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await ensurePostgresDatabaseOnce(url, databaseName);
+    } catch (error) {
+      if (!isPostgresStartupNotReadyError(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      attempt += 1;
+      await delay(Math.min(1_000, 100 + attempt * 100));
+    }
+  }
+}
+
+async function ensurePostgresDatabaseOnce(
+  url: string,
+  databaseName: string,
+): Promise<"created" | "exists"> {
   const sql = createUtilitySql(url);
   try {
     const existing = await sql<{ one: number }[]>`

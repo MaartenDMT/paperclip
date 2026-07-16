@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+type RequestActor = NonNullable<Express.Request["actor"]>;
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -9,10 +11,14 @@ const mockAgentService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
+  getRetryExhaustedReason: vi.fn(),
+  getRun: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  list: vi.fn(),
   readLog: vi.fn(),
+  statLog: vi.fn(),
   wakeup: vi.fn(),
 }));
 
@@ -29,6 +35,13 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
+const defaultBoardActor = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+} as const;
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -84,7 +97,10 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+async function createApp(
+  db: Record<string, unknown> = {},
+  actor: RequestActor = defaultBoardActor,
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -92,13 +108,7 @@ async function createApp(db: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    req.actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -106,7 +116,11 @@ async function createApp(db: Record<string, unknown> = {}) {
   return app;
 }
 
-function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
+function createLiveRunsDbStub(
+  rows: Array<Record<string, unknown>>,
+  issueRows: Array<Record<string, unknown>> = [],
+  globalRunningRunCount = rows.filter((row) => row.status === "running").length,
+) {
   const limit = vi.fn(async (value: number) => rows.slice(0, value));
   const orderedQuery = {
     limit,
@@ -118,10 +132,22 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnValue(orderedQuery),
   };
+  const issueQuery = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => issueRows),
+  };
+  const globalRunningCountQuery = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => [{ activeRunCount: globalRunningRunCount }]),
+  };
 
   return {
     db: {
-      select: vi.fn().mockReturnValue(query),
+      select: vi.fn((columns?: Record<string, unknown>) => (
+        columns && "activeRunCount" in columns
+          ? globalRunningCountQuery
+          : columns && "assigneeAgentId" in columns ? issueQuery : query
+      )),
     },
     limit,
   };
@@ -201,6 +227,24 @@ describe("agent live run routes", () => {
       currentStatusMessage: null,
       currentStatusUpdatedAt: null,
     }));
+    mockHeartbeatService.getRetryExhaustedReason.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      logBytes: 0,
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -216,18 +260,35 @@ describe("agent live run routes", () => {
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.list.mockResolvedValue([
+      { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" },
+    ]);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
+    mockHeartbeatService.list.mockResolvedValue([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "running",
+      },
+    ]);
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "run-1",
       store: "local_file",
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+    });
+    mockHeartbeatService.statLog.mockResolvedValue({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      bytes: 1234,
     });
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
@@ -367,6 +428,112 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("supports the company-scoped run log alias", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/run-1/logs?offset=12&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    }, {
+      offset: 12,
+      limitBytes: 64,
+    });
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "chunk",
+      nextOffset: 5,
+    });
+  });
+
+  it("supports the company-scoped agent runs alias", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/agents/agent-1/runs?limit=25"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", "agent-1", 25);
+    expect(res.body).toEqual([
+      { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" },
+    ]);
+  });
+
+  it("uses run log stat metadata for metadata-only polling", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?metadataOnly=true"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.statLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      bytes: 1234,
+    });
+  });
+
+  it("exposes agent-scoped run detail aliases for run monitoring consumers", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/agents/${routeAgentId}/runs/run-1`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRetryExhaustedReason).toHaveBeenCalledWith("run-1");
+    expect(res.body).toMatchObject({
+      id: "run-1",
+      agentId: "agent-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      status: "running",
+      invocationSource: "on_demand",
+    });
+  });
+
+  it("returns not found when an agent-scoped run alias targets another agent", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-2",
+      issueId: "issue-1",
+      logBytes: 0,
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/agents/${routeAgentId}/runs/run-1`),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Heartbeat run not found" });
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,
@@ -404,6 +571,125 @@ describe("agent live run routes", () => {
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
+  });
+
+  it("explains queued company live runs blocked by an active agent slot", async () => {
+    const rows = [
+      {
+        id: "run-active",
+        companyId: "company-1",
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: new Date("2026-04-10T09:30:00.000Z"),
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:30:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-active",
+      },
+      {
+        id: "run-queued",
+        companyId: "company-1",
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:31:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-queued",
+      },
+    ];
+    const { db } = createLiveRunsDbStub(rows, [
+      {
+        id: "issue-queued",
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+      },
+    ]);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.find((run: { id: string }) => run.id === "run-queued")).toMatchObject({
+      queueDiagnostic: {
+        code: "waiting_for_agent_slot",
+        label: "Agent busy",
+      },
+    });
+  });
+
+  it("explains queued company live runs blocked by global local capacity", async () => {
+    const rows = [
+      {
+        id: "run-queued",
+        companyId: "company-1",
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:31:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 0,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: null,
+      },
+    ];
+    const { db } = createLiveRunsDbStub(rows, [], 999);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.find((run: { id: string }) => run.id === "run-queued")).toMatchObject({
+      queueDiagnostic: {
+        code: "waiting_for_local_capacity",
+        label: "Local capacity full",
+      },
+    });
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {
@@ -620,6 +906,91 @@ describe("agent live run routes", () => {
         triggeredBy: "board",
         actorId: "local-board",
         forceFreshSession: true,
+        issueId: "issue-1",
+        taskId: "issue-1",
+        taskKey: "issue-1",
+      },
+    });
+  });
+
+  it("normalizes top-level wake scope fields into payload/context for /wakeup", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({
+          source: "assignment",
+          reason: "issue_assigned",
+          issueId: "issue-compat-1",
+          taskId: "issue-compat-1",
+          taskKey: "issue-compat-1",
+          projectId: "project-compat-1",
+          commentId: "comment-compat-1",
+          wakeCommentId: "comment-compat-1",
+          wakeReason: "issue_commented",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      idempotencyKey: null,
+      payload: {
+        issueId: "issue-compat-1",
+        taskId: "issue-compat-1",
+        taskKey: "issue-compat-1",
+        projectId: "project-compat-1",
+        commentId: "comment-compat-1",
+        wakeCommentId: "comment-compat-1",
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        forceFreshSession: false,
+        issueId: "issue-compat-1",
+        taskId: "issue-compat-1",
+        taskKey: "issue-compat-1",
+        projectId: "project-compat-1",
+        commentId: "comment-compat-1",
+        wakeCommentId: "comment-compat-1",
+        wakeReason: "issue_commented",
+      },
+    });
+  });
+
+  it("normalizes top-level wake scope fields for legacy /heartbeat/invoke", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({
+          reason: "issue_assigned",
+          issueId: "issue-legacy-1",
+          taskKey: "issue-legacy-1",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      payload: {
+        issueId: "issue-legacy-1",
+        taskKey: "issue-legacy-1",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        issueId: "issue-legacy-1",
+        taskKey: "issue-legacy-1",
       },
     });
   });
@@ -643,5 +1014,157 @@ describe("agent live run routes", () => {
         actorId: "local-board",
       },
     });
+  });
+
+  it("allows agent-authenticated manager wakeups for direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === routeAgentId) {
+        return {
+          id: routeAgentId,
+          companyId: "company-1",
+          name: "Direct Report",
+          adapterType: "codex_local",
+          reportsTo: managerId,
+        };
+      }
+      return {
+        id,
+        companyId: "company-1",
+        name: "Fallback",
+        adapterType: "codex_local",
+        reportsTo: null,
+      };
+    });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-direct-report-wake",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      requestedByActorType: "agent",
+      requestedByActorId: managerId,
+    }));
+  });
+
+  it("blocks agent-authenticated wakeups for non-direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Not Direct Report",
+      adapterType: "codex_local",
+      reportsTo: null,
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("direct reports");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows agent-authenticated legacy heartbeat invokes for direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Direct Report",
+      adapterType: "codex_local",
+      reportsTo: managerId,
+    });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-direct-report-invoke",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      source: "on_demand",
+      requestedByActorType: "agent",
+      requestedByActorId: managerId,
+    }));
+  });
+
+  it("blocks agent-authenticated legacy heartbeat invokes for non-direct reports", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Not Direct Report",
+      adapterType: "codex_local",
+      reportsTo: null,
+    });
+
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          source: "agent_key",
+          runId: "run-1",
+        },
+      ),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("direct reports");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

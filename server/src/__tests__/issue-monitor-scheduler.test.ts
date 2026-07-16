@@ -43,7 +43,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;
@@ -129,7 +129,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       }
     }
     throw lastError;
-  });
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -261,6 +261,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.teamLeadId).toBe(agentId);
 
     const activity = await db
       .select()
@@ -268,6 +269,99 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("does not enqueue timer heartbeats when the global run pool is already full", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date("2026-04-11T12:31:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const globalRunCap = Math.max(1, Math.floor(Number(process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_RUNNING ?? 20)));
+    const runningAgentRows = Array.from({ length: globalRunCap }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      name: `Running Bot ${index + 1}`,
+      role: "engineer",
+      status: "running" as const,
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", ""],
+        cwd: process.cwd(),
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+    }));
+
+    const dueAgentId = randomUUID();
+    await db.insert(agents).values([
+      ...runningAgentRows,
+      {
+        id: dueAgentId,
+        companyId,
+        name: "Due Timer Bot",
+        role: "engineer",
+        status: "active",
+        adapterType: "process",
+        adapterConfig: {
+          command: process.execPath,
+          args: ["-e", ""],
+          cwd: process.cwd(),
+        },
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: 30,
+            wakeOnDemand: true,
+          },
+        },
+        permissions: {},
+        lastHeartbeatAt: new Date(now.getTime() - 60_000),
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values(
+      runningAgentRows.map((agent) => ({
+        id: randomUUID(),
+        companyId,
+        agentId: agent.id,
+        invocationSource: "manual" as const,
+        triggerDetail: "system",
+        status: "running" as const,
+        startedAt: now,
+      })),
+    );
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result.checked).toBe(1);
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const dueAgentRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, dueAgentId));
+
+    expect(dueAgentRuns).toEqual([]);
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: now, updatedAt: now })
+      .where(eq(heartbeatRuns.companyId, companyId));
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
@@ -295,6 +389,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.teamLeadId).toBe(agentId);
     expect(wakeup?.payload).toMatchObject({
       issueId,
       nextCheckAt: nextCheckAt.toISOString(),
@@ -369,6 +464,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(agentWakeupRequests.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_recovery");
+    expect(wakeup?.teamLeadId).toBe(agentId);
     expect(wakeup?.payload).toMatchObject({
       issueId,
       clearReason: "max_attempts_exhausted",

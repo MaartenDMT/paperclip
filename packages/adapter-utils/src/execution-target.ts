@@ -108,6 +108,7 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  startupNoOutputTimeoutSec?: number;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -583,6 +584,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    startupNoOutputTimeoutSec: options.startupNoOutputTimeoutSec,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }

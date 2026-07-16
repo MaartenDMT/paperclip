@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
   mergeCoalescedContextSnapshot,
+  normalizeWakeupContext,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("buildPaperclipTaskMarkdown", () => {
   it("adds planning directives for assignment and comment task context", () => {
@@ -129,6 +134,118 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
   });
+
+  it("uses the configured graphify binary in memory search instructions", () => {
+    vi.stubEnv("PAPERCLIP_GRAPHIFY_BIN", "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe");
+
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Use graph memory",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain(
+      "D:\\Users\\Maart\\anaconda3\\Scripts\\graphify.exe query",
+    );
+    expect(assignment).not.toContain("`graphify query");
+  });
+
+  it("invokes quoted Windows graphify paths with the PowerShell call operator", () => {
+    vi.stubEnv("PAPERCLIP_GRAPHIFY_BIN", "\"C:\\Program Files\\Graphify\\graphify.exe\"");
+
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Use graph memory",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("& \"C:\\Program Files\\Graphify\\graphify.exe\" query");
+  });
+
+  it("adds rich meeting response fields to pending agent meeting guidance", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+    });
+
+    expect(meetingWake).toContain("/api/issues/issue-1/interactions/meeting-1/respond");
+    expect(meetingWake).toContain("rightTrack");
+    expect(meetingWake).toContain("businessReview");
+    expect(meetingWake).toContain("agentPerformanceReviews");
+    expect(meetingWake).toContain("goals, targets, KPIs, finance/budget impact");
+    expect(meetingWake).toContain("workflowCorrections");
+    expect(meetingWake).toContain("memoryCorrections");
+    expect(meetingWake).toContain("ideas");
+  });
+
+  it("uses contribution guidance for first-class meeting participant wakes", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "legacy-meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+      meeting: {
+        id: "meeting-thread-1",
+        status: "pending",
+        chairAgentId: "chair-agent-1",
+      },
+      currentAgentId: "participant-agent-1",
+    });
+
+    expect(meetingWake).toContain("/api/meetings/meeting-thread-1/contributions");
+    expect(meetingWake).toContain("participant update");
+    expect(meetingWake).not.toContain("/api/meetings/meeting-thread-1/respond");
+    expect(meetingWake).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
+  });
+
+  it("uses response guidance for first-class meeting chair wakes", () => {
+    const meetingWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4100",
+        title: "Blocked issue",
+        description: null,
+      },
+      interaction: {
+        id: "legacy-meeting-1",
+        kind: "agent_meeting",
+        status: "pending",
+      },
+      meeting: {
+        id: "meeting-thread-1",
+        status: "pending",
+        chairAgentId: "chair-agent-1",
+      },
+      currentAgentId: "chair-agent-1",
+    });
+
+    expect(meetingWake).toContain("/api/meetings/meeting-thread-1/respond");
+    expect(meetingWake).toContain("chair synthesis");
+    expect(meetingWake).toContain("Meeting threads are separate from issue threads");
+    expect(meetingWake).not.toContain("/api/issues/issue-1/interactions/legacy-meeting-1/respond");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
@@ -192,6 +309,40 @@ describe("mergeCoalescedContextSnapshot", () => {
       prompt: "Delete selected files?",
       selectedOptionIds: ["file-b"],
       selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+    });
+  });
+});
+
+describe("normalizeWakeupContext", () => {
+  it("preserves pending agent meeting interaction context on meeting workflow wakes", () => {
+    const contextSnapshot = {
+      issueId: "issue-1",
+      meetingId: "meeting-thread-1",
+      interactionId: "meeting-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      continuationPolicy: "wake_assignee",
+    };
+
+    normalizeWakeupContext({
+      contextSnapshot,
+      reason: "agent_meeting_requested",
+      source: "automation",
+      triggerDetail: "system",
+      payload: {
+        mutation: "meeting_workflow",
+        issueId: "issue-1",
+        meetingId: "meeting-thread-1",
+        interactionId: "meeting-1",
+      },
+    });
+
+    expect(contextSnapshot).toMatchObject({
+      interactionId: "meeting-1",
+      meetingId: "meeting-thread-1",
+      interactionKind: "agent_meeting",
+      interactionStatus: "pending",
+      continuationPolicy: "wake_assignee",
     });
   });
 });

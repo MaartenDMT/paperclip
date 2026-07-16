@@ -21,6 +21,7 @@ export interface AgentPermissions extends Record<string, unknown> {
   canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  canRepairControlPlane?: boolean;
 }
 
 export interface AgentModelProfileConfig {
@@ -31,6 +32,13 @@ export interface AgentModelProfileConfig {
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  heartbeat?: {
+    enabled?: boolean;
+    intervalSec?: number;
+    wakeOnDemand?: boolean;
+    maxConcurrentRuns?: number;
+    [key: string]: unknown;
+  };
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";
@@ -67,7 +75,7 @@ export interface AgentInstructionsBundle {
 
 export interface AgentAccessState {
   canAssignTasks: boolean;
-  taskAssignSource: "simple_default" | "explicit_grant" | "agent_creator" | "ceo_role" | "none";
+  taskAssignSource: "simple_default" | "explicit_grant" | "agent_creator" | "ceo_role" | "manager_role" | "none";
   membership: CompanyMembership | null;
   grants: PrincipalPermissionGrant[];
 }

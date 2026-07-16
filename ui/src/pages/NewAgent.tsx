@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -33,25 +33,123 @@ import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  agentModelProfileDefaultsForRole,
+  minimaxCurrentAdapterFallbackDefaults,
+  shouldDefaultNewAgentToMiniMax,
+} from "../lib/agent-model-profile-defaults";
+import {
+  CODEX_LOCAL_ROLE_DEFAULT_PRIMARY_MODELS,
+  codexModelDefaultsForRole,
+} from "../lib/codex-agent-model-defaults";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
+import {
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+} from "@paperclipai/adapter-minimax-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import {
+  DEFAULT_ZAI_LOCAL_CHEAP_MODEL,
+  DEFAULT_ZAI_LOCAL_MODEL,
+} from "@paperclipai/adapter-zai-local";
+import {
+  DEFAULT_COPILOT_LOCAL_CHEAP_MODEL,
+  DEFAULT_COPILOT_SDK_MODEL,
+} from "@paperclipai/adapter-copilot-local";
+
+function applyProfileDefaults(
+  values: CreateConfigValues,
+  role?: string,
+) {
+  const defaults = agentModelProfileDefaultsForRole(role);
+  values.cheapModel = defaults.cheap.model;
+  values.cheapModelEnabled = true;
+  values.cheapModelAdapterType = defaults.cheap.adapterType;
+  values.cheapModelCommand = defaults.cheap.command;
+  values.cheapModelProvider = defaults.cheap.provider ?? "";
+  values.cheapModelReasoningEffort = defaults.cheap.reasoningEffort ?? "";
+  values.fallbackModel = defaults.fallback.model;
+  values.fallbackModelEnabled = true;
+  values.fallbackModelAdapterType = defaults.fallback.adapterType;
+  values.fallbackModelCommand = defaults.fallback.command;
+  values.fallbackModelProvider = defaults.fallback.provider ?? "";
+  values.fallbackModelReasoningEffort = defaults.fallback.reasoningEffort ?? "";
+}
+
+function applyFallbackProfileDefaults(
+  values: CreateConfigValues,
+  role?: string,
+) {
+  const defaults = agentModelProfileDefaultsForRole(role);
+  values.fallbackModel = defaults.fallback.model;
+  values.fallbackModelEnabled = true;
+  values.fallbackModelAdapterType = defaults.fallback.adapterType;
+  values.fallbackModelCommand = defaults.fallback.command;
+  values.fallbackModelProvider = defaults.fallback.provider ?? "";
+  values.fallbackModelReasoningEffort = defaults.fallback.reasoningEffort ?? "";
+}
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
+  role?: string,
 ): CreateConfigValues {
   const { adapterType: _discard, ...defaults } = defaultCreateValues;
   const nextValues: CreateConfigValues = { ...defaults, adapterType };
   if (adapterType === "codex_local") {
+    const codexDefaults = codexModelDefaultsForRole(role);
+    nextValues.model = codexDefaults.primaryModel;
+    nextValues.cheapModel = codexDefaults.fallbackModel;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = codexDefaults.fallbackAdapterType;
+    nextValues.cheapModelCommand = codexDefaults.fallbackCommand;
+    nextValues.cheapModelProvider = codexDefaults.fallbackProvider;
+    nextValues.cheapModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
+    nextValues.fallbackModel = codexDefaults.fallbackModel;
+    nextValues.fallbackModelEnabled = true;
+    nextValues.fallbackModelAdapterType = codexDefaults.fallbackAdapterType;
+    nextValues.fallbackModelCommand = codexDefaults.fallbackCommand;
+    nextValues.fallbackModelProvider = codexDefaults.fallbackProvider;
+    nextValues.fallbackModelReasoningEffort = codexDefaults.fallbackReasoningEffort;
     nextValues.dangerouslyBypassSandbox =
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
+  } else if (adapterType === "kimi_local") {
+    nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
+  } else if (adapterType === "minimax_local") {
+    nextValues.model = DEFAULT_MINIMAX_LOCAL_MODEL;
+    Object.assign(nextValues, minimaxCurrentAdapterFallbackDefaults());
+  } else if (adapterType === "zai_local") {
+    nextValues.model = DEFAULT_ZAI_LOCAL_MODEL;
+    nextValues.cheapModel = DEFAULT_ZAI_LOCAL_CHEAP_MODEL;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = "";
+    nextValues.cheapModelCommand = "";
+    nextValues.cheapModelProvider = "";
+    nextValues.cheapModelReasoningEffort = "";
+    applyFallbackProfileDefaults(nextValues, role);
+  } else if (adapterType === "copilot_local") {
+    nextValues.model = DEFAULT_COPILOT_SDK_MODEL;
+    nextValues.cheapModel = DEFAULT_COPILOT_LOCAL_CHEAP_MODEL;
+    nextValues.cheapModelEnabled = true;
+    nextValues.cheapModelAdapterType = "";
+    nextValues.cheapModelCommand = "";
+    nextValues.cheapModelProvider = "";
+    nextValues.cheapModelReasoningEffort = "";
+    applyFallbackProfileDefaults(nextValues, role);
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
   } else if (adapterType === "opencode_local") {
     nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+    applyProfileDefaults(nextValues, role);
   }
   return nextValues;
 }
@@ -73,6 +171,7 @@ export function NewAgent() {
     buildPermissionsForTrustPreset(null, "standard"),
   );
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
+  const [hasInitializedSkillSelection, setHasInitializedSkillSelection] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
@@ -115,6 +214,10 @@ export function NewAgent() {
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
+  const availableSkills = useMemo(
+    () => (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/")),
+    [companySkills],
+  );
 
   useEffect(() => {
     setBreadcrumbs([
@@ -136,9 +239,67 @@ export function NewAgent() {
     if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"], effectiveRole);
     });
-  }, [presetAdapterType]);
+  }, [presetAdapterType, effectiveRole]);
+
+  useEffect(() => {
+    if (presetAdapterType) return;
+    if (!shouldDefaultNewAgentToMiniMax({ role: effectiveRole, name, title, isFirstAgent })) return;
+    setConfigValues((prev) => {
+      if (prev.adapterType !== defaultCreateValues.adapterType) return prev;
+      return createValuesForAdapterType("minimax_local", effectiveRole);
+    });
+  }, [effectiveRole, isFirstAgent, name, presetAdapterType, title]);
+
+  useEffect(() => {
+    if (configValues.adapterType !== "codex_local") return;
+    const codexDefaults = codexModelDefaultsForRole(effectiveRole);
+    setConfigValues((prev) => {
+      if (prev.adapterType !== "codex_local") return prev;
+      const currentModel = prev.model || DEFAULT_CODEX_LOCAL_MODEL;
+      const canUpdatePrimary = CODEX_LOCAL_ROLE_DEFAULT_PRIMARY_MODELS.includes(currentModel);
+      if (
+        (!canUpdatePrimary || currentModel === codexDefaults.primaryModel) &&
+        prev.cheapModel === codexDefaults.fallbackModel &&
+        prev.cheapModelEnabled === true &&
+        prev.cheapModelAdapterType === codexDefaults.fallbackAdapterType &&
+        prev.cheapModelCommand === codexDefaults.fallbackCommand &&
+        prev.cheapModelProvider === codexDefaults.fallbackProvider &&
+        prev.cheapModelReasoningEffort === codexDefaults.fallbackReasoningEffort &&
+        prev.fallbackModel === codexDefaults.fallbackModel &&
+        prev.fallbackModelEnabled === true &&
+        prev.fallbackModelAdapterType === codexDefaults.fallbackAdapterType &&
+        prev.fallbackModelCommand === codexDefaults.fallbackCommand &&
+        prev.fallbackModelProvider === codexDefaults.fallbackProvider &&
+        prev.fallbackModelReasoningEffort === codexDefaults.fallbackReasoningEffort
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ...(canUpdatePrimary ? { model: codexDefaults.primaryModel } : {}),
+        cheapModel: codexDefaults.fallbackModel,
+        cheapModelEnabled: true,
+        cheapModelAdapterType: codexDefaults.fallbackAdapterType,
+        cheapModelCommand: codexDefaults.fallbackCommand,
+        cheapModelProvider: codexDefaults.fallbackProvider,
+        cheapModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+        fallbackModel: codexDefaults.fallbackModel,
+        fallbackModelEnabled: true,
+        fallbackModelAdapterType: codexDefaults.fallbackAdapterType,
+        fallbackModelCommand: codexDefaults.fallbackCommand,
+        fallbackModelProvider: codexDefaults.fallbackProvider,
+        fallbackModelReasoningEffort: codexDefaults.fallbackReasoningEffort,
+      };
+    });
+  }, [configValues.adapterType, effectiveRole]);
+
+  useEffect(() => {
+    if (hasInitializedSkillSelection || !companySkills) return;
+    setSelectedSkillKeys(availableSkills.map((skill) => skill.key));
+    setHasInitializedSkillSelection(true);
+  }, [availableSkills, companySkills, hasInitializedSkillSelection]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -180,8 +341,6 @@ export function NewAgent() {
       }),
     );
   }
-
-  const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
 
   function toggleSkill(key: string, checked: boolean) {
     setSelectedSkillKeys((prev) => {
@@ -299,7 +458,12 @@ export function NewAgent() {
         <AgentConfigForm
           mode="create"
           values={configValues}
-          onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+          onChange={(patch) => setConfigValues((prev) => {
+            if (patch.adapterType && patch.adapterType !== prev.adapterType) {
+              return createValuesForAdapterType(patch.adapterType, effectiveRole);
+            }
+            return { ...prev, ...patch };
+          })}
           onTestActionChange={handleTestAgentActionChange}
           onTestActionStateChange={handleTestAgentStateChange}
           onTestFeedbackChange={handleTestAgentFeedbackChange}
@@ -310,7 +474,7 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Company library skills are selected by default. Built-in Paperclip runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (

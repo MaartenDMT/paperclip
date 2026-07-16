@@ -258,6 +258,17 @@ describe("adapter routes", () => {
     expect(codexLocal.capabilities.supportsSkills).toBe(true);
 
     // acpx_local remains registered only as a tombstone for legacy rows.
+    // minimax_local runs through OpenCode and should expose the same skill bridge.
+    const minimaxLocal = res.body.find((a: any) => a.type === "minimax_local");
+    expect(minimaxLocal).toBeDefined();
+    expect(minimaxLocal.capabilities.supportsSkills).toBe(true);
+
+    // zai_local is also OpenCode-backed and should expose managed skills.
+    const zaiLocal = res.body.find((a: any) => a.type === "zai_local");
+    expect(zaiLocal).toBeDefined();
+    expect(zaiLocal.capabilities.supportsSkills).toBe(true);
+
+    // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();
     expect(acpxLocal.capabilities.supportsSkills).toBe(false);

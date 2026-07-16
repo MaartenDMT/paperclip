@@ -21,6 +21,7 @@ Paperclip is the command, communication, and control plane for a company of AI a
 - **Manage agents as employees** — hire, organize, and track who does what
 - **Define org structure** — org charts that agents themselves operate within
 - **Track work in real time** — see at any moment what every agent is working on
+- **Run operating meetings** — coordinate agents through structured company reviews that tie work to goals, KPIs, business requirements, employee performance, decisions, blockers, and follow-up tasks
 - **Control costs** — token salary budgets per agent, spend tracking, burn rate
 - **Align to goals** — agents see how their work serves the bigger mission
 - **Preserve work context** — comments, documents, work products, attachments, and company state stay attached to the work

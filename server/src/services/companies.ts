@@ -126,6 +126,7 @@ export function companyService(db: Db) {
   const companySelection = {
     id: companies.id,
     name: companies.name,
+    maosCompanyId: companies.maosCompanyId,
     description: companies.description,
     status: companies.status,
     issuePrefix: companies.issuePrefix,

@@ -1,4 +1,5 @@
 import type { CreateConfigValues } from "../components/AgentConfigForm";
+import { agentModelProfileDefaultsForRole } from "./agent-model-profile-defaults";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 import type { AgentPermissions } from "@paperclipai/shared";
 
@@ -22,21 +23,66 @@ export function buildNewAgentHirePayload(input: {
     adapterConfig,
     permissions,
   } = input;
+  const profileDefaults = agentModelProfileDefaultsForRole(effectiveRole);
+  const explicitCheapModel =
+    typeof configValues.cheapModel === "string" && configValues.cheapModel.trim().length > 0;
+  const explicitFallbackModel =
+    typeof configValues.fallbackModel === "string" && configValues.fallbackModel.trim().length > 0;
+  const cheapModel = explicitCheapModel
+    ? configValues.cheapModel
+    : profileDefaults.cheap.model;
+  const cheapModelEnabled =
+    configValues.cheapModelEnabled
+      ?? true;
+  const fallbackModel = explicitFallbackModel
+    ? configValues.fallbackModel
+    : profileDefaults.fallback.model;
+  const fallbackModelEnabled =
+    configValues.fallbackModelEnabled
+      ?? true;
 
   return {
     name: name.trim(),
     role: effectiveRole,
     ...(title?.trim() ? { title: title.trim() } : {}),
     ...(reportsTo ? { reportsTo } : {}),
-    ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
+    desiredSkills: selectedSkillKeys,
     adapterType: configValues.adapterType,
     defaultEnvironmentId: configValues.defaultEnvironmentId ?? null,
     adapterConfig,
     runtimeConfig: buildNewAgentRuntimeConfig({
       heartbeatEnabled: configValues.heartbeatEnabled,
       intervalSec: configValues.intervalSec,
-      cheapModel: configValues.cheapModel,
-      cheapModelEnabled: configValues.cheapModelEnabled,
+      cheapModel,
+      cheapModelEnabled,
+      cheapModelAdapterType: explicitCheapModel
+        ? configValues.cheapModelAdapterType
+        : configValues.cheapModelAdapterType ?? profileDefaults.cheap.adapterType,
+      cheapModelCommand: explicitCheapModel
+        ? configValues.cheapModelCommand
+        : configValues.cheapModelCommand ?? profileDefaults.cheap.command,
+      cheapModelProvider: explicitCheapModel
+        ? configValues.cheapModelProvider
+        : configValues.cheapModelProvider ?? profileDefaults.cheap.provider,
+      cheapModelReasoningEffort:
+        explicitCheapModel
+          ? configValues.cheapModelReasoningEffort
+          : configValues.cheapModelReasoningEffort ?? profileDefaults.cheap.reasoningEffort,
+      fallbackModel,
+      fallbackModelEnabled,
+      fallbackModelAdapterType: explicitFallbackModel
+        ? configValues.fallbackModelAdapterType
+        : configValues.fallbackModelAdapterType ?? profileDefaults.fallback.adapterType,
+      fallbackModelCommand: explicitFallbackModel
+        ? configValues.fallbackModelCommand
+        : configValues.fallbackModelCommand ?? profileDefaults.fallback.command,
+      fallbackModelProvider: explicitFallbackModel
+        ? configValues.fallbackModelProvider
+        : configValues.fallbackModelProvider ?? profileDefaults.fallback.provider,
+      fallbackModelReasoningEffort:
+        explicitFallbackModel
+          ? configValues.fallbackModelReasoningEffort
+          : configValues.fallbackModelReasoningEffort ?? profileDefaults.fallback.reasoningEffort,
     }),
     budgetMonthlyCents: 0,
     ...(permissions ? { permissions } : {}),

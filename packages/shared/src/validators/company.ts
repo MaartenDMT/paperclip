@@ -7,6 +7,10 @@ import {
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
+const maosIdentifierSchema = z.string().regex(
+  /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/,
+  "MAOS identifiers must use lowercase kebab-case",
+);
 const attachmentMaxBytesSchema = z
   .number()
   .int()
@@ -15,6 +19,7 @@ const attachmentMaxBytesSchema = z
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
+  maosCompanyId: maosIdentifierSchema.optional().nullable(),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
@@ -33,6 +38,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
+    maosCompanyId: maosIdentifierSchema.optional().nullable(),
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),

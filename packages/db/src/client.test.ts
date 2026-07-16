@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
+  createDb,
   inspectMigrations,
 } from "./client.js";
 import {
@@ -14,6 +16,7 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const embeddedPostgresTestTimeoutMs = process.platform === "win32" ? 120_000 : 20_000;
 
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
@@ -80,7 +83,7 @@ afterEach(async () => {
     const cleanup = cleanups.pop();
     await cleanup?.();
   }
-});
+}, embeddedPostgresTestTimeoutMs);
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -117,6 +120,20 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       ),
     ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
   });
+
+  it(
+    "configures a nonzero idle-in-transaction session timeout for pooled connections",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const db = createDb(connectionString, { max: 1 });
+
+      const result = await db.execute(sql.raw("show idle_in_transaction_session_timeout"));
+      const timeoutRaw = result[0]?.idle_in_transaction_session_timeout;
+
+      expect(Number.parseInt(String(timeoutRaw), 10)).toBeGreaterThan(0);
+    },
+    embeddedPostgresTestTimeoutMs,
+  );
 
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
@@ -168,7 +185,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -212,7 +229,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const finalState = await inspectMigrations(connectionString);
       expect(finalState.status).toBe("upToDate");
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -242,7 +259,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await sql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -314,7 +331,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -408,7 +425,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -474,7 +491,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -540,7 +557,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(
@@ -614,7 +631,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    embeddedPostgresTestTimeoutMs,
   );
 
   it(

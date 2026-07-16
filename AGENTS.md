@@ -224,3 +224,34 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 ## Design system
 
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
+- Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
+- Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Maarten Automation OS Routing
+
+This project is part of Maarten Automation OS, abbreviated MAOS.
+Hermes is the orchestrator and shared work queue.
+Codex, OpenCode, Claude, and future workers are implementation agents.
+Engineering Brain stores cross-project routing, automation categories, project indexes, and reusable patterns.
+Agent Wiki stores operational runbooks, dispatcher procedures, worker templates, and coordination conventions.
+The machine-readable routing source is C:\Programming\agent-wiki\operations\automatic-worker-dispatch\system_routing.toml.
+The durable category pattern is C:\Users\Maart\Documents\Obsidian Vaults\Engineering-Brain\Patterns\Project-Categories.md.
+Primary category: product-engineering.
+Secondary categories: agent-infrastructure, automation-orchestration, knowledge-memory.
+Project or lane vault: C:\Users\Maart\Documents\Obsidian Vaults\paperclip-memory-obsidian.
+Use the Paperclip project vault for durable Paperclip-specific memory.
+Use this source-of-truth order when current behavior matters: live system, repository and tests, project or lane vault, Engineering Brain, Agent Wiki, conversation history.
+Do not store secrets, raw logs, credentials, or duplicated implementation truth in any vault.

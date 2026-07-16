@@ -996,7 +996,7 @@ function createLiveRunMessage(args: {
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? "Queued..."
+      ? run.queueDiagnostic?.detail ?? "Queued..."
       : parts.length > 0
         ? ""
         : "Working...";

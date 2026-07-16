@@ -166,6 +166,15 @@ Paperclip stores current-user sidebar membership state in:
 These rows are company-scoped and user-scoped. A missing row means the user is joined, so existing users keep seeing projects and agents in the sidebar until they explicitly leave them. Rows only control sidebar visibility; they do not affect project/agent detail access, all-pages, selectors, assignment flows, or existing company permissions.
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
+## Campaign review workspace tables
+
+Campaigns are represented by normal Drizzle/PostgreSQL tables and follow the same migration path as the rest of the control plane:
+
+- `campaigns` stores company-scoped Work section campaign metadata, including optional goal and lead-agent links.
+- `campaign_projects` links campaigns to one or more existing projects. Campaigns are not Projects; the link table lets a campaign span Production, Remotion, Social Media, or any other project domains.
+- `campaign_phases` stores ordered review phases, including plan/result document links, the approval used for phase-plan review, the approved document revision, and the execution issue created after approval.
+
+Phase plans use existing `documents` and `document_revisions`; review uses existing `approvals` with `campaign_phase_plan`; execution uses existing `issues`. This keeps backup, restore, migrations, and company-boundary checks on the standard database path.
 
 ## Plugin database namespaces
 

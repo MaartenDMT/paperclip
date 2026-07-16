@@ -162,6 +162,13 @@ export interface HeartbeatRunOutputSilence {
   evaluationIssueAssigneeAgentId: string | null;
 }
 
+export interface HeartbeatRunSkillActivation {
+  skillKey: string;
+  skillName: string;
+  activatedAt: Date | string;
+  source: string;
+}
+
 export interface AgentWakeupSkipped {
   status: "skipped";
   reason: string;

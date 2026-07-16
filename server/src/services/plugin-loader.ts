@@ -27,7 +27,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import os from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -49,6 +49,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveDefaultLocalPluginDir } from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,18 @@ export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugi
 export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
+const NPM_BIN = process.platform === "win32" ? "npm.cmd" : "npm";
+
+export async function resolveVersionedModuleImportUrl(modulePath: string): Promise<string> {
+  const moduleUrl = pathToFileURL(modulePath);
+  const [metadata, source] = await Promise.all([
+    stat(modulePath),
+    readFile(modulePath),
+  ]);
+  const sourceHash = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}-${sourceHash}`);
+  return moduleUrl.href;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,16 +84,15 @@ const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
 
 /**
- * Default local plugin directory.  The loader scans this directory for
- * locally-installed plugin packages.
+ * Default local plugin directory. The loader scans this directory for
+ * locally-installed plugin packages. Resolved at call time so PAPERCLIP_HOME
+ * changes made during startup/tests are honored.
  *
  * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
  */
-export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
-  os.homedir(),
-  ".paperclip",
-  "plugins",
-);
+export function getDefaultLocalPluginDir(): string {
+  return resolveDefaultLocalPluginDir();
+}
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -170,7 +182,7 @@ export interface DiscoveredPlugin {
  * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
  */
 export type PluginSource =
-  | "local-filesystem"  // ~/.paperclip/plugins/ local directory
+  | "local-filesystem"  // $PAPERCLIP_HOME/plugins/ (or ~/.paperclip/plugins/ if unset)
   | "npm"               // npm packages matching paperclip-plugin-* convention
   | "registry";         // future: remote plugin registry URL
 
@@ -1075,7 +1087,7 @@ export function pluginLoader(
   runtimeServices?: PluginRuntimeServices,
 ): PluginLoader {
   const {
-    localPluginDir = DEFAULT_LOCAL_PLUGIN_DIR,
+    localPluginDir = getDefaultLocalPluginDir(),
     migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
@@ -1175,7 +1187,7 @@ export function pluginLoader(
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
         await execFileAsync(
-          "npm",
+          NPM_BIN,
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
@@ -1275,11 +1287,10 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const manifestUrl = pathToFileURL(manifestPath);
-      const manifestStat = await stat(manifestPath);
-      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await import(manifestUrl.href) as Record<string, unknown>;
+      // Versioned file URLs prevent Node's ESM cache from serving an older
+      // manifest after plugin upgrades rewrite dist/manifest.js in place.
+      const manifestUrl = await resolveVersionedModuleImportUrl(manifestPath);
+      const mod = await import(manifestUrl) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -1817,7 +1828,7 @@ export function pluginLoader(
       if (existsSync(packageJsonPath)) {
         try {
           await execFileAsync(
-            "npm",
+            NPM_BIN,
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
             { timeout: 120_000 },
           );

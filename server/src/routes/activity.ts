@@ -88,6 +88,42 @@ export function activityRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/skill-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillUsageForCompany(companyId));
+  });
+
+  router.get("/companies/:companyId/skill-usage/agents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillUsageByAgent(companyId));
+  });
+
+  router.get("/companies/:companyId/skill-coverage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillCoverageForCompany(companyId));
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/skill-activations", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.skillActivationsForAgent(companyId, req.params.agentId as string, Number(req.query.limit)));
+  });
+
+  router.get("/companies/:companyId/recovery-dismissals", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.recoveryDismissalsForCompany(companyId));
+  });
+
+  router.get("/companies/:companyId/wake-suppressions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.wakeSuppressionsForCompany(companyId));
+  });
+
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
@@ -122,7 +158,19 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const result = await svc.runsForIssue(issue.companyId, issue.id);
+    const limitRaw = typeof req.query.limit === "string" ? req.query.limit : undefined;
+    const offsetRaw = typeof req.query.offset === "string" ? req.query.offset : undefined;
+    const limit = limitRaw && /^\d+$/.test(limitRaw) ? Number.parseInt(limitRaw, 10) : undefined;
+    const offset = offsetRaw && /^\d+$/.test(offsetRaw) ? Number.parseInt(offsetRaw, 10) : undefined;
+    if (limitRaw !== undefined && (limit === undefined || limit <= 0)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+    if (offsetRaw !== undefined && offset === undefined) {
+      res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    const result = await svc.runsForIssue(issue.companyId, issue.id, { limit, offset });
     res.json(result);
   });
 

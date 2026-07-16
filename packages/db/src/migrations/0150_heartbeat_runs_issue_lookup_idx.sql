@@ -1,0 +1,3 @@
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id", ((context_snapshot ->> 'issueId')), "created_at" DESC, "id" DESC);
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_task_created_idx" ON "heartbeat_runs" USING btree ("company_id", ((context_snapshot ->> 'taskId')), "created_at" DESC, "id" DESC);
+CREATE INDEX IF NOT EXISTS "issues_company_list_page_idx" ON "issues" USING btree ("company_id", (CASE "priority" WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END), "updated_at" DESC, "id" DESC) WHERE "hidden_at" IS NULL;

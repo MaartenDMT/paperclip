@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
+const WINDOWS_PROCESS_TREE_TIMEOUT_MS = 2_500;
+const WINDOWS_PROCESS_LOOKUP_TIMEOUT_MS = 1_500;
+const WINDOWS_TASKKILL_TIMEOUT_MS = 5_000;
 
 export interface LocalServiceRegistryRecord {
   version: 1;
@@ -144,8 +147,20 @@ export async function writeLocalServiceRegistryRecord(record: LocalServiceRegist
   );
 }
 
+function isIgnorableRegistryRemoveError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "ENOENT" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
+}
+
 export async function removeLocalServiceRegistryRecord(serviceKey: string) {
-  await fs.rm(getRuntimeServiceRegistryPath(serviceKey), { force: true });
+  try {
+    await fs.rm(getRuntimeServiceRegistryPath(serviceKey), { force: true });
+  } catch (error) {
+    if (!isIgnorableRegistryRemoveError(error)) {
+      throw error;
+    }
+  }
 }
 
 export async function readLocalServiceRegistryRecord(serviceKey: string) {
@@ -236,19 +251,151 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   }
 }
 
+export async function pruneStaleLocalServiceRegistryRecords(filter?: {
+  profileKind?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const records = await listLocalServiceRegistryRecords(filter);
+  const active: LocalServiceRegistryRecord[] = [];
+  const stale: LocalServiceRegistryRecord[] = [];
+
+  for (const record of records) {
+    if (!isPidAlive(record.pid) || !(await isLikelyMatchingCommand(record))) {
+      stale.push(record);
+      await removeLocalServiceRegistryRecord(record.serviceKey);
+      continue;
+    }
+    active.push(record);
+  }
+
+  return { active, stale };
+}
+
+function uniquePositiveIntegers(values: Iterable<unknown>) {
+  const seen = new Set<number>();
+  for (const value of values) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) continue;
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+function getLocalServiceChildPid(record: { metadata?: Record<string, unknown> | null }) {
+  const childPid = record.metadata?.childPid;
+  return typeof childPid === "number" && Number.isInteger(childPid) && childPid > 0 ? childPid : null;
+}
+
+async function collectWindowsProcessTreePids(rootPids: number[]) {
+  if (rootPids.length === 0) return [];
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+      ],
+      { maxBuffer: 16 * 1024 * 1024, timeout: WINDOWS_PROCESS_TREE_TIMEOUT_MS },
+    );
+    const raw = JSON.parse(stdout.trim() || "[]") as unknown;
+    const rows = Array.isArray(raw) ? raw : [raw];
+    const childrenByParent = new Map<number, number[]>();
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const rec = row as Record<string, unknown>;
+      const pid = typeof rec.ProcessId === "number" ? rec.ProcessId : null;
+      const parentPid = typeof rec.ParentProcessId === "number" ? rec.ParentProcessId : null;
+      if (!pid || !parentPid) continue;
+      const children = childrenByParent.get(parentPid) ?? [];
+      children.push(pid);
+      childrenByParent.set(parentPid, children);
+    }
+
+    const seen = new Set<number>();
+    const stack = [...rootPids];
+    while (stack.length > 0) {
+      const pid = stack.pop()!;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      for (const child of childrenByParent.get(pid) ?? []) {
+        stack.push(child);
+      }
+    }
+    return [...seen];
+  } catch {
+    return rootPids;
+  }
+}
+
+async function taskkillWindowsTree(pid: number, force: boolean) {
+  try {
+    await execFileAsync("taskkill.exe", force ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"], {
+      timeout: WINDOWS_TASKKILL_TIMEOUT_MS,
+    });
+  } catch {
+    // Ignore cleanup races: a parent may exit before descendants are forced.
+  }
+}
+
+function areAnyPidsAlive(pids: number[]) {
+  return pids.some((pid) => isPidAlive(pid));
+}
+
+export function isLocalServiceRecordAlive(
+  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> & {
+    metadata?: Record<string, unknown> | null;
+  },
+) {
+  if (isProcessGroupAlive(record.processGroupId)) return true;
+  return areAnyPidsAlive(uniquePositiveIntegers([record.pid, getLocalServiceChildPid(record)]));
+}
+
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
-  if (process.platform === "win32") return true;
+  if (process.platform === "win32") {
+    try {
+      const commandLine = await readWindowsProcessCommandLine(record.pid);
+      if (!commandLine) return false;
+      return doesCommandLineMatchLocalServiceRecord(commandLine, record);
+    } catch {
+      return true;
+    }
+  }
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(record.pid)]);
     const commandLine = stdout.trim();
     if (!commandLine) return false;
-    const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
-    const normalizedCommandLine = normalize(commandLine);
-    const normalizedRecordedCommand = normalize(record.command);
-    return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
+    return doesCommandLineMatchLocalServiceRecord(commandLine, record);
   } catch {
     return true;
   }
+}
+
+async function readWindowsProcessCommandLine(pid: number) {
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress`,
+    ],
+    { maxBuffer: 64 * 1024, timeout: WINDOWS_PROCESS_LOOKUP_TIMEOUT_MS },
+  );
+  const raw = stdout.trim();
+  if (!raw) return "";
+  const parsed = JSON.parse(raw) as unknown;
+  return typeof parsed === "string" ? parsed : "";
+}
+
+export function doesCommandLineMatchLocalServiceRecord(
+  commandLine: string,
+  record: Pick<LocalServiceRegistryRecord, "command" | "serviceName">,
+) {
+  const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+  const normalizedCommandLine = normalize(commandLine);
+  const normalizedRecordedCommand = normalize(record.command);
+  return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
 }
 
 export async function findAdoptableLocalService(input: {
@@ -260,6 +407,9 @@ export async function findAdoptableLocalService(input: {
   envFingerprint?: string | null;
   port?: number | null;
   url?: string | null;
+  minAgeMsBeforeHealthCheck?: number;
+  healthCheck?: (record: LocalServiceRegistryRecord) => Promise<boolean>;
+  onUnhealthyRecord?: (record: LocalServiceRegistryRecord) => Promise<void>;
 }) {
   const record =
     await readLocalServiceRegistryRecord(input.serviceKey)
@@ -282,6 +432,28 @@ export async function findAdoptableLocalService(input: {
   if (input.cwd && path.resolve(record.cwd) !== path.resolve(input.cwd)) return null;
   if (input.envFingerprint && record.envFingerprint !== input.envFingerprint) return null;
   if (input.port !== undefined && input.port !== null && record.port !== input.port) return null;
+  if (input.healthCheck) {
+    const lastSeenAt = Date.parse(record.lastSeenAt);
+    const startedAt = Date.parse(record.startedAt);
+    const referenceTime = Math.max(
+      Number.isFinite(lastSeenAt) ? lastSeenAt : 0,
+      Number.isFinite(startedAt) ? startedAt : 0,
+    );
+    const minAgeMs = input.minAgeMsBeforeHealthCheck ?? 0;
+    if (Date.now() - referenceTime >= minAgeMs) {
+      let healthy = false;
+      try {
+        healthy = await input.healthCheck(record);
+      } catch {
+        healthy = false;
+      }
+      if (!healthy) {
+        await input.onUnhealthyRecord?.(record);
+        await removeLocalServiceRegistryRecord(input.serviceKey);
+        return null;
+      }
+    }
+  }
   return record;
 }
 
@@ -363,11 +535,43 @@ export async function touchLocalServiceRegistryRecord(
 }
 
 export async function terminateLocalService(
-  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
+  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> & {
+    metadata?: Record<string, unknown> | null;
+  },
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
-  const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+  const forceAfterMs = opts?.forceAfterMs ?? 2_000;
+
+  // Windows: process.kill is TerminateProcess (no cleanup handlers, no signal
+  // delivery to children). Use taskkill /T to walk the process tree so embedded
+  // postgres and other spawned children are reaped alongside the parent.
+  if (process.platform === "win32") {
+    const rootPids = uniquePositiveIntegers([record.pid, record.processGroupId, getLocalServiceChildPid(record)]);
+    const initialTreePids = await collectWindowsProcessTreePids(rootPids);
+    if (!areAnyPidsAlive(initialTreePids)) return;
+
+    for (const pid of rootPids) {
+      await taskkillWindowsTree(pid, false);
+    }
+
+    const deadline = Date.now() + forceAfterMs;
+    while (Date.now() < deadline) {
+      if (!areAnyPidsAlive(initialTreePids)) return;
+      await delay(100);
+    }
+
+    const stillAlivePids = initialTreePids.filter((pid) => isPidAlive(pid));
+    const latestTreePids = await collectWindowsProcessTreePids(uniquePositiveIntegers([...rootPids, ...stillAlivePids]));
+    for (const pid of uniquePositiveIntegers([...latestTreePids, ...stillAlivePids])) {
+      if (isPidAlive(pid)) {
+        await taskkillWindowsTree(pid, true);
+      }
+    }
+    return;
+  }
+
+  const targetProcessGroup = !!(record.processGroupId && record.processGroupId > 0);
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
@@ -378,7 +582,7 @@ export async function terminateLocalService(
     return;
   }
 
-  const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
+  const deadline = Date.now() + forceAfterMs;
   while (Date.now() < deadline) {
     const targetAlive = targetProcessGroup
       ? isProcessGroupAlive(record.processGroupId)

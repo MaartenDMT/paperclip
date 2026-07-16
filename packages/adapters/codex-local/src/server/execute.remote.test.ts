@@ -262,6 +262,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-",
     ]);
   });
@@ -333,6 +334,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",
@@ -412,6 +414,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",

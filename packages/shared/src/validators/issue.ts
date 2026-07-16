@@ -1010,6 +1010,117 @@ export const requestItemVerdictsResultSchema = z.object({
   }
 });
 
+export const agentMeetingExpectedOutputSchema = z.enum([
+  "decisions",
+  "tasks",
+  "blockers",
+  "questions",
+  "plan_update",
+  "goals",
+  "targets",
+  "kpis",
+  "finance",
+  "problems",
+  "optimization",
+  "right_track",
+  "workflow_corrections",
+  "memory_corrections",
+  "idea_sharing",
+  "business_requirements",
+  "agent_performance",
+  "workflows",
+  "process",
+]);
+
+export const agentMeetingPayloadSchema = z.object({
+  version: z.literal(1),
+  purpose: z.string().trim().min(1).max(1000),
+  participantAgentIds: z.array(z.string().uuid()).min(1).max(20),
+  agenda: z.array(z.string().trim().min(1).max(240)).min(1).max(20),
+  expectedOutputs: z.array(agentMeetingExpectedOutputSchema).min(1).max(20),
+  contextMarkdown: z.string().max(20000).nullable().optional(),
+}).superRefine((value, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, agentId] of value.participantAgentIds.entries()) {
+    if (seen.has(agentId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "participantAgentIds must be unique",
+        path: ["participantAgentIds", index],
+      });
+    }
+    seen.add(agentId);
+  }
+});
+
+export const agentMeetingResultSchema = z.object({
+  version: z.literal(1),
+  summaryMarkdown: z.string().trim().min(1).max(20000),
+  decisions: z.array(z.string().trim().min(1).max(1000)).max(50),
+  actionItems: z.array(z.object({
+    title: z.string().trim().min(1).max(240),
+    ownerAgentId: z.string().uuid().nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50),
+  blockers: z.array(z.object({
+    summary: z.string().trim().min(1).max(1000),
+    ownerAgentId: z.string().uuid().nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50),
+  openQuestions: z.array(z.string().trim().min(1).max(1000)).max(50),
+  rightTrack: z.object({
+    status: z.enum(["on_track", "at_risk", "off_track"]),
+    rationale: z.string().trim().min(1).max(2000),
+    corrections: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+  }).nullable().optional(),
+  businessReview: z.object({
+    goalAlignment: z.string().trim().min(1).max(2000),
+    targetOrKpiImpact: z.string().trim().min(1).max(2000).nullable().optional(),
+    financeOrBudgetImpact: z.string().trim().min(1).max(2000).nullable().optional(),
+    customerOrBusinessValue: z.string().trim().min(1).max(2000).nullable().optional(),
+    requirements: z.array(z.string().trim().min(1).max(1000)).max(50).optional(),
+    risks: z.array(z.string().trim().min(1).max(1000)).max(50).optional(),
+  }).nullable().optional(),
+  agentPerformanceReviews: z.array(z.object({
+    agentId: z.string().uuid(),
+    assessment: z.enum(["exceeds", "on_track", "at_risk", "blocked", "needs_attention"]),
+    summary: z.string().trim().min(1).max(2000),
+    evidence: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+    corrections: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+  workflowCorrections: z.array(z.object({
+    summary: z.string().trim().min(1).max(1000),
+    target: z.string().trim().min(1).max(240).nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+  memoryCorrections: z.array(z.object({
+    system: z.enum(["karpathy-memory", "para-memory", "other"]),
+    filePath: z.string().trim().min(1).max(1000).nullable().optional(),
+    correction: z.string().trim().min(1).max(2000),
+    rationale: z.string().trim().min(1).max(2000).nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+  ideas: z.array(z.object({
+    title: z.string().trim().min(1).max(240),
+    summary: z.string().trim().min(1).max(2000),
+    ownerAgentId: z.string().uuid().nullable().optional(),
+    issueId: z.string().uuid().nullable().optional(),
+  })).max(50).optional(),
+});
+
+const meetingContributionListSchema = z.array(z.string().trim().min(1).max(1000)).max(20);
+
+export const meetingContributionPayloadSchema = z.object({
+  summaryMarkdown: z.string().trim().min(1).max(10000),
+  progress: meetingContributionListSchema.default([]),
+  blockers: meetingContributionListSchema.default([]),
+  risks: meetingContributionListSchema.default([]),
+  nextActions: meetingContributionListSchema.default([]),
+  proposedDecisions: meetingContributionListSchema.default([]),
+  betterAlternatives: meetingContributionListSchema.default([]),
+});
+
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),
@@ -1061,6 +1172,16 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: requestItemVerdictsPayloadSchema,
   }),
+  z.object({
+    kind: z.literal("agent_meeting"),
+    idempotencyKey: z.string().trim().max(255).nullable().optional(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+    sourceRunId: z.string().uuid().nullable().optional(),
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    payload: agentMeetingPayloadSchema,
+  }),
 ]);
 
 export type CreateIssueThreadInteraction = z.infer<typeof createIssueThreadInteractionSchema>;
@@ -1110,8 +1231,11 @@ export const cancelIssueThreadInteractionSchema = z.object({
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(20).optional().default([]),
+  meetingResult: agentMeetingResultSchema.optional(),
   summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
+  overrideMissingContributions: z.boolean().optional(),
+  overrideReason: z.string().trim().min(1).max(1000).optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 

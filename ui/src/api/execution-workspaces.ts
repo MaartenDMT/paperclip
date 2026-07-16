@@ -58,6 +58,7 @@ export const executionWorkspacesApi = {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     },
   ) => {
     const params = new URLSearchParams();
@@ -66,6 +67,7 @@ export const executionWorkspacesApi = {
     if (filters?.issueId) params.set("issueId", filters.issueId);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.reuseEligible) params.set("reuseEligible", "true");
+    if (typeof filters?.limit === "number") params.set("limit", String(filters.limit));
     params.set("summary", "true");
     const qs = params.toString();
     return api.get<ExecutionWorkspaceSummary[]>(
@@ -80,6 +82,7 @@ export const executionWorkspacesApi = {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      limit?: number;
     },
   ) => {
     const params = new URLSearchParams();
@@ -88,6 +91,7 @@ export const executionWorkspacesApi = {
     if (filters?.issueId) params.set("issueId", filters.issueId);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.reuseEligible) params.set("reuseEligible", "true");
+    if (typeof filters?.limit === "number") params.set("limit", String(filters.limit));
     const qs = params.toString();
     return api.get<ExecutionWorkspace[]>(`/companies/${companyId}/execution-workspaces${qs ? `?${qs}` : ""}`);
   },

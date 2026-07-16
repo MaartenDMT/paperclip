@@ -24,15 +24,22 @@ function summarizeRecentLogs(recentLogs: string[]): string | null {
 
 function detectEmbeddedPostgresHint(recentLogs: string[]): string | null {
   const haystack = recentLogs.join("\n").toLowerCase();
-  if (!haystack.includes("could not create shared memory segment")) {
-    return null;
+  if (haystack.includes("pre-existing shared memory block is still in use")) {
+    return (
+      "Embedded PostgreSQL found a stale shared-memory block from an older local postgres process. " +
+      "Paperclip should now retry after terminating the stale process tree. If this keeps happening, stop any leftover local postgres processes and retry."
+    );
   }
 
-  return (
-    "Embedded PostgreSQL bootstrap could not allocate shared memory. " +
-    "On macOS, this usually means the host's kern.sysv.shm* limits are too low for another local PostgreSQL cluster. " +
-    "Stop other local PostgreSQL servers or raise the shared-memory sysctls, then retry."
-  );
+  if (haystack.includes("could not create shared memory segment")) {
+    return (
+      "Embedded PostgreSQL bootstrap could not allocate shared memory. " +
+      "On macOS, this usually means the host's kern.sysv.shm* limits are too low for another local PostgreSQL cluster. " +
+      "Stop other local PostgreSQL servers or raise the shared-memory sysctls, then retry."
+    );
+  }
+
+  return null;
 }
 
 export function createEmbeddedPostgresLogBuffer(limit = DEFAULT_RECENT_LOG_LIMIT): {

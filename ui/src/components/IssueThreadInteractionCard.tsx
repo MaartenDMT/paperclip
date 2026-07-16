@@ -13,6 +13,7 @@ import {
   normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
+  type AgentMeetingInteraction,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
@@ -122,9 +123,166 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Checkbox confirmation";
     case "request_item_verdicts":
       return "Item verdicts";
+    case "agent_meeting":
+      return "Agent meeting";
     default:
       return kind;
   }
+}
+
+function AgentMeetingCard({
+  interaction,
+  agentMap,
+}: {
+  interaction: AgentMeetingInteraction;
+  agentMap?: Map<string, Agent>;
+}) {
+  const formatExpectedOutput = (output: string) => output === "kpis" ? "KPIs" : output.replace(/_/g, " ");
+  const result = interaction.result;
+  const renderIssueRef = (issueId?: string | null) => issueId ? (
+    <Link to={`/issues/${issueId}`} className="text-primary underline-offset-2 hover:underline">
+      issue {issueId.slice(0, 8)}
+    </Link>
+  ) : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-sm border border-border/70 p-3">
+        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Purpose</div>
+        <p className="mt-2 text-sm leading-6 text-foreground">{interaction.payload.purpose}</p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-sm border border-border/70 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Participants</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {interaction.payload.participantAgentIds.map((agentId) => (
+              <span key={agentId} className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {agentMap?.get(agentId)?.name ?? agentId.slice(0, 8)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-sm border border-border/70 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Expected outputs</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {interaction.payload.expectedOutputs.map((output) => (
+              <span key={output} className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {formatExpectedOutput(output)}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-sm border border-border/70 p-3">
+        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Agenda</div>
+        <ul className="mt-2 space-y-1 text-sm text-foreground">
+          {interaction.payload.agenda.map((item, index) => (
+            <li key={`${index}-${item}`} className="flex gap-2">
+              <span className="text-muted-foreground">{index + 1}.</span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {interaction.payload.contextMarkdown ? (
+        <div className="rounded-sm border border-border/70 p-3">
+          <MarkdownBody>{interaction.payload.contextMarkdown}</MarkdownBody>
+        </div>
+      ) : null}
+
+        {result ? (
+          <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+              Outcomes
+            </div>
+            <MarkdownBody className="mt-2">{result.summaryMarkdown}</MarkdownBody>
+
+            {result.rightTrack ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Right track
+                </div>
+                <p className="mt-2 text-sm text-foreground">
+                  <span className="font-medium">{formatExpectedOutput(result.rightTrack.status)}:</span>{" "}
+                  {result.rightTrack.rationale}
+                </p>
+                {result.rightTrack.corrections?.length ? (
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {result.rightTrack.corrections.map((correction, index) => (
+                      <li key={`${index}-${correction}`} className="flex gap-2">
+                        <span>{index + 1}.</span>
+                        <span>{correction}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {result.workflowCorrections?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Workflow corrections
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.workflowCorrections.map((correction, index) => (
+                    <li key={`${index}-${correction.summary}`}>
+                      <span>{correction.summary}</span>
+                      {correction.target ? <span className="text-muted-foreground"> · {correction.target}</span> : null}
+                      {correction.issueId ? <span className="text-muted-foreground"> · {renderIssueRef(correction.issueId)}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {result.memoryCorrections?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Memory corrections
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.memoryCorrections.map((correction, index) => (
+                    <li key={`${index}-${correction.correction}`}>
+                      <span className="font-medium">{correction.system}</span>
+                      {correction.filePath ? <span className="text-muted-foreground"> · {correction.filePath}</span> : null}
+                      <div>{correction.correction}</div>
+                      {correction.rationale ? <div className="text-muted-foreground">{correction.rationale}</div> : null}
+                      {correction.issueId ? <div className="text-muted-foreground">{renderIssueRef(correction.issueId)}</div> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {result.ideas?.length ? (
+              <div className="mt-3 rounded-sm border border-border/60 bg-background/60 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Ideas
+                </div>
+                <ul className="mt-2 space-y-2 text-sm text-foreground">
+                  {result.ideas.map((idea, index) => (
+                    <li key={`${index}-${idea.title}`}>
+                      <span className="font-medium">{idea.title}</span>
+                      <div>{idea.summary}</div>
+                      {idea.ownerAgentId ? (
+                        <div className="text-muted-foreground">
+                          Owner: {agentMap?.get(idea.ownerAgentId)?.name ?? idea.ownerAgentId.slice(0, 8)}
+                        </div>
+                      ) : null}
+                      {idea.issueId ? <div className="text-muted-foreground">{renderIssueRef(idea.issueId)}</div> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+  );
 }
 
 function statusIcon(status: IssueThreadInteraction["status"]) {
@@ -2501,6 +2659,8 @@ export function IssueThreadInteractionCard({
                   ? "Review these items"
                   : isPlan
                     ? "Plan review"
+                  : interaction.kind === "agent_meeting"
+                    ? "Structured agent meeting"
                     : "Confirmation requested")}
           </div>
           {interaction.summary ? (
@@ -2553,6 +2713,8 @@ export function IssueThreadInteractionCard({
             onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
             externalReferences={externalReferences}
           />
+        ) : interaction.kind === "agent_meeting" ? (
+          <AgentMeetingCard interaction={interaction} agentMap={agentMap} />
         ) : (
           <RequestConfirmationCard
             interaction={interaction}

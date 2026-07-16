@@ -6,7 +6,7 @@ import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-loca
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
-import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import { resetCodexModelsCacheForTests, setCodexModelsFetcherForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -26,6 +26,7 @@ describe("adapter model listing", () => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
+    setCodexModelsFetcherForTests(null);
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
@@ -43,8 +44,8 @@ describe("adapter model listing", () => {
     expect(adapter?.models).toEqual([]);
   });
 
-  it("returns codex fallback models when no OpenAI key is available", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+  it("returns codex fallback models when local Codex model discovery is unavailable", async () => {
+    setCodexModelsFetcherForTests(async () => []);
     const models = await listAdapterModels("codex_local");
 
     expect(models).toEqual(codexFallbackModels);
@@ -136,14 +137,23 @@ describe("adapter model listing", () => {
         ],
       }),
     } as Response);
+  });
+
+  it("loads only dynamically discovered codex models when discovery succeeds", async () => {
+    const fetcher = vi.fn(async () => [
+      { id: "gpt-5.5", label: "GPT-5.5" },
+      { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+    ]);
+    setCodexModelsFetcherForTests(fetcher);
 
     const first = await listAdapterModels("codex_local");
     const second = await listAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
-    expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.5")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.4-mini")).toBe(true);
+    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(false);
   });
 
   it("refreshes cached codex models on demand", async () => {
@@ -161,6 +171,10 @@ describe("adapter model listing", () => {
           data: [{ id: "gpt-5.6-terra" }],
         }),
       } as Response);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce([{ id: "gpt-5.4", label: "gpt-5.4" }])
+      .mockResolvedValueOnce([{ id: "gpt-5.5", label: "GPT-5.5" }]);
+    setCodexModelsFetcherForTests(fetcher);
 
     const initial = await listAdapterModels("codex_local");
     const refreshed = await refreshAdapterModels("codex_local");
@@ -169,20 +183,16 @@ describe("adapter model listing", () => {
     expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
     expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(initial.some((model) => model.id === "gpt-5.4")).toBe(true);
+    expect(refreshed.some((model) => model.id === "gpt-5.5")).toBe(true);
   });
 
-  it("falls back to static codex models when OpenAI model discovery fails", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({}),
-    } as Response);
-
+  it("falls back to static codex models when local Codex model discovery returns nothing", async () => {
+    setCodexModelsFetcherForTests(async () => []);
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
   });
-
 
   it("returns cursor fallback models when CLI discovery is unavailable", async () => {
     setCursorModelsRunnerForTests(() => ({

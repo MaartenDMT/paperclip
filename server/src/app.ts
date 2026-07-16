@@ -13,11 +13,13 @@ import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middlewa
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
+import { companyRecoveryRoutes } from "./routes/company-recovery.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
+import { campaignRoutes } from "./routes/campaigns.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -55,7 +57,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import { getDefaultLocalPluginDir, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
@@ -65,6 +67,7 @@ import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
+import { registerCoreLifecycleHooks } from "./services/lifecycle-hooks-bootstrap.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -77,6 +80,7 @@ import { apiCompression } from "./middleware/api-compression.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+const FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS = 10_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -95,6 +99,43 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+const DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS = 60_000;
+
+function isPluginDevWatcherEnabled(): boolean {
+  const raw = process.env.PAPERCLIP_PLUGIN_DEV_WATCHER?.trim().toLowerCase();
+  if (!raw) return true;
+  return raw !== "false" && raw !== "0" && raw !== "off";
+}
+
+function readViteDevStartupTimeoutMs(): number {
+  const raw = process.env.PAPERCLIP_VITE_DEV_STARTUP_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_VITE_DEV_STARTUP_TIMEOUT_MS;
+  return Math.max(0, Math.floor(parsed));
+}
+
+async function waitForStartup<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ status: "ready"; value: T } | { status: "timed_out" }> {
+  if (timeoutMs <= 0) {
+    return { status: "ready", value: await promise };
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ status: "ready" as const, value })),
+      new Promise<{ status: "timed_out" }>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "timed_out" }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
   const error = err as { code?: unknown; message?: unknown; cause?: unknown };
@@ -120,6 +161,40 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+function createFeedbackExportFlushRunner(
+  flushPendingFeedbackTraces: () => Promise<unknown>,
+) {
+  let flushGeneration = 0;
+  let flushStartedAt: Date | null = null;
+
+  return () => {
+    const generation = ++flushGeneration;
+    flushStartedAt = new Date();
+
+    void waitForStartup(
+      flushPendingFeedbackTraces(),
+      FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS,
+    ).then((result) => {
+      if (generation !== flushGeneration) return;
+      if (result.status === "timed_out") {
+        logger.warn(
+          {
+            timeoutMs: FEEDBACK_EXPORT_FLUSH_TIMEOUT_MS,
+            flushStartedAt: flushStartedAt?.toISOString() ?? null,
+          },
+          "Feedback export flush timed out; allowing the next cycle to continue",
+        );
+      }
+    }).catch((err) => {
+      if (generation !== flushGeneration) return;
+      logger.error({ err }, "Failed to flush pending feedback exports");
+    }).finally(() => {
+      if (generation !== flushGeneration) return;
+      flushStartedAt = null;
+    });
+  };
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -159,6 +234,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    shutdownSignal?: AbortSignal;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -230,12 +306,14 @@ export async function createApp(
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
+  api.use(companyRecoveryRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
+  api.use(campaignRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
@@ -267,6 +345,7 @@ export async function createApp(
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
+  registerCoreLifecycleHooks();
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   const scheduler = createPluginJobScheduler({
@@ -290,7 +369,7 @@ export async function createApp(
   const loader = pluginLoader(
     db,
     {
-      localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+      localPluginDir: opts.localPluginDir ?? getDefaultLocalPluginDir(),
       migrationDb: opts.pluginMigrationDb,
     },
     {
@@ -348,7 +427,7 @@ export async function createApp(
     res.status(404).json({ error: "API route not found" });
   });
   app.use(pluginUiStaticRoutes(db, {
-    localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+    localPluginDir: opts.localPluginDir ?? getDefaultLocalPluginDir(),
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -431,23 +510,67 @@ export async function createApp(
       brandHtml: applyUiBranding,
     });
     const renderViteHtml = viteHtmlRenderer;
+    const viteStartupTimeoutMs = readViteDevStartupTimeoutMs();
+    try {
+      const vitePromise = (async () => {
+        const { createServer: createViteServer } = await import("vite");
+        return await createViteServer({
+          root: uiRoot,
+          appType: "custom",
+          server: {
+            middlewareMode: true,
+            hmr: {
+              host: opts.bindHost,
+              port: hmrPort,
+              clientPort: hmrPort,
+            },
+            allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+          },
+        });
+      })();
+      const viteResult = await waitForStartup(vitePromise, viteStartupTimeoutMs);
+      if (viteResult.status === "timed_out") {
+        logger.warn(
+          { timeoutMs: viteStartupTimeoutMs },
+          "Vite dev middleware startup timed out; continuing in API-only mode",
+        );
+        void vitePromise.then(
+          (lateVite) => lateVite.close().catch((err) => {
+            logger.warn({ err }, "Failed to close late Vite dev middleware after startup timeout");
+          }),
+          (err) => {
+            logger.warn({ err }, "Vite dev middleware failed after startup timeout");
+          },
+        );
+      } else {
+        const vite = viteResult.value;
+        viteHtmlRenderer = createCachedViteHtmlRenderer({
+          vite,
+          uiRoot,
+          brandHtml: applyUiBranding,
+        });
+        const renderViteHtml = viteHtmlRenderer;
 
-    if (fs.existsSync(publicUiRoot)) {
-      app.use(express.static(publicUiRoot, { index: false }));
+        if (fs.existsSync(publicUiRoot)) {
+          app.use(express.static(publicUiRoot, { index: false }));
+        }
+        app.get(/.*/, async (req, res, next) => {
+          if (!shouldServeViteDevHtml(req)) {
+            next();
+            return;
+          }
+          try {
+            const html = await renderViteHtml.render(req.originalUrl);
+            res.status(200).set({ "Content-Type": "text/html" }).end(html);
+          } catch (err) {
+            next(err);
+          }
+        });
+        app.use(vite.middlewares);
+      }
+    } catch (err) {
+      logger.warn({ err }, "Vite dev middleware failed to start; continuing in API-only mode");
     }
-    app.get(/.*/, async (req, res, next) => {
-      if (!shouldServeViteDevHtml(req)) {
-        next();
-        return;
-      }
-      try {
-        const html = await renderViteHtml.render(req.originalUrl);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
-      } catch (err) {
-        next(err);
-      }
-    });
-    app.use(vite.middlewares);
   }
 
   app.use(errorHandler);
@@ -554,13 +677,14 @@ export async function createApp(
   void ensureBundledKubernetesPlugin()
     .then(() => loader.loadAll())
     .then((result) => {
-    if (!result) return;
-    for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+      if (!result) return;
+      for (const loaded of result.results) {
+        if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+          devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+        }
       }
-    }
-  }).catch((err) => {
+    })
+    .catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   let appServicesShutdown = false;
@@ -568,6 +692,8 @@ export async function createApp(
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
+    scheduler.stop();
+    jobCoordinator.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
@@ -575,6 +701,7 @@ export async function createApp(
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
+  opts.shutdownSignal?.addEventListener("abort", shutdownAppServices, { once: true });
   process.once("exit", shutdownAppServices);
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();

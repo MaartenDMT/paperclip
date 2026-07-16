@@ -1,5 +1,6 @@
 export { companyService } from "./companies.js";
 export { companyArtifactsService } from "./company-artifacts.js";
+export { campaignService } from "./campaigns.js";
 export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
@@ -36,6 +37,7 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { meetingService } from "./meetings.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
@@ -136,3 +138,5 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+
+export { memoryMaintenanceRoutineService } from "./memory-maintenance-routine.js";

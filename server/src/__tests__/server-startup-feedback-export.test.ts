@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
+const ORIGINAL_PAPERCLIP_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 
 const {
   createAppMock,
@@ -19,6 +24,7 @@ const {
   fakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
+  heartbeatServiceInstanceMock,
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
@@ -71,7 +77,29 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const heartbeatServiceInstanceMock = {
+    reapOrphanedRuns: vi.fn(async () => undefined),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
+    resumeQueuedRuns: vi.fn(async () => undefined),
+    reconcileStrandedAssignedIssues: vi.fn(async () => ({
+      assignmentDispatched: 0,
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [],
+    })),
+    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
+    reconcilePersistedHeartbeatRuntimeState: vi.fn(async () => undefined),
+    refreshStockInstructionsForManagerAgents: vi.fn(async () => ({ updated: 0, failed: [] })),
+    reconcileIssueGraphLiveness: vi.fn(async () => ({ escalationsCreated: 0 })),
+    scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
+    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    wakeup: vi.fn(async () => undefined),
+  };
   const fakeServer = {
+    on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
@@ -95,6 +123,7 @@ const {
     fakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
+    heartbeatServiceInstanceMock,
     loadConfigMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
@@ -160,6 +189,14 @@ vi.mock("@paperclipai/db", () => ({
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
+  startEmbeddedPostgresWithRecovery: vi.fn(),
+  waitForEmbeddedPostgresReady: vi.fn(async () => true),
+  readEmbeddedPostgresPostmasterPid: vi.fn(() => null),
+  readEmbeddedPostgresPostmasterPort: vi.fn(() => null),
+  createEmbeddedPostgresLogBuffer: vi.fn(() => ({
+    append: vi.fn(),
+    getRecentLogs: vi.fn(() => []),
+  })),
   authUsers: {},
   companies: {},
   companyMemberships: {},
@@ -198,6 +235,8 @@ vi.mock("../services/index.js", () => ({
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  feedbackService: feedbackServiceFactoryMock,
+  heartbeatService: vi.fn(() => heartbeatServiceInstanceMock),
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
@@ -206,6 +245,16 @@ vi.mock("../services/index.js", () => ({
         monthlyMonths: 1,
       },
     })),
+    listCompanyIds: vi.fn(async () => []),
+  })),
+  memoryMaintenanceRoutineService: vi.fn(() => ({
+    ensureForCompanies: vi.fn(async () => ({ companies: 0, created: 0, updated: 0, unchanged: 0 })),
+  })),
+  executionWorkspaceService: vi.fn(() => ({
+    reconcileStaleSharedWorkspaces: vi.fn(async () => ({ archived: 0, detachedIssues: 0 })),
+  })),
+  issueThreadInteractionService: vi.fn(() => ({
+    reconcileMeetingWorkflow: vi.fn(async () => ({ created: 0, meetings: [] })),
   })),
   reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
@@ -258,7 +307,40 @@ vi.mock("../auth/better-auth.js", () => ({
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
 }));
 
+const waitForExternalAdaptersMock = vi.fn(async () => undefined);
+
+vi.mock("../adapters/registry.js", () => ({
+  waitForExternalAdapters: waitForExternalAdaptersMock,
+}));
+
 import { startServer } from "../index.ts";
+import { logger } from "../middleware/logger.js";
+import { heartbeatService } from "../services/index.js";
+
+const INITIAL_SIGINT_LISTENERS = new Set(process.rawListeners("SIGINT"));
+const INITIAL_SIGTERM_LISTENERS = new Set(process.rawListeners("SIGTERM"));
+
+beforeEach(async () => {
+  process.env.PAPERCLIP_HOME = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-test-"));
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
+});
+
+afterEach(() => {
+  for (const listener of process.rawListeners("SIGINT")) {
+    if (!INITIAL_SIGINT_LISTENERS.has(listener)) {
+      process.removeListener("SIGINT", listener);
+    }
+  }
+  for (const listener of process.rawListeners("SIGTERM")) {
+    if (!INITIAL_SIGTERM_LISTENERS.has(listener)) {
+      process.removeListener("SIGTERM", listener);
+    }
+  }
+  if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+  else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+  if (ORIGINAL_PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+  else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_PAPERCLIP_INSTANCE_ID;
+});
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -270,7 +352,9 @@ describe("startServer feedback export wiring", () => {
     });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    waitForExternalAdaptersMock.mockResolvedValue(undefined);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS;
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -353,6 +437,51 @@ describe("startServer feedback export wiring", () => {
   });
 });
 
+describe("startServer external adapter gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig());
+    createBetterAuthInstanceMock.mockReturnValue({});
+    deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    waitForExternalAdaptersMock.mockResolvedValue(undefined);
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS;
+  });
+
+  it("continues startup when external adapters exceed the startup wait budget", async () => {
+    waitForExternalAdaptersMock.mockImplementation(() => new Promise<void>(() => {}));
+    process.env.PAPERCLIP_EXTERNAL_ADAPTER_STARTUP_WAIT_MS = "1";
+
+    const started = await startServer();
+
+    expect(started.server).toBe(fakeServer);
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 1 }),
+      expect.stringContaining("External adapter loading exceeded startup wait budget"),
+    );
+  });
+
+  it("attaches a permanent runtime error handler to the HTTP server", async () => {
+    await startServer();
+
+    const runtimeErrorHandler = fakeServer.on.mock.calls.find((call) => call[0] === "error")?.[1] as
+      | ((err: Error) => void)
+      | undefined;
+
+    expect(typeof runtimeErrorHandler).toBe("function");
+
+    runtimeErrorHandler?.(new Error("socket meltdown"));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({ message: "socket meltdown" }),
+      }),
+      "Paperclip HTTP server emitted an unexpected runtime error",
+    );
+  });
+});
+
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -425,6 +554,12 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+
+    if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+
+    if (ORIGINAL_PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_PAPERCLIP_INSTANCE_ID;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
@@ -490,5 +625,142 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("does not start heartbeat scheduling from an auto-shifted secondary port", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+    }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    await startServer();
+
+    expect(heartbeatService).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { requestedPort: 3100, listenPort: 3110 },
+      "Heartbeat scheduler disabled because this server is not the primary Paperclip control-plane process",
+    );
+  });
+
+  it("clears heartbeat scheduler intervals during shutdown before they can keep querying the database", async () => {
+    vi.useFakeTimers();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const existingSigtermListeners = new Set(process.rawListeners("SIGTERM"));
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 1000,
+    }));
+
+    try {
+      await startServer();
+
+      heartbeatServiceInstanceMock.tickTimers.mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(heartbeatServiceInstanceMock.tickTimers).toHaveBeenCalledTimes(1);
+
+      const shutdownListener = process
+        .rawListeners("SIGTERM")
+        .find((listener) => !existingSigtermListeners.has(listener)) as (() => void) | undefined;
+      expect(shutdownListener).toBeDefined();
+
+      shutdownListener?.();
+      await vi.waitFor(() => {
+        expect(exitSpy).toHaveBeenCalledWith(0);
+      });
+      heartbeatServiceInstanceMock.tickTimers.mockClear();
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(heartbeatServiceInstanceMock.tickTimers).not.toHaveBeenCalled();
+    } finally {
+      for (const listener of process.rawListeners("SIGTERM")) {
+        if (!existingSigtermListeners.has(listener)) {
+          process.removeListener("SIGTERM", listener);
+        }
+      }
+      exitSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start heartbeat scheduling when another process owns the scheduler lease", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-scheduler-owner-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "control-plane-scheduler.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        requestedPort: 3100,
+        listenPort: 3100,
+      }),
+      "utf8",
+    );
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+    }));
+
+    await startServer();
+
+    expect(heartbeatService).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedPort: 3100,
+        listenPort: 3100,
+        lockPath: expect.stringContaining("control-plane-scheduler.lock"),
+      }),
+      "Control-plane scheduler disabled because another Paperclip server owns the scheduler lease",
+    );
+  });
+
+  it("fails fast when another startup already owns the instance startup lease", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-owner-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "server-startup.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        requestedPort: 3210,
+        listenPort: 3210,
+      }),
+      "utf8",
+    );
+
+    await expect(startServer()).rejects.toThrow(
+      /Another Paperclip server startup is already in progress/,
+    );
+    expect(createAppMock).not.toHaveBeenCalled();
+    expect(fakeServer.listen).not.toHaveBeenCalled();
+  });
+
+  it("reclaims a stale startup lease even when the recorded owner pid is still alive", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-startup-stale-"));
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = path.join(home, "instances", "default");
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(
+      path.join(instanceRoot, "server-startup.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        requestedPort: 3210,
+        listenPort: 3210,
+      }),
+      "utf8",
+    );
+
+    await expect(startServer()).resolves.toBeDefined();
+    expect(createAppMock).toHaveBeenCalled();
+    expect(fakeServer.listen).toHaveBeenCalled();
   });
 });

@@ -37,8 +37,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "codex_local" &&
       input.adapterType !== "claude_local" &&
       input.adapterType !== "gemini_local" &&
+      input.adapterType !== "minimax_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
+      input.adapterType !== "zai_local" &&
       input.adapterType !== "cursor"
     ) {
       return null;
@@ -113,8 +115,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "codex_local" &&
       input.adapterType !== "claude_local" &&
       input.adapterType !== "gemini_local" &&
+      input.adapterType !== "minimax_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
+      input.adapterType !== "zai_local" &&
       input.adapterType !== "cursor"
     ) ||
     input.environment.driver !== "ssh"

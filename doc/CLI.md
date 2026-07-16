@@ -168,6 +168,8 @@ pnpm paperclipai issue runs <issue-id-or-identifier>
 pnpm paperclipai issue live-runs <issue-id-or-identifier>
 pnpm paperclipai issue active-run <issue-id-or-identifier>
 pnpm paperclipai issue heartbeat-context <issue-id>
+pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."] [--blocked-by-issue-ids <id1,id2>|--clear-blockers] [--reopen|--resume]
+pnpm paperclipai issue comment <issue-id> --body "..." [--reopen|--resume]
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-statuses todo,backlog,blocked]
 pnpm paperclipai issue release <issue-id>
 pnpm paperclipai issue force-release <issue-id>
@@ -256,6 +258,8 @@ pnpm paperclipai goal create --company-id <company-id> --title "Grow revenue" [-
 pnpm paperclipai goal update <goal-id> [--title "..."] [--status achieved]
 pnpm paperclipai goal delete <goal-id> --yes
 ```
+
+Use `in_progress` in `--expected-statuses` only for an explicit resume/continuation path, such as a Paperclip `finish_successful_run_handoff` or `issue_continuation_needed` wake. Normal manual checkout should not claim an already running issue unless the current run is intentionally adopting that continuation.
 
 ## Agent Commands
 

@@ -75,7 +75,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 }
 
 describe("buildSubIssueDefaults", () => {
-  it("inherits the parent agent assignee and workspace context", () => {
+  it("inherits parent workspace context without inheriting the parent agent assignee", () => {
     const defaults = buildSubIssueDefaults(
       makeIssue({
         assigneeAgentId: "agent-1",
@@ -94,7 +94,6 @@ describe("buildSubIssueDefaults", () => {
       executionWorkspaceId: "workspace-1",
       executionWorkspaceMode: "reuse_existing",
       parentExecutionWorkspaceLabel: "Parent workspace",
-      assigneeAgentId: "agent-1",
     });
   });
 

@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import {
+  prepareTestProcessCommand,
+  translateTestPosixPathToWindows,
+  withTestPosixShellPath,
+} from "@paperclipai/adapter-utils/test-posix-shell";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -74,6 +79,24 @@ async function seedSharedCodexAuth(homeRoot: string): Promise<void> {
   process.env.CODEX_HOME = sharedCodexHome;
   await fs.mkdir(sharedCodexHome, { recursive: true });
   await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+async function createRuntimeSkill(root: string, input: {
+  key?: string;
+  runtimeName?: string;
+  body?: string;
+  requiredReason?: string | null;
+}) {
+  const runtimeName = input.runtimeName ?? "paperclip-test-skill";
+  const key = input.key ?? `company/${runtimeName}`;
+  const source = path.join(root, "skills", runtimeName);
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\nrequired: false\n---\nUse the test skill.\n", "utf8");
+  return {
+    key,
+    runtimeName,
+    source,
+    required: false,
+    requiredReason: input.requiredReason ?? null,
+  };
 }
 
 function createLocalSandboxRunner() {
@@ -90,22 +113,27 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return runChildProcess(
-        `sandbox-run-${counter}`,
-        input.command,
-        input.args ?? [],
-        {
-          cwd: input.cwd ?? process.cwd(),
-          env: input.env ?? {},
-          stdin: input.stdin,
-          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
-          graceSec: 5,
-          onLog: input.onLog ?? (async () => {}),
-          onSpawn: input.onSpawn
-            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
-            : undefined,
-        },
-      );
+      const target = await prepareTestProcessCommand(input.command, input.args ?? []);
+      try {
+        return await runChildProcess(
+          `sandbox-run-${counter}`,
+          target.command,
+          target.args,
+          {
+            cwd: translateTestPosixPathToWindows(input.cwd ?? process.cwd()),
+            env: withTestPosixShellPath({ ...process.env, ...(input.env ?? {}) }),
+            stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+            graceSec: 5,
+            onLog: input.onLog ?? (async () => {}),
+            onSpawn: input.onSpawn
+              ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+              : undefined,
+          },
+        );
+      } finally {
+        await target.cleanup();
+      }
     },
   };
 }
@@ -268,6 +296,74 @@ describe("codex execute", () => {
     }
   });
 
+  it("summarizes configured company skills in the prompt so Codex can activate relevant skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-skills-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    const skill = await createRuntimeSkill(root, {
+      key: "company/trading-campaign",
+      runtimeName: "trading-campaign",
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-skills",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+        context: {
+          paperclipWake: {
+            issue: {
+              identifier: "TRADE-9",
+              title: "Implement trading campaign workflow",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("## Configured Company Skills");
+      expect(capture.prompt).toContain("trading-campaign");
+      expect(capture.prompt).toContain("company/trading-campaign");
+      expect(capture.prompt).toContain("Activate every matching skill explicitly");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
     const workspace = path.join(root, "workspace");
@@ -397,7 +493,9 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.codexHome).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home"));
+      expect(capture.codexHome?.replaceAll("\\", "/")).toBe(
+        path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home").replaceAll("\\", "/"),
+      );
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
       expect(capture.paperclipApiBridgeMode).toBe("queue_v1");
@@ -611,7 +709,7 @@ describe("codex execute", () => {
           engine: "cli",
           command: commandPath,
           cwd: workspace,
-          model: "gpt-5.3-codex-spark",
+          model: "gpt-5.4",
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},

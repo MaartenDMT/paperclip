@@ -250,6 +250,12 @@ describe("agent routes adapter validation", () => {
       name: "Codex",
       urlKey: "codex",
       role: "engineer",
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      name: "Copilot Agent",
+      urlKey: "copilot-agent",
+      role: "general",
       title: null,
       icon: null,
       status: "idle",
@@ -257,6 +263,8 @@ describe("agent routes adapter validation", () => {
       capabilities: null,
       adapterType: "codex_local",
       adapterConfig: {},
+      adapterType: "copilot_local",
+      adapterConfig: { model: "gpt-5.2" },
       runtimeConfig: {},
       budgetMonthlyCents: 0,
       spentMonthlyCents: 0,
@@ -271,6 +279,12 @@ describe("agent routes adapter validation", () => {
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...(await mockAgentService.getById()),
       ...patch,
+    }));
+    mockAgentService.update.mockImplementation(async (id: string, input: Record<string, unknown>) => ({
+      ...(await mockAgentService.getById(id)),
+      ...input,
+      id,
+      updatedAt: new Date(),
     }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
@@ -422,5 +436,37 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  it("rejects unsupported copilot_local models when creating agents", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Bad Copilot Agent",
+          adapterType: "copilot_local",
+          adapterConfig: { model: "gemini-3-flash-preview" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? "")).toContain("Unsupported model");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported copilot_local models when updating agents", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterConfig: { model: "gemini-3.1-pro-preview" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? "")).toContain("Unsupported model");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 });

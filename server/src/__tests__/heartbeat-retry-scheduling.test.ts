@@ -126,6 +126,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     resultJson?: Record<string, unknown> | null;
     adapterType?: string;
     agentName?: string;
+    runtimeConfig?: Record<string, unknown>;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
@@ -145,10 +146,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "active",
       adapterType,
       adapterConfig: {},
-      runtimeConfig: {
+      runtimeConfig: input.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
+        },
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
         },
       },
       permissions: {},
@@ -424,6 +434,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryOfRunId: sourceRunId,
       scheduledRetryAttempt: 1,
       scheduledRetryReason: "transient_failure",
+      contextSnapshot: expect.objectContaining({ modelProfile: "fallback" }),
     });
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
@@ -447,6 +458,60 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("treats provider quota failures as fallback-lane retries even without adapter errorFamily metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+
+    await seedRetryFixture({
+      companyId,
+      agentId,
+      runId: sourceRunId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: null,
+      resultJson: {
+        stderr: "Kimi request failed: usage limit reached for the current account",
+      },
+      adapterType: "claude_local",
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+        modelProfiles: {
+          fallback: {
+            enabled: true,
+            adapterConfig: {
+              adapterType: "codex_local",
+              model: "gpt-5.4-mini",
+            },
+          },
+        },
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      modelProfile: "fallback",
+      errorFamily: "provider_quota",
+    });
   });
 
   it("schedules max-turn continuations with distinct retry metadata", async () => {
@@ -1375,6 +1440,68 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         currentStatus: issueStatus,
         requiredStatus: "in_progress",
         scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      });
+    },
+  );
+
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "cancels a due issue continuation recovery when the issue moves to %s before retry promotion",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture();
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        retryReason: "issue_continuation_needed",
+        wakeReason: "issue_continuation_needed",
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+
+      await db.update(issues).set({
+        status: issueStatus,
+        updatedAt: new Date(now.getTime() + 500),
+      }).where(eq(issues.id, issueId));
+
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+      const retryRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRun).toMatchObject({
+        status: "cancelled",
+        errorCode: "issue_not_in_progress",
+      });
+
+      const wakeupRequest = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeupRequest?.status).toBe("cancelled");
+
+      const event = await db
+        .select({
+          message: heartbeatRunEvents.message,
+          payload: heartbeatRunEvents.payload,
+        })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, scheduled.run.id))
+        .orderBy(sql`${heartbeatRunEvents.seq} desc`)
+        .then((rows) => rows[0] ?? null);
+      expect(event?.message).toContain("no longer in_progress");
+      expect(event?.payload).toMatchObject({
+        currentStatus: issueStatus,
+        requiredStatus: "in_progress",
+        scheduledRetryReason: "issue_continuation_needed",
       });
     },
   );

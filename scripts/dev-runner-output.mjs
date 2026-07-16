@@ -91,3 +91,26 @@ export async function parseJsonResponseWithLimit(response, maxBytes = DEFAULT_JS
 
   return JSON.parse(text);
 }
+
+export function parseJsonCommandOutput(input) {
+  if (input.signal) {
+    throw new Error(`${input.commandDescription} terminated by ${input.signal}`);
+  }
+
+  const body = input.stdout.trim();
+  if (body.length === 0) {
+    const stderr = input.stderr?.trim();
+    throw new Error(
+      stderr && stderr.length > 0
+        ? `${input.commandDescription} produced no JSON output: ${stderr}`
+        : `${input.commandDescription} produced no JSON output`,
+    );
+  }
+
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "unknown JSON parse error");
+    throw new Error(`${input.commandDescription} returned invalid JSON: ${message}`);
+  }
+}

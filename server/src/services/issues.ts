@@ -2469,6 +2469,7 @@ const issueListSelect = {
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
+  cancelledByKind: issues.cancelledByKind,
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,

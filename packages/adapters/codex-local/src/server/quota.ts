@@ -406,11 +406,22 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
+// On Windows the `codex` CLI is usually installed via npm/pnpm as a `.cmd`
+// shim. Node's spawn() does not resolve PATHEXT, so spawning the bare name
+// fails with ENOENT even when `where codex` finds it interactively. Pass
+// `shell: true` so cmd.exe / sh resolves the executable, and allow override
+// via PAPERCLIP_CODEX_BIN for pinned installs.
+const CODEX_BIN = process.env.PAPERCLIP_CODEX_BIN || "codex";
+
 class CodexRpcClient {
   private proc = spawn(
-    "codex",
+    CODEX_BIN,
     ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+      shell: process.platform === "win32",
+    },
   );
 
   private nextId = 1;

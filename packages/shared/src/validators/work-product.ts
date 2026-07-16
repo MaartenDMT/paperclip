@@ -4,6 +4,7 @@ import { workspaceFileRefSchema } from "./workspace-file-resource.js";
 function attachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
+import { readersBaseArtifactBridgeMetadataSchema } from "./readersbase-artifact-bridge.js";
 
 export const issueWorkProductTypeSchema = z.enum([
   "preview_url",
@@ -77,7 +78,7 @@ export const issueWorkProductMetadataSchema = z
 
 export type IssueWorkProductMetadata = z.infer<typeof issueWorkProductMetadataSchema>;
 
-export const createIssueWorkProductSchema = z.object({
+const issueWorkProductInputSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   runtimeServiceId: z.string().uuid().optional().nullable(),
@@ -95,8 +96,34 @@ export const createIssueWorkProductSchema = z.object({
   createdByRunId: z.string().uuid().optional().nullable(),
 });
 
+function addReadersBaseBridgeMetadataIssues(
+  workProduct: { provider?: string; metadata?: Record<string, unknown> | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (workProduct.provider !== "readersbase") return;
+
+  const result = readersBaseArtifactBridgeMetadataSchema.safeParse(
+    workProduct.metadata,
+  );
+  if (result.success) return;
+
+  for (const issue of result.error.issues) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: issue.message,
+      path: ["metadata", ...issue.path],
+    });
+  }
+}
+
+export const createIssueWorkProductSchema = issueWorkProductInputSchema.superRefine(
+  addReadersBaseBridgeMetadataIssues,
+);
+
 export type CreateIssueWorkProduct = z.infer<typeof createIssueWorkProductSchema>;
 
-export const updateIssueWorkProductSchema = createIssueWorkProductSchema.partial();
+export const updateIssueWorkProductSchema = issueWorkProductInputSchema
+  .partial()
+  .superRefine(addReadersBaseBridgeMetadataIssues);
 
 export type UpdateIssueWorkProduct = z.infer<typeof updateIssueWorkProductSchema>;

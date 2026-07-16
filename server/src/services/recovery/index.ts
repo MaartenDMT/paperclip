@@ -4,6 +4,7 @@ export {
   RECOVERY_REASON_KINDS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
+  isRecoveryOwnedIssueOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -43,9 +44,31 @@ export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
 export {
+  ADAPTER_LEVEL_FAILURE_ERROR_CODES,
+  DEAD_ADAPTER_PARK_NOTICE_BODY,
+  DEFAULT_DEAD_ADAPTER_FAILURE_THRESHOLD,
+  countConsecutiveAdapterFailures,
+  decideDeadAdapterCircuitBreaker,
+  isAdapterLevelFailureRun,
+} from "./dead-adapter-circuit-breaker.js";
+export type {
+  CircuitBreakerRun,
+  DeadAdapterCircuitBreakerDecision,
+} from "./dead-adapter-circuit-breaker.js";
+export {
+  DEFAULT_MAX_RECOVERY_RESUME_CYCLES,
+  RECOVERY_BUDGET_PARK_NOTICE_BODY,
+  RECOVERY_RESUME_BOUNCE_SOURCE,
+  decideRecoveryCycleBudget,
+} from "./recovery-cycle-budget.js";
+export type {
+  RecoveryCycleBudgetDecision,
+} from "./recovery-cycle-budget.js";
+export {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,
+  REAL_WORK_HANDOFF_REQUIRED_ACTION,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_OPTIONS,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -54,11 +77,14 @@ export {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffRequiredNotice,
+  decideSuccessfulRunHandoffCompletion,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  isSuccessfulRunHandoffRun,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
+  SuccessfulRunHandoffCompletionDecision,
 } from "./successful-run-handoff.js";

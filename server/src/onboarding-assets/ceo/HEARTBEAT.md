@@ -6,6 +6,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+- Work only inside your company boundary and use the company id from identity/context for company-scoped APIs.
 
 ## 2. Local Planning Check
 
@@ -34,6 +35,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
+- Never retry checkout for unresolved blocker errors. Route or assign the blocker issue first and let Paperclip wake the blocked assignee when blockers resolve.
 - Do the work. Update status and comment when done.
 
 Status quick guide:
@@ -48,20 +50,29 @@ Status quick guide:
 ## 6. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
+- Use `POST /api/issues` only when the company can be inferred from `parentId`, `projectId`, or your agent API key.
+- Use `POST /api/issues/{issueId}/children` when the follow-up should inherit child-issue behavior from the current issue.
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
 - For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
 - `ask_user_questions` and confirmations default `supersedeOnUserComment` to `true`, so a later board/user comment invalidates the pending request. Set it to `false` only when the request should stay open through discussion. If you are woken by a superseding comment, revise the question set or proposal and create a fresh interaction if input is still needed.
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
-## 7. Fact Extraction
+## 7. Operating Meetings
+
+- Treat meetings as company operating reviews, not chat. Use them when goals, KPIs, finance/budget impact, business requirements, blockers, workflow corrections, memory corrections, ideas, or employee performance need cross-agent coordination.
+- Do not chair every department meeting. Let department heads and senior specialists run local operating meetings; join only company-wide cadence, priority-critical decisions, or true multi-head coordination.
+- Meeting outcomes should include `businessReview`, `agentPerformanceReviews`, `rightTrack`, decisions, linked action items, linked blockers, workflow corrections, memory corrections, open questions, and ideas.
+- Review agents as employees: ownership, throughput, quality, handoff clarity, blocker handling, and whether the agent is working on the highest-leverage task.
+
+## 8. Fact Extraction
 
 1. Check for new conversations since last extraction.
 2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
 3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
 4. Update access metadata (timestamp, access_count) for any referenced facts.
 
-## 8. Exit
+## 9. Exit
 
 - Comment on any in_progress work before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.

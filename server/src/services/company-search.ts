@@ -220,7 +220,7 @@ function matchTerms(normalizedQuery: string, tokens: string[]) {
 }
 
 function emptySearchCounts(): Record<CompanySearchCountType, number> {
-  return { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 };
+  return { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0, campaign: 0 };
 }
 
 function emptyFilterOptionCounts(): CompanySearchFilterOptionCounts {

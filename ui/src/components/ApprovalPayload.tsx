@@ -1,4 +1,5 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Flag } from "lucide-react";
+import { Link } from "@/lib/router";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -6,6 +7,7 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  campaign_phase_plan: "Campaign Phase Plan",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -20,6 +22,8 @@ function firstNonEmptyString(...values: unknown[]): string | null {
 export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
   return firstNonEmptyString(
     payload?.title,
+    payload?.phaseTitle,
+    payload?.campaignTitle,
     payload?.name,
     payload?.summary,
     payload?.recommendedAction,
@@ -41,6 +45,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  campaign_phase_plan: Flag,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -148,6 +153,55 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
   );
 }
 
+function shortenId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > 12 ? `${trimmed.slice(0, 8)}...` : trimmed;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function CampaignPhasePlanPayload({ payload }: { payload: Record<string, unknown> }) {
+  const campaignId = firstNonEmptyString(payload.campaignId);
+  const campaignTitle = firstNonEmptyString(payload.campaignTitle) ?? "Campaign";
+  const phaseTitle = firstNonEmptyString(payload.phaseTitle) ?? "Phase plan";
+  const projectNames = stringArray(payload.projectNames);
+  const projectIds = stringArray(payload.projectIds);
+  const projectSummary = projectNames.length > 0
+    ? projectNames.join(", ")
+    : projectIds.length > 0
+      ? `${projectIds.length} linked ${projectIds.length === 1 ? "project" : "projects"}`
+      : null;
+  const planRevision = shortenId(payload.planRevisionId);
+
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Campaign</span>
+        <span className="font-medium">{campaignTitle}</span>
+      </div>
+      <PayloadField label="Phase" value={phaseTitle} />
+      <PayloadField label="Projects" value={projectSummary} />
+      <PayloadField label="Revision" value={planRevision} />
+      {campaignId ? (
+        <Link
+          to={`/campaigns/${campaignId}`}
+          className="inline-flex pt-1 text-sm font-medium text-primary hover:underline"
+        >
+          Open campaign
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
 export function BoardApprovalPayload({
   payload,
   hideTitle = false,
@@ -240,6 +294,7 @@ export function ApprovalPayloadRenderer({
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  if (type === "campaign_phase_plan") return <CampaignPhasePlanPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }

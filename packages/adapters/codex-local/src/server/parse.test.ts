@@ -31,6 +31,7 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: "resume failed",
+      skillActivations: [],
     });
   });
 
@@ -64,7 +65,69 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: null,
+      skillActivations: [],
     });
+  });
+
+  it("extracts explicit Skill tool calls", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_call",
+          name: "Skill",
+          arguments: JSON.stringify({ skill: "paperclip" }),
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_call",
+          name: "Skill",
+          input: { skill_name: "diagnose-why-work-stopped" },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout).skillActivations).toEqual([
+      { skillKey: "paperclip", skillName: "paperclip", source: "codex" },
+      {
+        skillKey: "diagnose-why-work-stopped",
+        skillName: "diagnose-why-work-stopped",
+        source: "codex",
+      },
+    ]);
+  });
+
+  it("extracts Skill tool calls from nested Codex tool payload shapes", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "function_call",
+          tool: "Skill",
+          state: {
+            input: { skill: "company-creator" },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "function_call",
+          call: {
+            name: "Skill",
+            arguments: JSON.stringify({ skill_name: "graphify-memory" }),
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout).skillActivations).toEqual([
+      { skillKey: "company-creator", skillName: "company-creator", source: "codex" },
+      { skillKey: "graphify-memory", skillName: "graphify-memory", source: "codex" },
+    ]);
   });
 });
 
