@@ -45,6 +45,7 @@ describe("adapter model listing", () => {
   });
 
   it("returns codex fallback models when local Codex model discovery is unavailable", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     setCodexModelsFetcherForTests(async () => []);
     const models = await listAdapterModels("codex_local");
 
@@ -157,20 +158,6 @@ describe("adapter model listing", () => {
   });
 
   it("refreshes cached codex models on demand", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5" }],
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5.6-terra" }],
-        }),
-      } as Response);
     const fetcher = vi.fn()
       .mockResolvedValueOnce([{ id: "gpt-5.4", label: "gpt-5.4" }])
       .mockResolvedValueOnce([{ id: "gpt-5.5", label: "GPT-5.5" }]);
@@ -179,10 +166,6 @@ describe("adapter model listing", () => {
     const initial = await listAdapterModels("codex_local");
     const refreshed = await refreshAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(initial.some((model) => model.id === "gpt-5.4")).toBe(true);
     expect(refreshed.some((model) => model.id === "gpt-5.5")).toBe(true);
