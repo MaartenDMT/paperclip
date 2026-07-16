@@ -259,10 +259,12 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const result = spawnSync(pnpmCommand, ["exec", "vitest", "run", ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
   if (result.error) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
@@ -281,7 +283,10 @@ function runGeneralSuites(routeTests) {
 
 function runProjectGroup(projects, groupName) {
   for (const project of projects) {
-    runVitest(["--project", project], `${groupName} project ${project}`);
+    const args = ["--project", project];
+    if (project === "@paperclipai/ui") {
+      args.push("--no-file-parallelism");
+    }
   }
 }
 
