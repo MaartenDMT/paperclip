@@ -1,7 +1,9 @@
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "agent_wakeup_requests_status_requested_idx"
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: migration runner executes inside a transaction where CONCURRENTLY cannot run. Content matches the already-applied upstream migration.
+CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_status_requested_idx"
   ON "agent_wakeup_requests" ("status", "requested_at");
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "agent_wakeup_requests_run_idx"
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: migration runner executes inside a transaction where CONCURRENTLY cannot run. Content matches the already-applied upstream migration.
+CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_run_idx"
   ON "agent_wakeup_requests" ("run_id");
 
 CREATE INDEX IF NOT EXISTS "heartbeat_runs_agent_status_created_idx"
