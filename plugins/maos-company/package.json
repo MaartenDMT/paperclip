@@ -1,0 +1,25 @@
+{
+  "name": "@maos/paperclip-company",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MAOS company campaign, goal-binding, and meeting automation for Paperclip",
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "tsc --noEmit -p ./tsconfig.json"
+  },
+  "paperclipPlugin": {
+    "manifest": "./src/manifest.mjs",
+    "worker": "./dist/worker.js"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "file:../../packages/plugins/sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}

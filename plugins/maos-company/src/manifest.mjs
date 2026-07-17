@@ -1,0 +1,55 @@
+const route = (routeKey, method, path, companyResolution) => ({
+  routeKey,
+  method,
+  path,
+  auth: "board-or-agent",
+  capability: "api.routes.register",
+  companyResolution,
+});
+
+const manifest = {
+  id: "maos.company-automation",
+  apiVersion: 1,
+  version: "0.1.0",
+  displayName: "MAOS Company Automation",
+  description: "Company-scoped campaigns, MAOS goal bindings, and operating meeting policy.",
+  author: "MAOS",
+  categories: ["automation"],
+  capabilities: [
+    "api.routes.register",
+    "database.namespace.migrate",
+    "database.namespace.read",
+    "database.namespace.write",
+    "companies.read",
+    "projects.read",
+    "goals.read",
+    "agents.read",
+    "issues.read",
+    "issues.create",
+    "issue.subtree.read",
+    "issue.documents.read",
+    "issue.documents.write",
+    "issues.orchestration.read",
+    "activity.log.write",
+  ],
+  entrypoints: { worker: "./dist/worker.js" },
+  database: {
+    namespaceSlug: "maos_company",
+    migrationsDir: "migrations",
+    coreReadTables: ["companies", "projects", "goals", "agents", "issues", "issue_documents", "approvals", "issue_approvals"],
+  },
+  apiRoutes: [
+    route("campaigns.list", "GET", "/campaigns", { from: "query", key: "companyId" }),
+    route("campaigns.create", "POST", "/campaigns", { from: "body", key: "companyId" }),
+    route("campaigns.get", "GET", "/campaigns/:campaignId", { from: "query", key: "companyId" }),
+    route("campaigns.update", "PATCH", "/campaigns/:campaignId", { from: "body", key: "companyId" }),
+    route("campaign-phases.create", "POST", "/campaigns/:campaignId/phases", { from: "body", key: "companyId" }),
+    route("campaign-phases.transition", "POST", "/campaign-phases/:phaseId/transition", { from: "body", key: "companyId" }),
+    route("goal-bindings.list", "GET", "/goal-bindings", { from: "query", key: "companyId" }),
+    route("goal-bindings.upsert", "POST", "/goal-bindings", { from: "body", key: "companyId" }),
+    route("meeting-policy.get", "GET", "/meeting-policy", { from: "query", key: "companyId" }),
+    route("meeting-recommendations.create", "POST", "/meeting-recommendations", { from: "body", key: "companyId" }),
+  ],
+};
+
+export default manifest;
