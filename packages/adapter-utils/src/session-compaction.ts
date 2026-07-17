@@ -80,6 +80,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     nativeContextManagement: "unknown",
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
+  kimi_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+  },
   minimax_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
