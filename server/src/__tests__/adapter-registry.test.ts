@@ -309,7 +309,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
+        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
         source: "adapter_default",
       }),
     ]);
@@ -323,7 +323,10 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "github-copilot/gpt-5-mini" }),
+        adapterConfig: expect.objectContaining({
+          model: "github-copilot/gpt-5-mini",
+          variant: "low",
+        }),
         source: "adapter_default",
       }),
     ]);
