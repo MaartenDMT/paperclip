@@ -9150,8 +9150,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+
+      if (req.actor.type === "agent") {
+        const currentInteraction = await issueThreadInteractionService(db).getById(interactionId);
+        const actorIsMeetingParticipant =
+          currentInteraction?.kind === "agent_meeting"
+          && currentInteraction.issueId === issue.id
+          && currentInteraction.companyId === issue.companyId
+          && currentInteraction.payload.participantAgentIds.includes(req.actor.agentId);
+        if (!actorIsMeetingParticipant && await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
