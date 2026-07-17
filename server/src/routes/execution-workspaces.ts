@@ -25,7 +25,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -118,24 +118,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
@@ -147,12 +139,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
@@ -166,12 +154,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
 
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
@@ -507,12 +491,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.post("/execution-workspaces/:id/reconcile-branch", validate(reconcileExecutionWorkspaceBranchSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     assertBoard(req);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
@@ -599,12 +579,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,

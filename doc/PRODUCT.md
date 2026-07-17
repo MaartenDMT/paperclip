@@ -59,6 +59,15 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
 Campaigns are a Work section surface for large efforts that need board oversight before execution. A campaign is not a Project: Projects remain operating domains such as Production, Remotion, and Social Media, while one campaign can link one or more of those projects. Campaigns advance through reviewable phase plans: create campaign, create phase/plan, submit the plan for review, approve or request revision, then execute later through the generated issue after approval. Approval of the phase plan is the execution gate; there is no second "start work" approval.
+### Company Skills and Policy
+
+Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
+
+The governing rule is: **skill permissions are opt-in restrictions, not opt-in capabilities**. Missing skill grants never create a denial in an otherwise unconfigured company, and ordinary skill work does not require board confirmation, a draft-only workflow, or an activation approval.
+
+Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
+
+An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 
 ## Principles
 

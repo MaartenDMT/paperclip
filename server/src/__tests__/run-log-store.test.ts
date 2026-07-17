@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import * as fsPromises from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLocalFileRunLogStore } from "../services/run-log-store.ts";
+import { createDurableRunLogStore } from "../services/run-log-store.ts";
 import { retryTransientFilesystemError } from "../services/transient-fs.ts";
 
 describe("retryTransientFilesystemError", () => {
@@ -31,7 +31,7 @@ describe("retryTransientFilesystemError", () => {
   });
 });
 
-describe("createLocalFileRunLogStore", () => {
+describe("createDurableRunLogStore (local-only mode)", () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
@@ -44,7 +44,7 @@ describe("createLocalFileRunLogStore", () => {
   it("creates and appends run log files", async () => {
     const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), "paperclip-run-log-"));
     tempDirs.push(tempDir);
-    const store = createLocalFileRunLogStore(tempDir);
+    const store = createDurableRunLogStore({ basePath: tempDir });
 
     const handle = await store.begin({
       companyId: "company-1",

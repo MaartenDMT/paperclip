@@ -80,6 +80,7 @@ export {
   decideSuccessfulRunHandoffCompletion,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
+  isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
   isSuccessfulRunHandoffRun,
 } from "./successful-run-handoff.js";

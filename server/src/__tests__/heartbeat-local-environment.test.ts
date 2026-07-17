@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -37,21 +40,6 @@ async function waitForRunToFinish(
   return await heartbeat.getRun(runId);
 }
 
-async function waitForRunStatus(
-  heartbeat: ReturnType<typeof heartbeatService>,
-  runId: string,
-  expectedStatus: string,
-  timeoutMs = 5_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const run = await heartbeat.getRun(runId);
-    if (run?.status === expectedStatus) return run;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return await heartbeat.getRun(runId);
-}
-
 async function waitForRunLeasesToRelease(
   db: ReturnType<typeof createDb>,
   runId: string,
@@ -75,8 +63,11 @@ async function waitForRunLeasesToRelease(
 describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousAgentJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-local-environment-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -100,6 +91,11 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousAgentJwtSecret === undefined) {
+      delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    } else {
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
+    }
   });
 
   it("runs work through the default Local environment lease", async () => {
@@ -158,6 +154,65 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       driver: "local",
       leaseId: leases[0]?.id,
     });
+  });
+
+  it("injects run-scoped Paperclip env into process agents", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const tempDir = await mkdtemp(join(tmpdir(), "paperclip-process-env-"));
+    const envPath = join(tempDir, "env.json");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ProcessAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({`,
+            "agentId: process.env.PAPERCLIP_AGENT_ID ?? null,",
+            "companyId: process.env.PAPERCLIP_COMPANY_ID ?? null,",
+            "apiUrl: process.env.PAPERCLIP_API_URL ?? null,",
+            "runId: process.env.PAPERCLIP_RUN_ID ?? null,",
+            "apiKeyPresent: Boolean(process.env.PAPERCLIP_API_KEY),",
+            "}));",
+          ].join(" "),
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("succeeded");
+
+    const captured = JSON.parse(await readFile(envPath, "utf8")) as Record<string, unknown>;
+    expect(captured).toMatchObject({
+      agentId,
+      companyId,
+      runId: queued!.id,
+      apiKeyPresent: true,
+    });
+    expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
   });
 
   it("allows a manual on-demand run to use the priority burst when background slots are full", async () => {

@@ -95,6 +95,14 @@ export const issues = pgTable(
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
+    openNormalizedTitleCreatedIdx: index("issues_open_normalized_title_created_idx")
+      .on(
+        table.companyId,
+        table.parentId,
+        sql`lower(regexp_replace(btrim(${table.title}), '\\s+', ' ', 'g'))`,
+        table.createdAt,
+      )
+      .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
     listPageIdx: index("issues_company_list_page_idx")
       .on(

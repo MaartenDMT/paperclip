@@ -37,6 +37,31 @@ function extractClaudeSkillActivation(block: Record<string, unknown>): ParsedSki
   return { skillKey: skillName, skillName, source: "claude" };
 }
 
+/**
+ * Sum the per-model usage ledger from a Claude CLI result event. The result
+ * event's top-level `usage` reflects only the main-loop message chain, so it
+ * undercounts output tokens whenever subagents or sidechains ran; `modelUsage`
+ * is the CLI's authoritative per-model accounting (it is what backs /cost).
+ * Cache-creation tokens are billed prompt tokens, so they count as input.
+ */
+export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null {
+  const byModel = parseObject(modelUsage);
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+  let sawEntry = false;
+  for (const value of Object.values(byModel)) {
+    const entry = parseObject(value);
+    if (Object.keys(entry).length === 0) continue;
+    sawEntry = true;
+    inputTokens += asNumber(entry.inputTokens, 0) + asNumber(entry.cacheCreationInputTokens, 0);
+    outputTokens += asNumber(entry.outputTokens, 0);
+    cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
+  }
+  if (!sawEntry) return null;
+  return { inputTokens, outputTokens, cachedInputTokens };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
@@ -86,14 +111,16 @@ export function parseClaudeStreamJson(stdout: string) {
       model,
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
+      usageBasis: null as "per_run" | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
       skillActivations,
     };
   }
 
+  const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
   const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = {
+  const usage: UsageSummary = modelUsageTotals ?? {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
@@ -107,6 +134,9 @@ export function parseClaudeStreamJson(stdout: string) {
     model,
     costUsd,
     usage,
+    // modelUsage covers exactly this CLI invocation, so mark it per-run to
+    // keep the server from applying its session-cumulative delta heuristic.
+    usageBasis: "per_run" as const,
     summary,
     resultJson: finalResult,
     skillActivations,

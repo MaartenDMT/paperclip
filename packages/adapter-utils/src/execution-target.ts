@@ -38,6 +38,7 @@ import {
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -109,6 +110,7 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   runLogTail?: SandboxRunLogTailFactory | null;
   startupNoOutputTimeoutSec?: number;
+  localProcessSandbox?: LocalProcessSandboxOptions | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -585,6 +587,7 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     startupNoOutputTimeoutSec: options.startupNoOutputTimeoutSec,
+    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }

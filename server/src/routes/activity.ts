@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -138,12 +138,8 @@ export function activityRoutes(db: Db) {
 
   router.get("/issues/:id/activity", async (req, res) => {
     const rawId = req.params.id as string;
-    const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const result = await svc.forIssue(issue.id);
     res.json(result);
@@ -151,12 +147,8 @@ export function activityRoutes(db: Db) {
 
   router.get("/issues/:id/runs", async (req, res) => {
     const rawId = req.params.id as string;
-    const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const limitRaw = typeof req.query.limit === "string" ? req.query.limit : undefined;
     const offsetRaw = typeof req.query.offset === "string" ? req.query.offset : undefined;
@@ -178,7 +170,10 @@ export function activityRoutes(db: Db) {
     assertAuthenticated(req);
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run) {
+    if (!run || !hasCompanyAccess(req, run.companyId)) {
+      // Return `200 []` for both "doesn't exist" and "cross-tenant" — preserves the
+      // legacy API contract while keeping the cross-tenant existence oracle closed
+      // (both branches yield indistinguishable responses).
       res.json([]);
       return;
     }
