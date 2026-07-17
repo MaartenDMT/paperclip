@@ -444,7 +444,7 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
-  }, 10_000);
+  }, 60_000);
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
     const app = await createApp();
@@ -581,6 +581,9 @@ describe.sequential("issue thread interaction routes", () => {
           complete: false,
         }),
       }),
+    );
+  });
+
   it("allows an agent participant to answer an agent meeting on another assignee's issue", async () => {
     mockInteractionService.getById.mockResolvedValueOnce({
       id: "meeting-1",

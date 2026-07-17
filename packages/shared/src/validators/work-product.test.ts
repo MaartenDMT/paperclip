@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { attachmentArtifactWorkProductMetadataSchema } from "./work-product.js";
+import {
+  attachmentArtifactWorkProductMetadataSchema,
+  createIssueWorkProductSchema,
+} from "./work-product.js";
 
 describe("attachmentArtifactWorkProductMetadataSchema", () => {
   it("accepts the attachment-backed artifact metadata contract", () => {
@@ -37,7 +40,8 @@ describe("attachmentArtifactWorkProductMetadataSchema", () => {
       "openPath",
       "downloadPath",
     ]);
-import { createIssueWorkProductSchema } from "./work-product.js";
+  });
+});
 
 const validReadersBaseMetadata = {
   artifactContractVersion: 1,

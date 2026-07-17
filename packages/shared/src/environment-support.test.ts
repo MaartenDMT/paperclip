@@ -5,9 +5,7 @@ import {
   isSandboxProviderSupportedForAdapter,
   supportedEnvironmentDriversForAdapter,
 } from "./environment-support.js";
-  AGENT_ADAPTER_TYPES,
-  supportedEnvironmentDriversForAdapter,
-} from "./index.js";
+import { AGENT_ADAPTER_TYPES } from "./index.js";
 
 describe("adapter environment support", () => {
   it("treats minimax_local as a first-class remote-managed local adapter", () => {
