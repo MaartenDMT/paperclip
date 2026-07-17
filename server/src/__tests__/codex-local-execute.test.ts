@@ -85,6 +85,8 @@ async function seedSharedCodexAuth(homeRoot: string): Promise<void> {
   process.env.CODEX_HOME = sharedCodexHome;
   await fs.mkdir(sharedCodexHome, { recursive: true });
   await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
+}
+
 async function createRuntimeSkill(root: string, input: {
   key?: string;
   runtimeName?: string;
@@ -454,6 +456,7 @@ describe("codex execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           env: {

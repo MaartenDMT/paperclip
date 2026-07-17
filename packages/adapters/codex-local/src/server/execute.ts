@@ -349,6 +349,28 @@ async function emitSandboxAuthPrecedenceWarningIfNeeded(input: {
   });
 }
 
+function buildConfiguredCompanySkillsPromptSection(input: {
+  skillsEntries: Array<{ key: string; runtimeName: string; requiredReason?: string | null }>;
+  desiredSkillNames: string[];
+}) {
+  const desiredSet = new Set(input.desiredSkillNames);
+  const entries = input.skillsEntries
+    .filter((entry) => desiredSet.has(entry.key))
+    .sort((left, right) => left.runtimeName.localeCompare(right.runtimeName));
+  if (entries.length === 0) return "";
+
+  return [
+    "## Configured Company Skills",
+    "",
+    "The following company skills are installed for this agent. Before analysis or implementation, compare the wake reason, issue title, description, comments, and requested deliverable with these skills. Activate every matching skill explicitly and name the matched skill(s) in your first progress update; if none match, state that no configured skill applies and continue without forcing one.",
+    "",
+    ...entries.map((entry) => {
+      const reason = entry.requiredReason ? ` - ${entry.requiredReason}` : "";
+      return `- ${entry.runtimeName} (${entry.key})${reason}`;
+    }),
+  ].join("\n");
+}
+
 function buildCodexTransientHandoffNote(input: {
   previousSessionId: string | null;
   fallbackMode: CodexTransientFallbackMode;
@@ -502,6 +524,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const configuredCompanySkillsPromptSection = buildConfiguredCompanySkillsPromptSection({
+    skillsEntries: codexSkillEntries,
+    desiredSkillNames,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
@@ -971,6 +997,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      configuredCompanySkillsPromptSection,
       codexFallbackHandoffNote,
       sessionHandoffNote,
       renderedPrompt,
