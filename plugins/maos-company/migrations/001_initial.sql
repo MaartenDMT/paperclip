@@ -1,4 +1,4 @@
-CREATE TABLE plugin_maos_company_18e72b866b.campaigns (
+CREATE TABLE IF NOT EXISTS plugin_maos_company_18e72b866b.campaigns (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   goal_id uuid,
@@ -13,9 +13,9 @@ CREATE TABLE plugin_maos_company_18e72b866b.campaigns (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX campaigns_company_status_idx ON plugin_maos_company_18e72b866b.campaigns (company_id, status);
+CREATE INDEX IF NOT EXISTS campaigns_company_status_idx ON plugin_maos_company_18e72b866b.campaigns (company_id, status);
 
-CREATE TABLE plugin_maos_company_18e72b866b.campaign_phases (
+CREATE TABLE IF NOT EXISTS plugin_maos_company_18e72b866b.campaign_phases (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   campaign_id uuid NOT NULL REFERENCES plugin_maos_company_18e72b866b.campaigns(id) ON DELETE CASCADE,
@@ -36,9 +36,9 @@ CREATE TABLE plugin_maos_company_18e72b866b.campaign_phases (
   UNIQUE (campaign_id, sequence_number)
 );
 
-CREATE INDEX campaign_phases_company_status_idx ON plugin_maos_company_18e72b866b.campaign_phases (company_id, status);
+CREATE INDEX IF NOT EXISTS campaign_phases_company_status_idx ON plugin_maos_company_18e72b866b.campaign_phases (company_id, status);
 
-CREATE TABLE plugin_maos_company_18e72b866b.goal_bindings (
+CREATE TABLE IF NOT EXISTS plugin_maos_company_18e72b866b.goal_bindings (
   company_id uuid NOT NULL,
   goal_id uuid NOT NULL,
   maos_system_id text NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE plugin_maos_company_18e72b866b.goal_bindings (
   CHECK (maos_system_id ~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$')
 );
 
-CREATE TABLE plugin_maos_company_18e72b866b.meeting_recommendations (
+CREATE TABLE IF NOT EXISTS plugin_maos_company_18e72b866b.meeting_recommendations (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   trigger text NOT NULL,
@@ -63,4 +63,4 @@ CREATE TABLE plugin_maos_company_18e72b866b.meeting_recommendations (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX meeting_recommendations_company_status_idx ON plugin_maos_company_18e72b866b.meeting_recommendations (company_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS meeting_recommendations_company_status_idx ON plugin_maos_company_18e72b866b.meeting_recommendations (company_id, status, created_at DESC);
