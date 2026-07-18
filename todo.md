@@ -4,6 +4,10 @@ Canonical per-repo task file per the maart-workflow task-state convention. Workf
 
 ## Active
 
+- [x] Reset Paperclip company to the new ReadersBase setup - done 2026-07-18 - evidence: company 7f65acf4 "ReadersBase Publishing" materialized from readersbase-publishing template on instance readersbase-materialize (:3101, checkout C:/Programming/paperclip-readersbase-run @ defork-readersbase-plugin), maos.company-automation plugin installed status=ready, 44 agents configured (engine=cli, terra/sol pins, cheap heartbeat profile), old company 4620ff23 paused on :3100. Fix commits on defork-readersbase-plugin: 8208e19 (cli brace), bb4f2d4 (migration schema-qualify), bb7b3ff (idempotent migration), 3a90c30 (bundle worker deps), 4107781 (sdk linker).
+- [ ] Serve or decide the UI surface for the readersbase-materialize instance (:3101 has no ui-dist; "Cannot GET /") - options: pnpm dev:ui against 3101, or build server ui-dist - evidence: dashboard reachable in browser.
+- [ ] Unblock Kanban umbrella t_8719bd21 (paperclip de-fork migration) with today's state: steps advanced (plugin extracted, installed, running; company reset done); remaining steps per agent-wiki/operations/paperclip-defork-plan-2026-07-16.md - owner: Maarten/orchestrator.
+
 - [x] Verify the Windows local plugin workers fix (5f28e26d) end-to-end with a real local plugin install - done 2026-07-16 - evidence: commit 5f28e26d in git log, fix: support Windows local plugin workers.
 - [ ] CLIPHUB backlog: template publishing, browsing, detail page, semantic search, `cliphub:` install command, GitHub OAuth - source: `doc/CLIPHUB.md` checklist - evidence: checklist items closed.
 - [ ] [dispatch] CLIPHUB: implement the `cliphub:` install command per the `doc/CLIPHUB.md` checklist - scope: install-command parsing/resolution/install path plus unit tests only; no publishing, no OAuth, no template-hub server changes - verify: repo test suite green (`pnpm test`) including new install-command tests covering valid ref, bad ref, and already-installed cases - evidence: passing test output naming the new tests.
