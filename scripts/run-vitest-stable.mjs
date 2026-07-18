@@ -265,13 +265,21 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const result = spawnSync(pnpmCommand, ["exec", "vitest", "run", ...args], {
-    cwd: repoRoot,
-    env,
-    stdio: "inherit",
-    shell: process.platform === "win32",
-  });
+  // On Windows, pnpm.cmd requires shell:true, and cmd.exe's 8191-char limit
+  // overflows once the general-server exclude list grows large. Spawn the
+  // vitest entry with node directly instead (no shell, ~32k arg limit).
+  const result =
+    process.platform === "win32"
+      ? spawnSync(
+          process.execPath,
+          [path.join(repoRoot, "node_modules", "vitest", "vitest.mjs"), "run", ...args],
+          { cwd: repoRoot, env, stdio: "inherit" },
+        )
+      : spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+          cwd: repoRoot,
+          env,
+          stdio: "inherit",
+        });
   if (result.error) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
     process.exit(1);
