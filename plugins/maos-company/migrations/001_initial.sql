@@ -1,4 +1,4 @@
-CREATE TABLE campaigns (
+CREATE TABLE plugin_maos_company_18e72b866b.campaigns (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   goal_id uuid,
@@ -13,12 +13,12 @@ CREATE TABLE campaigns (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX campaigns_company_status_idx ON campaigns (company_id, status);
+CREATE INDEX campaigns_company_status_idx ON plugin_maos_company_18e72b866b.campaigns (company_id, status);
 
-CREATE TABLE campaign_phases (
+CREATE TABLE plugin_maos_company_18e72b866b.campaign_phases (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
-  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  campaign_id uuid NOT NULL REFERENCES plugin_maos_company_18e72b866b.campaigns(id) ON DELETE CASCADE,
   sequence_number integer NOT NULL,
   title text NOT NULL,
   objective text,
@@ -36,9 +36,9 @@ CREATE TABLE campaign_phases (
   UNIQUE (campaign_id, sequence_number)
 );
 
-CREATE INDEX campaign_phases_company_status_idx ON campaign_phases (company_id, status);
+CREATE INDEX campaign_phases_company_status_idx ON plugin_maos_company_18e72b866b.campaign_phases (company_id, status);
 
-CREATE TABLE goal_bindings (
+CREATE TABLE plugin_maos_company_18e72b866b.goal_bindings (
   company_id uuid NOT NULL,
   goal_id uuid NOT NULL,
   maos_system_id text NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE goal_bindings (
   CHECK (maos_system_id ~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$')
 );
 
-CREATE TABLE meeting_recommendations (
+CREATE TABLE plugin_maos_company_18e72b866b.meeting_recommendations (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   trigger text NOT NULL,
@@ -63,4 +63,4 @@ CREATE TABLE meeting_recommendations (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX meeting_recommendations_company_status_idx ON meeting_recommendations (company_id, status, created_at DESC);
+CREATE INDEX meeting_recommendations_company_status_idx ON plugin_maos_company_18e72b866b.meeting_recommendations (company_id, status, created_at DESC);
