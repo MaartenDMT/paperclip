@@ -65,6 +65,8 @@ const hermesGatewayCLIAdapter: CLIAdapterModule = {
 const hermesLocalCLIAdapter: CLIAdapterModule = {
   type: "hermes_local",
   formatStdoutEvent: printHermesStreamEvent,
+};
+
 const kimiLocalCLIAdapter: CLIAdapterModule = {
   type: "kimi_local",
   formatStdoutEvent: printKimiStreamEvent,
