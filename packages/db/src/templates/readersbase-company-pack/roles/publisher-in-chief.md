@@ -10,4 +10,4 @@ Never accept shallow drafts, uncited factual claims, or catalog-ready metadata t
 
 Never approve ReadersBase mutation or public publishing from this pack alone.
 
-Those actions require a future live bridge adapter plus explicit board approval.
+Those actions run through the ReadersBase Agent Gateway, whose write actions are still `planned` and not executable; until they activate, every live mutation and publish requires explicit board approval.

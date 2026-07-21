@@ -20,7 +20,7 @@ Use this order when facts conflict:
 
 ReadersBase Publishing agents run on `codex_local` by default.
 
-Default model routing is `gpt-5.5` with `modelReasoningEffort: medium` for lean, high-quality company work.
+Default model routing is `gpt-5.6-terra` with `modelReasoningEffort: medium` for lean, high-quality company work; quality-gate roles (publisher-in-chief and the editorial/craft leads) run `gpt-5.6-sol`, and cheap heartbeats use a `gpt-5.4-mini` profile.
 
 Paperclip prepares an isolated Codex home per company at `companies/<company-id>/codex-home/` and seeds it from the host Codex login, so agents should not ask for credentials unless the adapter reports missing auth.
 
@@ -38,6 +38,18 @@ Do not assume a built-in Hermes adapter, do not seed mandatory Hermes agents, an
 
 Use Hermes for orchestration or cross-agent routing only after the operator has configured the plugin and approved the integration path.
 
+## ReadersBase Agent Gateway and live-write status
+
+ReadersBase now ships a native Agent Gateway: delegated REST (`/api/agent/v1/*`) and remote MCP (`/mcp`) over one grant-scoped action layer, with its own OAuth/confidential-client token domain, durable approvals, budgets, and audit. This is the sanctioned path for external agents to eventually read and write ReadersBase, and it replaces any shared-author login.
+
+Current develop status (re-verify before relying on it):
+
+- Read and status actions are live: capability discovery, scoped action-status reads, and scoped approval-status reads.
+- Draft-write actions (`work.create`/`work.update`, `document.create`/`document.update`, scope `content:draft-write`) are declared but availability `planned`; they return `CAPABILITY_NOT_IMPLEMENTED` (HTTP 501). No live write path exists yet.
+- Publishing, deletion, and high-cost AI are approval-gated with a client-held one-time execution challenge, and an agent can never approve its own request.
+
+ReadersBase also closed systemic access-control gaps (IDOR remediation, develop 2026-07-20): every phase, draft, story-design, research, and cross-document read plus all mutating phase-progression routes enforce strict project-access scoping, and coarse OAuth scopes (`agent:read`/`agent:write`) are satisfiable only by grants that already cover matching actions. Any automation identity must hold explicit project access; a global ID alone authorizes nothing.
+
 ## Hard boundaries
 
 - Do not mutate ReadersBase from this company pack.
@@ -45,7 +57,7 @@ Use Hermes for orchestration or cross-agent routing only after the operator has 
 - Do not start mass book generation.
 - Do not create Draft work until Story Design is approved and story lock is granted.
 - Do not create Publishing work until Draft and Editorial gates are complete.
-- Treat every live ReadersBase action as future bridge-adapter work that needs explicit board approval.
+- Treat every live ReadersBase mutation as not-yet-available: the Agent Gateway's write actions are still `planned` (501), so all mutation and publishing stay board-gated until writes are activated.
 
 ## Issue and watchdog discipline
 
