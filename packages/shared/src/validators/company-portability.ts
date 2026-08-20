@@ -28,6 +28,7 @@ const relativeSourcePathSchema = z.string().min(1).refine((value) => (
   && !value.startsWith("\\")
   && !/^[A-Za-z]:[\\/]/.test(value)
   && !value.toLowerCase().startsWith("file:")
+  && !value.split(/[\\/]/).includes("..")
 ), "Source paths must be relative local paths");
 
 const maosSourceLinkSchema = z.object({

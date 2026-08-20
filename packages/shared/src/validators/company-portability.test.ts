@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { portabilityAgentMetadataSchema, portabilityCompanyMetadataSchema } from "./company-portability.js";
+import { createAgentSchema, updateAgentSchema } from "./agent.js";
 import { createCompanySchema, updateCompanySchema } from "./company.js";
 
 describe("portable MAOS metadata", () => {
@@ -51,6 +52,8 @@ describe("portable MAOS metadata", () => {
     { maos: { source_links: [{ system: "readersbase", label: "File URL", url: "file:///notes.md" }] } },
     { maos: { source_links: [{ system: "vault", label: "Absolute", path: "C:\\Vault\\notes.md" }] } },
     { maos: { source_links: [{ system: "vault", label: "Absolute", path: "/vault/notes.md" }] } },
+    { maos: { source_links: [{ system: "vault", label: "Traversal", path: "../vault/notes.md" }] } },
+    { maos: { source_links: [{ system: "vault", label: "Traversal", path: "notes/..\\vault.md" }] } },
     { maos: { specialist_ownership: [] } },
     { maos: { kpis: [{ name: "No target" }] } },
     {
@@ -77,5 +80,20 @@ describe("portable MAOS metadata", () => {
     expect(portabilityAgentMetadataSchema.parse({ maos: { specialist_role: "research" } })).toEqual({
       maos: { specialist_role: "research" },
     });
+  });
+
+  it("keeps arbitrary direct agent metadata backward compatible", () => {
+    const metadata = { legacy: { owner: "operator" }, tags: ["existing"] };
+    expect(createAgentSchema.parse({ name: "Legacy", adapterType: "process", metadata }).metadata).toEqual(metadata);
+    expect(updateAgentSchema.parse({ metadata }).metadata).toEqual(metadata);
+  });
+
+  it.each([
+    { maos: { company_id: "readersbase" } },
+    { maos: { initiative_id: "goal-1", initiative_kind: "goal" } },
+    { maos: { specialist_role: "finance" } },
+  ])("rejects invalid direct agent MAOS metadata %#", (metadata) => {
+    expect(() => createAgentSchema.parse({ name: "Invalid", adapterType: "process", metadata })).toThrow();
+    expect(() => updateAgentSchema.parse({ metadata })).toThrow();
   });
 });

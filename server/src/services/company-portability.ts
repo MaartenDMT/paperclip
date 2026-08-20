@@ -2059,6 +2059,18 @@ function normalizeSelectedFiles(selectedFiles?: string[]) {
   );
 }
 
+function portableAgentMetadataForExport(
+  value: unknown,
+  slug: string,
+  warnings: string[],
+): Record<string, unknown> | null {
+  if (!isPlainRecord(value)) return null;
+  if (portabilityAgentMetadataSchema.safeParse(value).success) return value;
+  const { maos: _invalidMaos, ...legacyMetadata } = value;
+  warnings.push(`Agent ${slug} metadata.maos was omitted from export because it does not match the portable specialist contract.`);
+  return legacyMetadata;
+}
+
 function filterCompanyMarkdownIncludes(
   companyPath: string,
   markdown: string,
@@ -3739,7 +3751,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           permissions: portablePermissions,
           permissionGrants: portablePermissionGrants.length > 0 ? portablePermissionGrants : undefined,
           budgetMonthlyCents: (agent.budgetMonthlyCents ?? 0) > 0 ? agent.budgetMonthlyCents : undefined,
-          metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+          metadata: portableAgentMetadataForExport(agent.metadata, slug, warnings),
         });
         if (isPlainRecord(extension) && agentEnvInputs.length > 0) {
           extension.inputs = {

@@ -4061,6 +4061,41 @@ describe("company portability", () => {
     expect(preview.manifest.agents[0]?.metadata).toEqual(specialistMetadata);
   });
 
+  it("exports legacy agent metadata while omitting an invalid MAOS fragment with a warning", async () => {
+    agentSvc.list.mockResolvedValueOnce([{
+      id: "agent-legacy",
+      name: "Legacy Agent",
+      status: "idle",
+      role: "specialist",
+      title: null,
+      icon: null,
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: {},
+      metadata: {
+        legacy: { owner: "operator" },
+        maos: { company_id: "wrong-scope" },
+      },
+    }]);
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+    });
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+    });
+
+    expect(exported.warnings).toContain("Agent legacy-agent metadata.maos was omitted from export because it does not match the portable specialist contract.");
+    expect(preview.manifest.agents[0]?.metadata).toEqual({ legacy: { owner: "operator" } });
+  });
+
   it("rejects invalid MAOS metadata during portability preview", async () => {
     const portability = companyPortabilityService({} as any);
     await expect(portability.previewImport({

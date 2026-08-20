@@ -299,6 +299,54 @@ describe("agent routes adapter validation", () => {
     expect(res.body.adapterType).toBe("external_test");
   });
 
+  it("rejects company MAOS metadata on direct agent create", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Invalid MAOS Agent",
+          adapterType: "process",
+          metadata: { maos: { company_id: "company-1" } },
+        }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid specialist metadata on direct agent update", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ metadata: { maos: { specialist_role: "finance" } } }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("preserves arbitrary legacy metadata through direct agent APIs", async () => {
+    const metadata = { legacy: { owner: "operator" }, tags: ["existing"] };
+    const app = await createApp();
+    const createRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Legacy Agent", adapterType: "process", metadata }),
+    );
+    const updateRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ metadata }),
+    );
+
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    expect(updateRes.status, JSON.stringify(updateRes.body)).toBe(200);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({ metadata }));
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({ metadata }));
+  });
+
   it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -357,7 +405,7 @@ describe("agent routes adapter validation", () => {
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
-    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+    expect(String(env.CODEX_HOME)).toContain(path.join("companies", "company-1", "agents", agentId, "codex-home"));
   });
 
   it("allows codex_local agents to share the host Codex home", async () => {
@@ -406,7 +454,7 @@ describe("agent routes adapter validation", () => {
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
-    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+    expect(String(env.CODEX_HOME)).toContain(path.join("companies", "company-1", "agents", agentId, "codex-home"));
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {

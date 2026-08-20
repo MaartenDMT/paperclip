@@ -9,6 +9,7 @@ import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
+import { portabilityAgentMetadataSchema } from "./company-portability.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
@@ -83,7 +84,7 @@ export const createAgentSchema = z.object({
   defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
-  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  metadata: portabilityAgentMetadataSchema.optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

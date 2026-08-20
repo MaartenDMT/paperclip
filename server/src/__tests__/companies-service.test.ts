@@ -23,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyService } from "../services/companies.js";
+import { companyPortabilityService } from "../services/company-portability.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
@@ -106,6 +107,43 @@ describeEmbeddedPostgres("companyService", () => {
 
     const [stored] = await db.select({ metadata: companies.metadata }).from(companies).where(eq(companies.id, created.id));
     expect(stored?.metadata).toEqual(replacementMetadata);
+  });
+
+  it("imports and persists specialist agent metadata in PostgreSQL", async () => {
+    const company = await companyService(db).create({ name: "Specialist Import" });
+    const metadata = { maos: { specialist_role: "security_risk" } };
+
+    await companyPortabilityService(db).importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": "---\nname: Specialist Import\nincludes:\n  - agents/security/AGENTS.md\n---\n",
+          "agents/security/AGENTS.md": "---\nname: Security Risk\nslug: security\nrole: specialist\n---\n\nReviews risk.\n",
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  security:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    metadata:",
+            "      maos:",
+            "        specialist_role: security_risk",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: false, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: company.id },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "test-user");
+
+    const [stored] = await db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(and(eq(agents.companyId, company.id), eq(agents.name, "Security Risk")));
+    expect(stored?.metadata).toEqual(metadata);
   });
 
   it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
