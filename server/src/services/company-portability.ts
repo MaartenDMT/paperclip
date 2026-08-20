@@ -2685,6 +2685,7 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingConsentByUserId),
       feedbackDataSharingTermsVersion:
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
+      metadata: isPlainRecord(companyFrontmatter.metadata) ? companyFrontmatter.metadata : null,
     },
     sidebar: paperclipSidebar,
     agents: [],
@@ -3575,6 +3576,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         description: company.description ?? null,
         schema: "agentcompanies/v1",
         slug: rootPath,
+        metadata: (company.metadata as Record<string, unknown> | null) ?? null,
       },
       "",
     );
@@ -4473,6 +4475,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingTermsVersion: include.company
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
+        metadata: include.company ? (sourceManifest.company?.metadata ?? null) : null,
       });
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
@@ -4504,6 +4507,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : null,
           feedbackDataSharingConsentByUserId: sourceManifest.company.feedbackDataSharingConsentByUserId,
           feedbackDataSharingTermsVersion: sourceManifest.company.feedbackDataSharingTermsVersion,
+          metadata: sourceManifest.company.metadata,
         });
         targetCompany = updated ?? targetCompany;
         companyAction = "updated";

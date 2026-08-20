@@ -42,7 +42,20 @@ export interface CompanyPortabilityCompanyManifestEntry {
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  metadata?: Record<string, unknown> | null;
 }
+
+export const COMPANY_PORTABILITY_SPECIALIST_ROLES = [
+  "research",
+  "growth",
+  "content",
+  "product_customer",
+  "ops_finance",
+  "security_risk",
+  "engineering_release",
+] as const;
+
+export type CompanyPortabilitySpecialistRole = typeof COMPANY_PORTABILITY_SPECIALIST_ROLES[number];
 
 export interface CompanyPortabilitySidebarOrder {
   agents: string[];

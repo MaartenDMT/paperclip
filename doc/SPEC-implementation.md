@@ -1265,6 +1265,8 @@ V1 is complete only when all criteria are true:
 
 V1 supports company import/export using a portable package contract:
 
+- optional `metadata.maos` context round-trips company and specialist ownership references without copying external knowledge or creating new Initiative or Milestone tables
+
 - markdown-first package rooted at `COMPANY.md`
 - implicit folder discovery by convention
 - `.paperclip.yaml` sidecar for Paperclip-specific fidelity

@@ -794,6 +794,7 @@ export type {
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
+  CompanyPortabilitySpecialistRole,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
@@ -821,6 +822,7 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export { COMPANY_PORTABILITY_SPECIALIST_ROLES } from "./company-portability.js";
 export type {
   JsonSchema,
   PluginJobDeclaration,

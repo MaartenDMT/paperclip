@@ -549,6 +549,10 @@ Inline Paperclip-only metadata that must live inside a shared markdown file shou
 
 That keeps the base format broader than Paperclip.
 
+MAOS company, initiative, milestone, source-link, KPI, approval, specialist ownership, and handoff metadata uses the bounded `metadata.maos` contract documented in [maos-company-contract.md](./maos-company-contract.md).
+Initiative aliases an existing goal, and Milestone aliases an existing project or issue.
+Neither alias creates a new runtime primitive.
+
 This specification itself remains vendor-neutral and intended for any agent-company runtime, not only Paperclip.
 
 ## 20. Cutover

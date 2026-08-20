@@ -8,6 +8,52 @@ import {
 } from "./issue.js";
 import { routineVariableSchema } from "./routine.js";
 
+const specialistRoleSchema = z.enum([
+  "research",
+  "growth",
+  "content",
+  "product_customer",
+  "ops_finance",
+  "security_risk",
+  "engineering_release",
+]);
+
+const maosSourceLinkSchema = z.object({
+  system: z.enum(["readersbase", "sma", "vault", "other"]),
+  label: z.string().min(1),
+  url: z.string().url().optional(),
+  path: z.string().min(1).optional(),
+}).refine((value) => value.url || value.path, "A source link needs url or path");
+
+const maosMetadataSchema = z.object({
+  company_id: z.string().min(1).optional(),
+  system_id: z.string().min(1).optional(),
+  initiative_id: z.string().min(1).optional(),
+  initiative_kind: z.literal("goal").optional(),
+  milestone_id: z.string().min(1).optional(),
+  milestone_kind: z.enum(["project", "issue"]).optional(),
+  source_links: z.array(maosSourceLinkSchema).optional(),
+  approval_boundary: z.string().min(1).optional(),
+  kpis: z.array(z.object({
+    name: z.string().min(1),
+    target: z.union([z.string(), z.number()]).optional(),
+    unit: z.string().min(1).optional(),
+    source_link: z.string().url().optional(),
+  })).optional(),
+  specialist_ownership: z.array(specialistRoleSchema).optional(),
+  specialist_role: specialistRoleSchema.optional(),
+  handoff_contracts: z.array(z.object({
+    from: specialistRoleSchema,
+    to: specialistRoleSchema,
+    deliverable: z.string().min(1),
+    acceptance: z.string().min(1),
+  })).optional(),
+}).strict();
+
+export const portabilityMetadataSchema = z.object({
+  maos: maosMetadataSchema.optional(),
+}).passthrough();
+
 export const portabilityIncludeSchema = z
   .object({
     company: z.boolean().optional(),
@@ -50,6 +96,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
   feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
   feedbackDataSharingTermsVersion: z.string().nullable().default(null),
+  metadata: portabilityMetadataSchema.nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -76,7 +123,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
     scope: z.record(z.string(), z.unknown()).nullable().default(null),
   })).default([]),
   budgetMonthlyCents: z.number().int().nonnegative(),
-  metadata: z.record(z.string(), z.unknown()).nullable(),
+  metadata: portabilityMetadataSchema.nullable(),
 });
 
 export const portabilitySkillManifestEntrySchema = z.object({

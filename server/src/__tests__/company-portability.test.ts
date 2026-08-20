@@ -3968,4 +3968,63 @@ describe("company portability", () => {
     expect(preview.plan.projectPlans).toHaveLength(0);
     expect(preview.plan.issuePlans).toHaveLength(0);
   });
+
+  it("round-trips MAOS company context and specialist ownership without runtime profiles", async () => {
+    const maos = {
+      company_id: "readersbase-company",
+      system_id: "maos-readersbase",
+      initiative_id: "goal-market-fit",
+      initiative_kind: "goal",
+      milestone_id: "project-launch",
+      milestone_kind: "project",
+      source_links: [
+        { system: "readersbase", label: "Product evidence", url: "https://readersbase.example/sources" },
+        { system: "sma", label: "Campaign execution", url: "https://sma.example/campaigns" },
+        { system: "vault", label: "Project memory", path: "ReadersBase/Projects/Launch.md" },
+      ],
+      approval_boundary: "Board approval is required before spend or external publishing.",
+      kpis: [{ name: "Qualified readers", target: 1000, unit: "readers" }],
+      specialist_ownership: [
+        "research", "growth", "content", "product_customer", "ops_finance", "security_risk", "engineering_release",
+      ],
+      handoff_contracts: [{
+        from: "research",
+        to: "content",
+        deliverable: "Source-linked brief",
+        acceptance: "Every claim has an external source link",
+      }],
+    };
+    companySvc.getById.mockResolvedValueOnce({
+      id: "company-1",
+      name: "Paperclip",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: null,
+      logoAssetId: null,
+      logoUrl: null,
+      requireBoardApprovalForNewAgents: false,
+      metadata: { maos },
+    });
+    agentSvc.list.mockResolvedValue([]);
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false, skills: false },
+    });
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.company?.metadata).toEqual({ maos });
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+    }, "user-1");
+    expect(companySvc.update).toHaveBeenCalledWith("company-1", expect.objectContaining({ metadata: { maos } }));
+  });
 });
