@@ -21,6 +21,7 @@ export interface Company {
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
 }

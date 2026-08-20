@@ -2208,3 +2208,4 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export * from "./validators/company-portability.js";

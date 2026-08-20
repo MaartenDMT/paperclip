@@ -4027,4 +4027,85 @@ describe("company portability", () => {
     }, "user-1");
     expect(companySvc.update).toHaveBeenCalledWith("company-1", expect.objectContaining({ metadata: { maos } }));
   });
+
+  it("round-trips specialist agent metadata independently from company metadata", async () => {
+    const specialistMetadata = { maos: { specialist_role: "security_risk" } };
+    agentSvc.list.mockResolvedValueOnce([{
+      id: "agent-security",
+      name: "Security Risk",
+      status: "idle",
+      role: "specialist",
+      title: "Security and Risk",
+      icon: null,
+      reportsTo: null,
+      capabilities: "Reviews risk",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: {},
+      metadata: specialistMetadata,
+    }]);
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+    });
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "replace",
+    });
+
+    expect(preview.manifest.agents[0]?.metadata).toEqual(specialistMetadata);
+  });
+
+  it("rejects invalid MAOS metadata during portability preview", async () => {
+    const portability = companyPortabilityService({} as any);
+    await expect(portability.previewImport({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "schema: agentcompanies/v1",
+            "name: Invalid",
+            "metadata:",
+            "  maos:",
+            "    initiative_kind: project",
+            "    initiative_id: goal-1",
+            "---",
+            "",
+          ].join("\n"),
+        },
+      },
+      target: { mode: "existing_company", companyId: "company-1" },
+    })).rejects.toThrow("Invalid COMPANY.md metadata");
+  });
+
+  it("preserves existing company metadata when a legacy package omits metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Existing",
+      description: "Keep",
+      brandColor: null,
+      requireBoardApprovalForNewAgents: false,
+      metadata: { maos: { company_id: "existing" } },
+    });
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": ["---", "schema: agentcompanies/v1", "name: Legacy", "---", ""].join("\n"),
+        },
+      },
+      include: { company: true, agents: false, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+    }, "user-1");
+
+    expect(companySvc.update).toHaveBeenCalledWith("company-1", expect.not.objectContaining({ metadata: expect.anything() }));
+  });
 });

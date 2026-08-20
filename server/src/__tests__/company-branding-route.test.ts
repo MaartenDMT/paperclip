@@ -354,4 +354,61 @@ describe("PATCH /api/companies/:companyId", () => {
       actorId: "user-1",
     }));
   });
+
+  it("rejects invalid MAOS metadata before updating a company", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({
+        metadata: {
+          maos: {
+            company_id: "maos-company",
+            source_links: [{ label: "Vault", path: "C:\\vault\\source.md" }],
+          },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/companies", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.clearAllMocks();
+  });
+
+  it("rejects invalid MAOS metadata before creating a company", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies")
+      .send({
+        name: "Invalid MAOS company",
+        metadata: {
+          maos: {
+            initiative_kind: "issue",
+            initiative_id: "initiative-1",
+          },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.create).not.toHaveBeenCalled();
+  });
 });

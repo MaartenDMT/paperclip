@@ -8,7 +8,7 @@ import {
 } from "./issue.js";
 import { routineVariableSchema } from "./routine.js";
 
-const specialistRoleSchema = z.enum([
+export const portabilitySpecialistRoleSchema = z.enum([
   "research",
   "growth",
   "content",
@@ -18,14 +18,26 @@ const specialistRoleSchema = z.enum([
   "engineering_release",
 ]);
 
+const httpUrlSchema = z.string().url().refine((value) => {
+  const protocol = new URL(value).protocol;
+  return protocol === "http:" || protocol === "https:";
+}, "Only HTTP(S) URLs are allowed");
+
+const relativeSourcePathSchema = z.string().min(1).refine((value) => (
+  !value.startsWith("/")
+  && !value.startsWith("\\")
+  && !/^[A-Za-z]:[\\/]/.test(value)
+  && !value.toLowerCase().startsWith("file:")
+), "Source paths must be relative local paths");
+
 const maosSourceLinkSchema = z.object({
   system: z.enum(["readersbase", "sma", "vault", "other"]),
   label: z.string().min(1),
-  url: z.string().url().optional(),
-  path: z.string().min(1).optional(),
+  url: httpUrlSchema.optional(),
+  path: relativeSourcePathSchema.optional(),
 }).refine((value) => value.url || value.path, "A source link needs url or path");
 
-const maosMetadataSchema = z.object({
+const companyMaosMetadataSchema = z.object({
   company_id: z.string().min(1).optional(),
   system_id: z.string().min(1).optional(),
   initiative_id: z.string().min(1).optional(),
@@ -36,22 +48,44 @@ const maosMetadataSchema = z.object({
   approval_boundary: z.string().min(1).optional(),
   kpis: z.array(z.object({
     name: z.string().min(1),
-    target: z.union([z.string(), z.number()]).optional(),
     unit: z.string().min(1).optional(),
-    source_link: z.string().url().optional(),
+    source_link: httpUrlSchema.optional(),
+    target: z.union([z.string().min(1), z.number()]),
   })).optional(),
-  specialist_ownership: z.array(specialistRoleSchema).optional(),
-  specialist_role: specialistRoleSchema.optional(),
+  specialist_ownership: z.array(portabilitySpecialistRoleSchema).min(1).optional(),
   handoff_contracts: z.array(z.object({
-    from: specialistRoleSchema,
-    to: specialistRoleSchema,
+    from: portabilitySpecialistRoleSchema,
+    to: portabilitySpecialistRoleSchema,
     deliverable: z.string().min(1),
     acceptance: z.string().min(1),
   })).optional(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  const requirePair = (idKey: "initiative_id" | "milestone_id", kindKey: "initiative_kind" | "milestone_kind") => {
+    if ((value[idKey] === undefined) !== (value[kindKey] === undefined)) {
+      ctx.addIssue({ code: "custom", path: [idKey], message: `${idKey} and ${kindKey} must be provided together` });
+    }
+  };
+  requirePair("initiative_id", "initiative_kind");
+  requirePair("milestone_id", "milestone_kind");
+  const ownership = new Set(value.specialist_ownership ?? []);
+  for (const [index, handoff] of (value.handoff_contracts ?? []).entries()) {
+    if (handoff.from === handoff.to) {
+      ctx.addIssue({ code: "custom", path: ["handoff_contracts", index], message: "Handoff roles must differ" });
+    }
+    if (!ownership.has(handoff.from) || !ownership.has(handoff.to)) {
+      ctx.addIssue({ code: "custom", path: ["handoff_contracts", index], message: "Handoff roles must be declared in specialist_ownership" });
+    }
+  }
+});
 
-export const portabilityMetadataSchema = z.object({
-  maos: maosMetadataSchema.optional(),
+export const portabilityCompanyMetadataSchema = z.object({
+  maos: companyMaosMetadataSchema.optional(),
+}).passthrough();
+
+export const portabilityAgentMetadataSchema = z.object({
+  maos: z.object({
+    specialist_role: portabilitySpecialistRoleSchema,
+  }).strict().optional(),
 }).passthrough();
 
 export const portabilityIncludeSchema = z
@@ -96,7 +130,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
   feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
   feedbackDataSharingTermsVersion: z.string().nullable().default(null),
-  metadata: portabilityMetadataSchema.nullable().default(null),
+  metadata: portabilityCompanyMetadataSchema.nullable().optional(),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -123,7 +157,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
     scope: z.record(z.string(), z.unknown()).nullable().default(null),
   })).default([]),
   budgetMonthlyCents: z.number().int().nonnegative(),
-  metadata: portabilityMetadataSchema.nullable(),
+  metadata: portabilityAgentMetadataSchema.nullable(),
 });
 
 export const portabilitySkillManifestEntrySchema = z.object({

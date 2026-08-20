@@ -3,6 +3,7 @@ import {
   COMPANY_STATUSES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
+import { portabilityCompanyMetadataSchema } from "./company-portability.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
@@ -19,7 +20,7 @@ export const createCompanySchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
-  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+  metadata: portabilityCompanyMetadataSchema.nullable().optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;

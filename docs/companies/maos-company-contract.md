@@ -67,11 +67,17 @@ It does not create or require a Hermes profile, adapter, credential, budget, or 
 
 Use `source_links` to join work to ReadersBase, SMA, or a vault.
 Store only a label plus a URL or workspace-relative vault path.
+URLs must use HTTP or HTTPS.
+Local source paths must be relative and must not use absolute paths or `file:` URLs.
 Do not copy articles, research notes, campaign assets, vault pages, credentials, or source bodies into company metadata.
 
 Create Paperclip goals, projects, and issues for the work to perform.
 Attach source links to the portable context and put approval limits in `approval_boundary`.
+The `approval_boundary` value is descriptive portable context only.
+It never grants authority, satisfies an approval, or replaces Paperclip approval records and enforcement.
 Use `handoff_contracts` to state the expected deliverable and acceptance rule between specialist owners.
 
 Imports and exports preserve this metadata.
+Import into an existing company replaces metadata only when `COMPANY.md` explicitly contains `metadata`.
+Legacy packages that omit `metadata` preserve the target company's existing metadata.
 They do not fetch, write, or validate the external source itself.

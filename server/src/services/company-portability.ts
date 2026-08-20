@@ -50,6 +50,8 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
+  portabilityAgentMetadataSchema,
+  portabilityCompanyMetadataSchema,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
 import {
@@ -2599,6 +2601,13 @@ function buildManifestFromPackageFiles(
   }
   const companyDoc = parseFrontmatterMarkdown(companyMarkdown);
   const companyFrontmatter = companyDoc.frontmatter;
+  const hasCompanyMetadata = Object.prototype.hasOwnProperty.call(companyFrontmatter, "metadata");
+  const companyMetadata = hasCompanyMetadata
+    ? portabilityCompanyMetadataSchema.nullable().safeParse(companyFrontmatter.metadata)
+    : null;
+  if (companyMetadata && !companyMetadata.success) {
+    throw unprocessable(`Invalid COMPANY.md metadata: ${companyMetadata.error.issues[0]?.message ?? "invalid metadata"}`);
+  }
   const paperclipExtensionPath = findPaperclipExtensionPath(normalizedFiles);
   const paperclipExtension = paperclipExtensionPath
     ? parseYamlFile(readPortableTextFile(normalizedFiles, paperclipExtensionPath) ?? "")
@@ -2685,7 +2694,7 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingConsentByUserId),
       feedbackDataSharingTermsVersion:
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
-      metadata: isPlainRecord(companyFrontmatter.metadata) ? companyFrontmatter.metadata : null,
+      metadata: hasCompanyMetadata ? companyMetadata!.data : undefined,
     },
     sidebar: paperclipSidebar,
     agents: [],
@@ -2715,6 +2724,10 @@ function buildManifestFromPackageFiles(
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
     const extensionPermissionGrants = normalizePortablePermissionGrants(extension.permissionGrants);
     const extensionMetadata = isPlainRecord(extension.metadata) ? extension.metadata : null;
+    const agentMetadata = portabilityAgentMetadataSchema.nullable().safeParse(extensionMetadata);
+    if (!agentMetadata.success) {
+      throw unprocessable(`Invalid agent metadata for ${slug}: ${agentMetadata.error.issues[0]?.message ?? "invalid metadata"}`);
+    }
     const adapterConfig = isPlainRecord(extensionAdapter?.config)
       ? extensionAdapter.config
       : {};
@@ -2742,7 +2755,7 @@ function buildManifestFromPackageFiles(
         typeof extension.budgetMonthlyCents === "number" && Number.isFinite(extension.budgetMonthlyCents)
           ? Math.max(0, Math.floor(extension.budgetMonthlyCents))
           : 0,
-      metadata: extensionMetadata,
+      metadata: agentMetadata.data,
     });
 
     manifest.envInputs.push(...readAgentEnvInputs(extension, slug));
@@ -4507,7 +4520,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : null,
           feedbackDataSharingConsentByUserId: sourceManifest.company.feedbackDataSharingConsentByUserId,
           feedbackDataSharingTermsVersion: sourceManifest.company.feedbackDataSharingTermsVersion,
-          metadata: sourceManifest.company.metadata,
+          ...(sourceManifest.company.metadata !== undefined
+            ? { metadata: sourceManifest.company.metadata }
+            : {}),
         });
         targetCompany = updated ?? targetCompany;
         companyAction = "updated";

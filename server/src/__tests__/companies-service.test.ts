@@ -81,6 +81,33 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
+  it("persists and replaces company metadata in PostgreSQL", async () => {
+    const initialMetadata = {
+      maos: {
+        company_id: "readersbase",
+        initiative_id: "goal-1",
+        initiative_kind: "goal",
+      },
+    };
+    const replacementMetadata = {
+      maos: {
+        company_id: "readersbase-v2",
+        milestone_id: "project-1",
+        milestone_kind: "project",
+      },
+    };
+    const service = companyService(db);
+
+    const created = await service.create({ name: "Portable Company", metadata: initialMetadata });
+    expect(created.metadata).toEqual(initialMetadata);
+
+    const updated = await service.update(created.id, { metadata: replacementMetadata });
+    expect(updated?.metadata).toEqual(replacementMetadata);
+
+    const [stored] = await db.select({ metadata: companies.metadata }).from(companies).where(eq(companies.id, created.id));
+    expect(stored?.metadata).toEqual(replacementMetadata);
+  });
+
   it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",

@@ -257,7 +257,9 @@ export {
 export {
   portabilityIncludeSchema,
   portabilityEnvInputSchema,
-  portabilityMetadataSchema,
+  portabilitySpecialistRoleSchema,
+  portabilityCompanyMetadataSchema,
+  portabilityAgentMetadataSchema,
   portabilityCompanyManifestEntrySchema,
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
