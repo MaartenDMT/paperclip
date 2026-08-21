@@ -205,8 +205,9 @@ Agent configuration includes an **adapter** that defines how Paperclip invokes t
 
 The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 The Hermes adapters are registered and available by default.
-Stored disabled-adapter settings and the `PAPERCLIP_ADAPTERS` allowlist hide adapter types from availability lists and new-agent creation.
-They do not block execution by existing agents already configured with those adapter types and are not execution kill switches.
+Stored `disabledTypes` settings and the `PAPERCLIP_ADAPTERS` allowlist filter enabled-adapter lists and new-agent UI picker choices.
+`GET /api/adapters` still returns disabled entries, and direct create/hire API requests may use any existing registered adapter type.
+These filters are neither server-side creation disables nor execution kill switches, and existing agents configured with a filtered adapter type remain executable.
 Registration alone does not execute Hermes: an agent must select and configure the adapter.
 Live MAOS integration uses bounded plugins, explicit handoffs, or read-only bridges; Paperclip never owns Hermes control-plane lifecycle, including the gateway, cron, Kanban, or coding-worker orchestration.
 

@@ -193,8 +193,9 @@ This is a fork of `paperclipai/paperclip` with QoL patches and a **built-in** He
 ### Hermes (built-in)
 
 - `hermes_local` and `hermes_gateway` are built-in compatibility adapters registered and available by default.
-- Stored disabled-adapter settings and the `PAPERCLIP_ADAPTERS` allowlist hide adapter types from availability lists and new-agent creation.
-- These availability controls are not execution kill switches: an existing agent already configured with a hidden adapter type can still execute it.
+- Stored `disabledTypes` settings and the `PAPERCLIP_ADAPTERS` allowlist filter enabled-adapter lists and new-agent UI picker choices.
+- `GET /api/adapters` still returns disabled entries, and direct create/hire API requests may use any existing registered adapter type.
+- These filters are neither server-side creation disables nor execution kill switches: existing agents configured with a filtered adapter type remain executable.
 - `hermes_local` runs the local Hermes CLI only when an agent explicitly selects and configures it.
 - `hermes_gateway` calls an independently owned, already-running Hermes API server only when an agent explicitly selects and configures it.
 - Live MAOS integration uses bounded plugins, explicit handoff contracts, or read-only bridges. Paperclip does not own or operate Hermes control-plane lifecycle, including the gateway, cron, Kanban, or coding-worker orchestration.

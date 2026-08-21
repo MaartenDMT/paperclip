@@ -718,8 +718,9 @@ pnpm paperclipai adapter detect-model <adapter-type> --company-id <company-id>
 pnpm paperclipai adapter test-environment <adapter-type> --company-id <company-id> --payload-json '{...}'
 ```
 
-Setting an adapter's stored `disabled` flag hides that type from availability lists and new-agent creation.
-It does not stop existing agents already configured with that adapter type from executing, so it is not an execution kill switch.
+Setting an adapter's stored `disabled` flag filters that type from enabled-adapter lists and new-agent UI picker choices.
+`GET /api/adapters` still returns the disabled entry, and direct create/hire API requests may use any existing registered adapter type.
+This setting is neither a server-side creation disable nor an execution kill switch: existing agents configured with the filtered adapter type remain executable.
 
 ```sh
 pnpm paperclipai asset image:upload --company-id <company-id> --file ./image.png [--namespace docs] [--alt "..."]
