@@ -2,16 +2,16 @@
 
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/).
 Each Paperclip instance owns exactly one active database surface for company and control-plane state.
-Authenticated public deployments enforce external PostgreSQL through `DATABASE_URL`.
+Authenticated public deployments enforce external PostgreSQL through either `DATABASE_URL` or `config.database.connectionString` with `database.mode: "postgres"`.
 External PostgreSQL is recommended for other managed or production deployments.
-When `DATABASE_URL` is absent, embedded PostgreSQL is the zero-config fallback for local development, tests, and private deployments.
+When neither external selector supplies a URL, embedded PostgreSQL is the zero-config fallback for local development, tests, and private deployments.
 Startup selects external or embedded PostgreSQL, never both concurrently for one instance.
 
 There are three mutually exclusive ways to run that single database surface, from local fallback to managed deployment.
 
 ## 1. Embedded PostgreSQL: zero-config local/dev/private fallback
 
-If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
+If neither `DATABASE_URL` nor `config.database.connectionString` with `database.mode: "postgres"` supplies a URL, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
 
 ```sh
 pnpm dev
@@ -32,7 +32,7 @@ If you need to apply pending migrations manually, run:
 pnpm db:migrate
 ```
 
-When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
+When neither external selector supplies a URL, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
 
 Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
 
@@ -140,16 +140,16 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Switching between modes
 
-The mutually exclusive database mode is controlled by `DATABASE_URL`:
+The mutually exclusive database mode is controlled by these selectors:
 
-| `DATABASE_URL` | Mode |
+| Selector | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL local/dev/private fallback (`~/.paperclip/instances/default/db/`) |
-| `postgres://...localhost...` | External local Docker PostgreSQL |
-| `postgres://...supabase.com...` | External hosted PostgreSQL (managed/production) |
+| `DATABASE_URL` supplies a URL | External PostgreSQL |
+| `database.mode: "postgres"` and `config.database.connectionString` supplies a URL | External PostgreSQL |
+| Neither selector supplies a URL | Embedded PostgreSQL local/dev/private fallback (`~/.paperclip/instances/default/db/`) |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
-Setting `DATABASE_URL` selects the external database. Leaving it unset selects embedded PostgreSQL. Startup never activates both as concurrent database surfaces for one instance.
+Supplying either external selector selects the external database. Startup uses embedded PostgreSQL only when neither supplies a URL and never activates both as concurrent database surfaces for one instance.
 
 ## Migration authoring checklist
 

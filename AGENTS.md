@@ -33,9 +33,10 @@ Before making changes, read in this order:
 
 ## 4. Dev Setup (Zero-Config Local DB)
 
-Leave `DATABASE_URL` unset to use embedded PostgreSQL as the zero-config fallback for local development, tests, or private deployments.
-Authenticated public deployments enforce an external PostgreSQL connection; external PostgreSQL is recommended for other managed or production deployments.
-Startup selects exactly one database surface: external PostgreSQL when `DATABASE_URL` is set, otherwise embedded PostgreSQL. Paperclip never starts both concurrently for one instance.
+Leave both external database selectors unconfigured to use embedded PostgreSQL as the zero-config fallback for local development, tests, or private deployments.
+External mode is selected by `DATABASE_URL` or by `config.database.connectionString` when `database.mode` is `postgres`.
+Authenticated public deployments accept either external selector; external PostgreSQL is recommended for other managed or production deployments.
+Startup selects exactly one database surface and uses embedded PostgreSQL only when neither selector supplies a URL. Paperclip never starts both concurrently for one instance.
 
 ```sh
 pnpm install

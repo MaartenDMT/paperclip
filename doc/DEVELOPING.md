@@ -258,7 +258,7 @@ Every local install keeps runtime state directly under the selected instance roo
 
 ## Database in Dev (Auto-Handled)
 
-For local development, leave `DATABASE_URL` unset.
+For local development, leave `DATABASE_URL` unset and do not configure `config.database.connectionString` with `database.mode: "postgres"`.
 The server will automatically use embedded PostgreSQL and persist data at:
 
 - `~/.paperclip/instances/default/db`
@@ -642,7 +642,7 @@ pnpm dev
 
 ## Optional: Use External Postgres
 
-If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
+The server uses external PostgreSQL when `DATABASE_URL` supplies a URL or when `database.mode` is `postgres` and `config.database.connectionString` supplies a URL.
 
 ## Automatic DB Backups
 

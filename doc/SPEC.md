@@ -367,8 +367,8 @@ This skill is adapter-agnostic — it can be loaded into Claude Code, injected i
 
 #### Development Path (Progressive Deployment)
 
-1. **Local dev/private** - One command to install and run. Embedded PostgreSQL is the zero-config fallback when `DATABASE_URL` is absent. Everything stays on your machine and agents run locally.
-2. **Hosted** - Deploy to Vercel/Supabase/AWS/anywhere. Authenticated public deployments enforce external PostgreSQL through `DATABASE_URL`; it is recommended for other managed or production deployments. Remote agents connect to your server and the UI is accessible via the web.
+1. **Local dev/private** - One command to install and run. Embedded PostgreSQL is the zero-config fallback only when neither `DATABASE_URL` nor `config.database.connectionString` with `database.mode: "postgres"` supplies a URL. Everything stays on your machine and agents run locally.
+2. **Hosted** - Deploy to Vercel/Supabase/AWS/anywhere. Authenticated public deployments accept either external PostgreSQL selector; external PostgreSQL is recommended for other managed or production deployments. Remote agents connect to your server and the UI is accessible via the web.
 3. **Open company** — Optionally make parts public (e.g. a job board visible to the public for open companies).
 
 The key constraint: it must be trivial to go from "I'm trying this on my machine" to "my agents are running on remote servers talking to my Paperclip instance."

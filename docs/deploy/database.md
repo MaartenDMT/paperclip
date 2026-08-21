@@ -7,7 +7,7 @@ Paperclip uses PostgreSQL via Drizzle ORM. There are three ways to run the datab
 
 ## 1. Embedded PostgreSQL (Default)
 
-Zero config. If you don't set `DATABASE_URL`, the server starts an embedded PostgreSQL instance automatically.
+Zero config. If neither `DATABASE_URL` nor `config.database.connectionString` with `database.mode: "postgres"` supplies a URL, the server starts an embedded PostgreSQL instance automatically.
 
 ```sh
 pnpm dev
@@ -68,10 +68,10 @@ export function createDb(url: string) {
 
 ## Switching Between Modes
 
-| `DATABASE_URL` | Mode |
-|----------------|------|
-| Not set | Embedded PostgreSQL |
-| `postgres://...localhost...` | Local Docker PostgreSQL |
-| `postgres://...supabase.com...` | Hosted Supabase |
+| Selector | Mode |
+|----------|------|
+| `DATABASE_URL` supplies a URL | External PostgreSQL |
+| `database.mode: "postgres"` and `config.database.connectionString` supplies a URL | External PostgreSQL |
+| Neither selector supplies a URL | Embedded PostgreSQL |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.

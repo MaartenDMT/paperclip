@@ -56,7 +56,7 @@ As of 2026-02-17, the repo already includes:
 
 - Node + TypeScript backend with REST CRUD for `agents`, `projects`, `goals`, `issues`, `activity`
 - React UI pages for dashboard/agents/projects/goals/issues lists
-- One PostgreSQL database surface via Drizzle: authenticated public deployments enforce external PostgreSQL, external PostgreSQL is recommended for other managed/production deployments, and embedded PostgreSQL is the zero-config local/dev/private fallback when `DATABASE_URL` is unset
+- One PostgreSQL database surface via Drizzle: authenticated public deployments enforce external PostgreSQL through `DATABASE_URL` or `config.database.connectionString` with `database.mode: "postgres"`, external PostgreSQL is recommended for other managed/production deployments, and embedded PostgreSQL is the zero-config local/dev/private fallback only when neither selector supplies a URL
 
 V1 implementation extends this baseline into a company-centric, governance-aware control plane.
 
@@ -102,9 +102,9 @@ in `packages/shared/src/constants.ts`.
 ## 6.2 Data Stores
 
 - Primary and sole durable company/control-plane database surface: PostgreSQL
-- Authenticated public deployments: external PostgreSQL is enforced through `DATABASE_URL`
+- Authenticated public deployments: external PostgreSQL is enforced through `DATABASE_URL` or `config.database.connectionString` with `database.mode: "postgres"`
 - Other managed/production deployments: external PostgreSQL is recommended
-- Local/dev/private fallback: embedded PostgreSQL at `~/.paperclip/instances/default/db` when `DATABASE_URL` is unset
+- Local/dev/private fallback: embedded PostgreSQL at `~/.paperclip/instances/default/db` only when neither external selector supplies a URL
 - Optional local prod-like external service: Docker Postgres
 - Optional hosted external service: Supabase/Postgres-compatible
 - Embedded and external PostgreSQL must not run concurrently as separate durable Paperclip databases for one instance
@@ -1142,8 +1142,8 @@ Required UX behaviors:
 ## 15.1 Environment
 
 - Node 20+
-- `DATABASE_URL` is required for authenticated public deployments and recommended for other managed/production deployments
-- if unset for local development, tests, or private deployments, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
+- authenticated public deployments require a URL from `DATABASE_URL` or from `config.database.connectionString` when `database.mode` is `postgres`; external PostgreSQL is recommended for other managed/production deployments
+- if neither selector supplies a URL for local development, tests, or private deployments, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
 - startup selects exactly one database surface for a Paperclip instance; embedded and external PostgreSQL do not run concurrently
 
 ## 15.2 Migrations
@@ -1256,7 +1256,7 @@ V1 is complete only when all criteria are true:
 6. Budget hard limit auto-pauses an agent and prevents new invocations.
 7. Dashboard shows accurate counts/spend from live DB data.
 8. Every mutation is auditable in activity log.
-9. App enforces external PostgreSQL for authenticated public deployments, recommends it for other managed/production deployments, and uses embedded PostgreSQL as the local/dev/private fallback when `DATABASE_URL` is unset, with exactly one database surface active per instance.
+9. App enforces external PostgreSQL for authenticated public deployments through either supported selector, recommends it for other managed/production deployments, and uses embedded PostgreSQL as the local/dev/private fallback only when neither selector supplies a URL, with exactly one database surface active per instance.
 
 ## 20. Post-V1 Backlog (Explicitly Deferred)
 
