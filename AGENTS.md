@@ -31,11 +31,11 @@ Before making changes, read in this order:
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
-## 4. Dev Setup (Isolated Local DB)
+## 4. Dev Setup (Zero-Config Local DB)
 
-Use embedded PostgreSQL only for isolated local development or tests by leaving `DATABASE_URL` unset.
-Managed and production deployments must set `DATABASE_URL` to an external PostgreSQL service.
-Each Paperclip instance owns exactly one database surface; never run embedded PostgreSQL beside an external database as a second durable company-brain or control-plane database.
+Leave `DATABASE_URL` unset to use embedded PostgreSQL as the zero-config fallback for local development, tests, or private deployments.
+Authenticated public deployments enforce an external PostgreSQL connection; external PostgreSQL is recommended for other managed or production deployments.
+Startup selects exactly one database surface: external PostgreSQL when `DATABASE_URL` is set, otherwise embedded PostgreSQL. Paperclip never starts both concurrently for one instance.
 
 ```sh
 pnpm install
@@ -192,10 +192,11 @@ This is a fork of `paperclipai/paperclip` with QoL patches and a **built-in** He
 
 ### Hermes (built-in)
 
-- `hermes_local` and `hermes_gateway` are optional built-in compatibility adapters. They remain disabled and unconfigured unless an operator explicitly selects and configures them for an agent.
-- `hermes_local` runs the local Hermes CLI only when selected.
-- `hermes_gateway` calls an independently owned, already-running Hermes API server only when selected.
-- Live MAOS integration uses bounded plugins, explicit handoff contracts, or read-only bridges. Paperclip does not own or operate the Hermes gateway, cron, Kanban, or coding-worker orchestration.
+- `hermes_local` and `hermes_gateway` are built-in compatibility adapters registered and available by default.
+- Operators can disable either adapter through stored adapter settings or exclude it with the `PAPERCLIP_ADAPTERS` allowlist.
+- `hermes_local` runs the local Hermes CLI only when an agent explicitly selects and configures it.
+- `hermes_gateway` calls an independently owned, already-running Hermes API server only when an agent explicitly selects and configures it.
+- Live MAOS integration uses bounded plugins, explicit handoff contracts, or read-only bridges. Paperclip does not own or operate Hermes control-plane lifecycle, including the gateway, cron, Kanban, or coding-worker orchestration.
 - Operators may still install external Hermes packages through Adapter manager to override/shadow the built-ins.
 - Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` remains useful for local development of override packages.
 
