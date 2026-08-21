@@ -200,9 +200,12 @@ Agent configuration includes an **adapter** that defines how Paperclip invokes t
 | `pi_local` | Local Pi process | Pi CLI heartbeat worker |
 | `cursor` | Cursor API/CLI bridge | Cursor-integrated heartbeat worker |
 | `openclaw_gateway` | OpenClaw gateway API | Managed OpenClaw agent via gateway |
-| `hermes_local` | Local Hermes process | Hermes agent heartbeat worker |
+| `hermes_local` | Optional local Hermes compatibility adapter | Explicitly selected Hermes CLI heartbeat worker |
+| `hermes_gateway` | Optional Hermes gateway compatibility adapter | Explicitly selected client of an independently owned Hermes API |
 
 The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
+The Hermes adapters remain disabled and unconfigured unless explicitly selected.
+Live MAOS integration uses bounded plugins, explicit handoffs, or read-only bridges; Paperclip never owns the Hermes gateway, cron, Kanban, or coding-worker orchestration.
 
 ### Adapter Interface
 
@@ -360,11 +363,12 @@ This skill is adapter-agnostic — it can be loaded into Claude Code, injected i
 
 #### Development Path (Progressive Deployment)
 
-1. **Local dev** — One command to install and run. Embedded Postgres. Everything on your machine. Agents run locally.
-2. **Hosted** — Deploy to Vercel/Supabase/AWS/anywhere. Remote agents connect to your server with a shared database. The UI is accessible via the web.
+1. **Local dev** - One command to install and run. Isolated embedded Postgres is available only when `DATABASE_URL` is absent. Everything stays on your machine and agents run locally.
+2. **Hosted** - Deploy to Vercel/Supabase/AWS/anywhere. Managed and production deployments require one external PostgreSQL database surface through `DATABASE_URL`. Remote agents connect to your server and the UI is accessible via the web.
 3. **Open company** — Optionally make parts public (e.g. a job board visible to the public for open companies).
 
 The key constraint: it must be trivial to go from "I'm trying this on my machine" to "my agents are running on remote servers talking to my Paperclip instance."
+Embedded PostgreSQL must never run beside external PostgreSQL as a second durable company-brain or control-plane database for the same instance.
 
 #### Agent Authentication
 

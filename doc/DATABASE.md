@@ -1,8 +1,13 @@
 # Database
 
-Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
+Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/).
+Each Paperclip instance owns exactly one active database surface for company and control-plane state.
+Managed and production deployments must use external PostgreSQL through `DATABASE_URL`.
+Embedded PostgreSQL is an isolated local development and test fallback only when `DATABASE_URL` is absent; it must never run concurrently with an external database as a second durable company-brain or control-plane database.
 
-## 1. Embedded PostgreSQL — zero config
+There are three mutually exclusive ways to run that single database surface, from local fallback to managed deployment.
+
+## 1. Embedded PostgreSQL: isolated local dev/test fallback
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
 
@@ -39,9 +44,9 @@ pnpm issue-references:backfill -- --company <company-id>
 
 Future issue, comment, and document writes sync references automatically without running the backfill command.
 
-This mode is ideal for local development and one-command installs.
+This mode is for isolated local development, tests, and one-command evaluation only.
 
-Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
+Docker note: the Docker quickstart image also uses embedded PostgreSQL by default for local evaluation. Persist `/paperclip` to keep that local data across container restarts (see `doc/DOCKER.md`). Managed or production Docker deployments must configure external PostgreSQL.
 
 ## 2. Local PostgreSQL (Docker)
 
@@ -133,15 +138,16 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Switching between modes
 
-The database mode is controlled by `DATABASE_URL`:
+The mutually exclusive database mode is controlled by `DATABASE_URL`:
 
 | `DATABASE_URL` | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
-| `postgres://...localhost...` | Local Docker PostgreSQL |
-| `postgres://...supabase.com...` | Hosted Supabase |
+| Not set | Embedded PostgreSQL local dev/test fallback (`~/.paperclip/instances/default/db/`) |
+| `postgres://...localhost...` | External local Docker PostgreSQL |
+| `postgres://...supabase.com...` | External hosted PostgreSQL (managed/production) |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+Setting `DATABASE_URL` selects the external database and prevents embedded PostgreSQL from becoming a parallel durable store.
 
 ## Migration authoring checklist
 

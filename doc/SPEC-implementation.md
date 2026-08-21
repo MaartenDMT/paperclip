@@ -56,7 +56,7 @@ As of 2026-02-17, the repo already includes:
 
 - Node + TypeScript backend with REST CRUD for `agents`, `projects`, `goals`, `issues`, `activity`
 - React UI pages for dashboard/agents/projects/goals/issues lists
-- PostgreSQL schema via Drizzle with embedded PostgreSQL fallback when `DATABASE_URL` is unset
+- One PostgreSQL database surface via Drizzle: external PostgreSQL is mandatory for managed/production, with embedded PostgreSQL available only as an isolated local dev/test fallback when `DATABASE_URL` is unset
 
 V1 implementation extends this baseline into a company-centric, governance-aware control plane.
 
@@ -101,10 +101,12 @@ in `packages/shared/src/constants.ts`.
 
 ## 6.2 Data Stores
 
-- Primary: PostgreSQL
-- Local default: embedded PostgreSQL at `~/.paperclip/instances/default/db`
-- Optional local prod-like: Docker Postgres
-- Optional hosted: Supabase/Postgres-compatible
+- Primary and sole durable company/control-plane database surface: PostgreSQL
+- Managed/production: external PostgreSQL is mandatory through `DATABASE_URL`
+- Isolated local dev/test fallback: embedded PostgreSQL at `~/.paperclip/instances/default/db` only when `DATABASE_URL` is unset
+- Optional local prod-like external service: Docker Postgres
+- Optional hosted external service: Supabase/Postgres-compatible
+- Embedded and external PostgreSQL must not run concurrently as separate durable Paperclip databases for one instance
 - File/object storage:
   - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
   - cloud: S3-compatible object storage (`s3`)
@@ -158,6 +160,7 @@ Invariant: every business record belongs to exactly one company.
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
 - `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
+- `hermes_local` and `hermes_gateway` are optional compatibility adapters that remain disabled/unconfigured unless explicitly selected; Paperclip may invoke the selected adapter but never owns the Hermes gateway, cron, Kanban, or coding-worker orchestration
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
@@ -1138,8 +1141,9 @@ Required UX behaviors:
 ## 15.1 Environment
 
 - Node 20+
-- `DATABASE_URL` optional
-- if unset, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
+- `DATABASE_URL` is required for managed/production deployments
+- if unset in isolated local development or tests, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
+- one Paperclip instance uses one database surface; embedded PostgreSQL is not a concurrent second durable company-brain/control-plane store
 
 ## 15.2 Migrations
 
@@ -1251,7 +1255,7 @@ V1 is complete only when all criteria are true:
 6. Budget hard limit auto-pauses an agent and prevents new invocations.
 7. Dashboard shows accurate counts/spend from live DB data.
 8. Every mutation is auditable in activity log.
-9. App runs with embedded PostgreSQL by default and with external Postgres via `DATABASE_URL`.
+9. App uses external PostgreSQL for managed/production and an isolated embedded PostgreSQL fallback for local dev/tests only when `DATABASE_URL` is unset, with exactly one database surface active per instance.
 
 ## 20. Post-V1 Backlog (Explicitly Deferred)
 
