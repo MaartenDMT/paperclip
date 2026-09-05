@@ -9,13 +9,14 @@ The current implementation target is V1 and is defined in `doc/SPEC-implementati
 
 ## 2. Read This First
 
-Before making changes, read in this order:
+Read the documents needed by the affected behavior:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
+- Product scope or intent: `doc/GOAL.md` and `doc/PRODUCT.md`.
+- V1 behavior or cross-module contracts: `doc/SPEC-implementation.md`.
+- Environment, commands, or local verification: `doc/DEVELOPING.md`.
+- Schema, migrations, storage, or database setup: `doc/DATABASE.md`.
+
+A known-file documentation or mechanical change does not require unrelated product and database pre-reading.
 
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
