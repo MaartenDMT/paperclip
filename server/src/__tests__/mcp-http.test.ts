@@ -25,6 +25,32 @@ describe("mcpHttpRequestHeaders", () => {
 });
 
 describe("initializeMcpHttpSession", () => {
+  it("prefers the current session protocol and falls back for older servers", async () => {
+    const requestedVersions: string[] = [];
+    const sessionHeaders = await initializeMcpHttpSession({
+      requestId: "version-fallback",
+      send: async (init) => {
+        const payload = JSON.parse(String(init.body)) as {
+          id?: string;
+          method: string;
+          params?: { protocolVersion?: string };
+        };
+        if (payload.method !== "initialize") return new Response(null, { status: 202 });
+        const version = payload.params?.protocolVersion ?? "";
+        requestedVersions.push(version);
+        if (version === "2025-11-25") return new Response(null, { status: 400 });
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { protocolVersion: "2025-06-18" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    expect(requestedVersions).toEqual(["2025-11-25", "2025-06-18"]);
+    expect(sessionHeaders["MCP-Protocol-Version"]).toBe("2025-06-18");
+  });
+
   it("returns the negotiated protocol and ephemeral session headers", async () => {
     const requests: Array<{ headers: Headers; payload: Record<string, unknown> }> = [];
     const sessionHeaders = await initializeMcpHttpSession({

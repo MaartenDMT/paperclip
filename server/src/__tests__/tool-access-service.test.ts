@@ -13765,6 +13765,44 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("offers OAuth for a new personal generic MCP before its grant exists", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://personal-oauth.example.test/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({ authorization_servers: ["https://personal-oauth.example.test"] });
+      }
+      if (href === "https://personal-oauth.example.test/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          authorization_endpoint: "https://personal-oauth.example.test/authorize",
+          token_endpoint: "https://personal-oauth.example.test/token",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://personal-oauth.example.test/mcp",
+        name: "Personal OAuth MCP",
+        grantKind: "user",
+        authMode: "oauth",
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(connected).toMatchObject({
+      auth: { kind: "oauth" },
+      connection: { credentialPolicy: "per_user", status: "draft", enabled: false },
+    });
+    const grants = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(grants.grants).toEqual([]);
+  });
+
   it("returns a sign-in-required code when a pasted link answers with an OAuth challenge", async () => {
     const company = await createCompany(db);
     const app = createRouteApp(db);

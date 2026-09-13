@@ -487,8 +487,9 @@ export function AppDetail({ renderActions, onReconnect }: {
   const aiGrantRevoked = connection.connectionPurpose === "ai"
     && grantRows.length > 0 && grantRows.every((grant) => grant.status === "revoked");
   const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
-  const needsReconnect = connection.requiresReauthorization
-    ?? (status.tone === "attention" && connection.healthStatus !== "unknown");
+  const needsReconnect = (connection.authKind === "oauth" && connection.status === "draft")
+    || (connection.requiresReauthorization
+      ?? (status.tone === "attention" && connection.healthStatus !== "unknown"));
   const quarantined = catalog.filter((e) => e.status === "quarantined");
   const active = catalog.filter((e) => e.status === "active");
   const readOnly = active.filter((e) => e.isReadOnly);
@@ -499,6 +500,37 @@ export function AppDetail({ renderActions, onReconnect }: {
   const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
   const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
   const permissionsFailed = reviewFailed || installsQuery.isError || agentsQuery.isError;
+  const identitiesSection = <IdentitiesSection
+    appName={appName}
+    credentialPolicy={connection.credentialPolicy}
+    ownerUserId={connection.createdByUserId}
+    connectedUser={owner}
+    dedicatedAgent={managedIdentityGrant?.kind === "agent"
+      ? agents.find((agent) => agent.id === managedIdentityGrant.subjectAgentId) ?? null
+      : null}
+    grantsQuery={grantsQuery.data}
+    loading={grantsQuery.isLoading}
+    error={grantsQuery.isError}
+    connectPending={startPersonalAuth.isPending || startOAuth.isPending}
+    audiencePending={replaceAudience.isPending}
+    audienceError={audienceError}
+    audienceGrantId={audienceOpenGrantId}
+    onOpenAudience={(grantId) => {
+      setAudienceError(null);
+      setAudienceOpenGrantId(grantId);
+    }}
+    onCloseAudience={() => {
+      setAudienceOpenGrantId(null);
+      setAudienceError(null);
+    }}
+    onConnectAsMe={() => onReconnect ? onReconnect(connection) : startPersonalAuth.mutate()}
+    onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate()}
+    onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
+    onRefreshAccess={() => refreshGitHubAccess.mutate()}
+    refreshAccessPending={refreshGitHubAccess.isPending}
+    onReplaceAudience={(grant, memberUserIds) =>
+      replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
+  />;
 
   return (
     <div className="max-w-4xl space-y-10 pb-12">
@@ -569,49 +601,22 @@ export function AppDetail({ renderActions, onReconnect }: {
       )}
       {activeTab === "permissions" && (
         permissionsFailed
-          ? <ToolsLoadError onRetry={() => {
+          ? <div className="space-y-10">
+            {connection.config?.provider !== "agentmail" && identitiesSection}
+            <ToolsLoadError onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
               void policiesQuery.refetch();
               void installsQuery.refetch();
               void agentsQuery.refetch();
             }} />
+            </div>
           : permissionsLoading
           ? <ToolsLoading />
           : <div className="space-y-10">
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
               {connection.config?.provider === "agentmail" ? <EmailConnectionAccess companyId={connection.companyId} connectionId={connection.id} agents={agents} /> : <>
-              <IdentitiesSection
-                appName={appName}
-                credentialPolicy={connection.credentialPolicy}
-                ownerUserId={connection.createdByUserId}
-                connectedUser={owner}
-                dedicatedAgent={managedIdentityGrant?.kind === "agent"
-                  ? agents.find((agent) => agent.id === managedIdentityGrant.subjectAgentId) ?? null
-                  : null}
-                grantsQuery={grantsQuery.data}
-                loading={grantsQuery.isLoading}
-                error={grantsQuery.isError}
-                connectPending={startPersonalAuth.isPending || startOAuth.isPending}
-                audiencePending={replaceAudience.isPending}
-                audienceError={audienceError}
-                audienceGrantId={audienceOpenGrantId}
-                onOpenAudience={(grantId) => {
-                  setAudienceError(null);
-                  setAudienceOpenGrantId(grantId);
-                }}
-                onCloseAudience={() => {
-                  setAudienceOpenGrantId(null);
-                  setAudienceError(null);
-                }}
-                onConnectAsMe={() => onReconnect ? onReconnect(connection) : startPersonalAuth.mutate()}
-                onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate()}
-                onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
-                onRefreshAccess={() => refreshGitHubAccess.mutate()}
-                refreshAccessPending={refreshGitHubAccess.isPending}
-                onReplaceAudience={(grant, memberUserIds) =>
-                  replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
-              />
+              {identitiesSection}
               <PermissionsPanel
                 actions={actionsContent}
                 connectionId={connectionId}

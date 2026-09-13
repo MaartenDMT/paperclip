@@ -567,6 +567,31 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("Action permissions");
   });
 
+  it("keeps OAuth sign-in available when an unconnected catalog cannot load", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "ReadersBase MCP",
+      authKind: "oauth",
+      status: "draft",
+      enabled: false,
+      credentialPolicy: "shared",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [organizationGrant()],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+    listCatalogMock.mockRejectedValue(new Error("oauth_refresh_missing"));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Couldn’t load tools for this app.");
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Reconnect required");
+    expect(container.textContent).toContain("Reconnect");
+  });
+
   it("redirects the retired Test tab into Permissions", async () => {
     mockParams.tab = "test";
 

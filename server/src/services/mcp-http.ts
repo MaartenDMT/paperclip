@@ -13,7 +13,8 @@
 
 /** The Accept header value required by the MCP Streamable HTTP transport. */
 export const MCP_HTTP_ACCEPT = "application/json, text/event-stream";
-export const MCP_PROTOCOL_VERSION = "2025-06-18";
+export const MCP_PROTOCOL_VERSION = "2025-11-25";
+const MCP_FALLBACK_PROTOCOL_VERSION = "2025-06-18";
 
 /**
  * Default headers for an MCP Streamable HTTP JSON-RPC POST. Caller-supplied
@@ -49,7 +50,7 @@ export async function initializeMcpHttpSession(input: {
   headers?: Record<string, string>;
   requestId: string;
 }): Promise<Record<string, string>> {
-  const initializeResponse = await input.send({
+  const sendInitialize = (protocolVersion: string) => input.send({
     method: "POST",
     headers: mcpHttpRequestHeaders(input.headers),
     body: JSON.stringify({
@@ -57,12 +58,18 @@ export async function initializeMcpHttpSession(input: {
       id: `${input.requestId}-initialize`,
       method: "initialize",
       params: {
-        protocolVersion: MCP_PROTOCOL_VERSION,
+        protocolVersion,
         capabilities: {},
         clientInfo: { name: "paperclip", version: "1" },
       },
     }),
   });
+  let requestedProtocolVersion = MCP_PROTOCOL_VERSION;
+  let initializeResponse = await sendInitialize(requestedProtocolVersion);
+  if (initializeResponse.status === 400) {
+    requestedProtocolVersion = MCP_FALLBACK_PROTOCOL_VERSION;
+    initializeResponse = await sendInitialize(requestedProtocolVersion);
+  }
   if (!initializeResponse.ok) {
     throw new McpHttpInitializationError(
       `Remote MCP initialization returned HTTP ${initializeResponse.status}`,
@@ -85,7 +92,7 @@ export async function initializeMcpHttpSession(input: {
   const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : null;
   const protocolVersion = typeof resultRecord?.protocolVersion === "string" && resultRecord.protocolVersion
     ? resultRecord.protocolVersion
-    : MCP_PROTOCOL_VERSION;
+    : requestedProtocolVersion;
   const sessionId = initializeResponse.headers.get("mcp-session-id");
   const sessionHeaders: Record<string, string> = {
     ...(input.headers ?? {}),

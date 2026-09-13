@@ -2817,6 +2817,9 @@ function sanitizeHttpFailure(error: unknown): {
     if (isOAuthEndpointRejection(error)) {
       return { status: "error", message: error.message, code: String(code) };
     }
+    if (code === "user_authorization_required") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "oauth_challenge") {
       return {
         status: "error",
@@ -13245,7 +13248,10 @@ export function toolAccessService(
         if (
           !galleryEntry &&
           error instanceof HttpError &&
-          asRecord(error.details).code === "oauth_challenge"
+          (asRecord(error.details).code === "oauth_challenge" ||
+            (genericAuthKind === "oauth" &&
+              personalIdentityUserId &&
+              asRecord(error.details).code === "user_authorization_required"))
         ) {
           const [oauthConnection] = await db
             .select()
