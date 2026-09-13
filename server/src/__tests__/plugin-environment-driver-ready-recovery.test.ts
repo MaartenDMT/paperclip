@@ -469,6 +469,11 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
         error: expect.stringContaining("event bus offline"),
       });
 
+      expect(workerManager.startWorker).toHaveBeenCalledWith(
+        PLUGIN_ID,
+        expect.objectContaining({ execArgv: ["--import", expect.stringMatching(/^file:\/\//)] }),
+      );
+
       expect(lifecycleManager.markError).not.toHaveBeenCalled();
       expect(jobScheduler.unregisterPlugin).toHaveBeenCalledWith(PLUGIN_ID);
       expect(eventBus.clearPlugin).toHaveBeenCalledWith(PLUGIN_KEY);
