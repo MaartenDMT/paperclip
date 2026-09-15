@@ -3373,6 +3373,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       backgroundMessageTasks.add(pending);
       void pending.finally(() => backgroundMessageTasks.delete(pending));
+      return pending;
     });
   }
 

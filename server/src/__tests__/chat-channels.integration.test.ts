@@ -59588,8 +59588,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(deferred).toHaveLength(1);
     await drainDeferred();
-    await vi.waitFor(() => expect(deferred).toHaveLength(1));
-    await drainDeferred();
     await vi.waitFor(async () => {
       await expect(
         db
