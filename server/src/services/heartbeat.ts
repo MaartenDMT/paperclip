@@ -4909,6 +4909,8 @@ export async function createManagedMcpRunConfig(input: {
   );
 
   const applicableGateways = rows.filter((gateway) =>
+    !gateway.metadata?.nativeRuntimeAssignmentDigest &&
+    !gateway.metadata?.managedRuntimeConnectionId &&
     gatewayAppliesToRun({
       gateway,
       agentId: input.agent.id,
@@ -19112,7 +19114,52 @@ export function heartbeatService(
   }
 
   async function sweepStaleIssueLocks() {
-    return recovery.sweepStaleIssueLocks();
+    const result = await recovery.sweepStaleIssueLocks();
+    // The recovery service terminalizes lost legacy processes before it clears
+    // issue locks. Normal run finalization releases their environment leases,
+    // but that finalizer cannot run after a process has disappeared. Include
+    // older terminalized rows so a restart can heal a previously stranded lease.
+    const candidates = await db
+      .selectDistinct({ run: heartbeatRuns })
+      .from(heartbeatRuns)
+      .innerJoin(environmentLeases, eq(environmentLeases.heartbeatRunId, heartbeatRuns.id))
+      .where(and(
+        eq(heartbeatRuns.runtimeMode, "legacy"),
+        eq(heartbeatRuns.status, "interrupted"),
+        eq(heartbeatRuns.errorCode, "orphaned_running_run"),
+        eq(environmentLeases.status, "active"),
+      ))
+      .limit(50);
+    for (const { run } of candidates) {
+      if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id) ||
+          adapterExecutionControls.has(run.id) || !run.processPid) continue;
+      // An unknown process-probe result is not proof of death. In particular,
+      // do not release a lease held by a live process or a remote provider.
+      let processGone = false;
+      try {
+        process.kill(run.processPid, 0);
+      } catch (error) {
+        processGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+      }
+      if (!processGone) continue;
+      const leases = await db
+        .select({ provider: environmentLeases.provider })
+        .from(environmentLeases)
+        .where(and(
+          eq(environmentLeases.companyId, run.companyId),
+          eq(environmentLeases.heartbeatRunId, run.id),
+          eq(environmentLeases.status, "active"),
+        ));
+      if (leases.length === 0 || !leases.every((lease) => lease.provider === "local")) continue;
+      await releaseEnvironmentLeasesForRun({
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        status: run.status,
+        failureReason: run.error,
+      });
+    }
+    return result;
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {

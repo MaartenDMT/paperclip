@@ -83,6 +83,16 @@ const serializedServerVitestArgs = [
 ];
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
+function spawnPnpm(args, options) {
+  // Node 24 on Windows does not launch a .cmd shim through spawnSync without a
+  // shell. Reuse the JS entrypoint supplied by the package manager for scripts.
+  const cli = process.env.npm_execpath;
+  if (process.platform === "win32" && cli && /\.(?:cjs|mjs|js)$/i.test(cli)) {
+    return spawnSync(process.execPath, [cli, ...args], options);
+  }
+  return spawnSync("pnpm", args, options);
+}
+
 function walk(dir) {
   const entries = readdirSync(dir);
   const files = [];
@@ -300,7 +310,7 @@ function runVitest(args, label, testShard = null) {
   if (testShard) {
     const collect = (filters, name) => {
       const output = path.join(testRoot, `${name}.json`);
-      const result = spawnSync("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
+      const result = spawnPnpm(["exec", "vitest", "list", ...sourceOnlyVitestArgs,
         ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
         cwd: repoRoot, env, stdio: "inherit",
       });
@@ -316,7 +326,7 @@ function runVitest(args, label, testShard = null) {
     console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
     args.push("--allowOnly=false");
   }
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
+  const result = spawnPnpm(["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
@@ -384,6 +394,16 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
       return;
     }
 
+    if (process.platform === "win32") {
+      // The 145 explicit excludes exceed Windows' command-line limit. The
+      // duration-aware file partition is the same exact general-server cover
+      // used in CI, with no serialized route/authz suites mixed into it.
+      const shardCount = Math.max(2, Math.ceil(files.join(" ").length / 6_000));
+      for (let shardIndex = 0; shardIndex < shardCount; shardIndex += 1) {
+        runGeneralGroup(routeTests, groupName, shardIndex, shardCount);
+      }
+      return;
+    }
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
     if (withoutChat) excludeRouteArgs.push("--exclude", "src/__tests__/chat-channels.integration.test.ts");
     runVitest(

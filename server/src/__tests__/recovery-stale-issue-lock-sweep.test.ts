@@ -6,6 +6,8 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -46,6 +48,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
   afterEach(async () => {
     mockTelemetryClient.track.mockClear();
+    await db.delete(environmentLeases);
     await db.delete(nativeRunFinalizations);
     await db.delete(issueComments);
     await db.delete(issueRelations);
@@ -55,6 +58,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(environments);
   });
 
   afterAll(async () => {
@@ -271,6 +275,15 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
   it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
     const { companyId, agentId, runningRunId } = await seed();
+    const environmentId = randomUUID();
+    await db.insert(environments).values({ id: environmentId, name: `Local ${environmentId}` });
+    await db.insert(environmentLeases).values({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+      provider: "local",
+      status: "active",
+    });
     // The run recorded a pid, but the process and its sandbox are gone. A pid
     // this large never maps to a live process, so isPidAlive returns false.
     // The issue is not terminal, so only the process-death authority applies.
@@ -312,6 +325,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(lock).toEqual({ checkoutRunId: null, executionRunId: null });
+    const [lease] = await db.select({
+      status: environmentLeases.status,
+      releasedAt: environmentLeases.releasedAt,
+    }).from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runningRunId));
+    expect(lease?.status).toBe("released");
+    expect(lease?.releasedAt).toBeInstanceOf(Date);
 
     const event = await db
       .select({ message: heartbeatRunEvents.message })
@@ -331,6 +350,45 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       "agent.task_run",
       expect.objectContaining({ agent_id: agentId, state: "interrupted" }),
     );
+  });
+
+  it("heals an older local orphan lease without releasing a mixed-provider run", async () => {
+    const { companyId, runningRunId } = await seed();
+    const environmentId = randomUUID();
+    await db.insert(environments).values({ id: environmentId, name: `Local ${environmentId}` });
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      errorCode: "orphaned_running_run",
+      processPid: 2_000_000_000,
+      finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    const [localLease] = await db.insert(environmentLeases).values({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+      provider: "local",
+      status: "active",
+    }).returning({ id: environmentLeases.id });
+    const [remoteLease] = await db.insert(environmentLeases).values({
+      companyId,
+      heartbeatRunId: runningRunId,
+      provider: "remote",
+      status: "active",
+    }).returning({ id: environmentLeases.id });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.sweepStaleIssueLocks();
+    const [held] = await db.select({ status: environmentLeases.status })
+      .from(environmentLeases).where(eq(environmentLeases.id, localLease.id));
+    expect(held?.status).toBe("active");
+
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, remoteLease.id));
+    await heartbeat.sweepStaleIssueLocks();
+    const [released] = await db.select({
+      status: environmentLeases.status,
+      releasedAt: environmentLeases.releasedAt,
+    }).from(environmentLeases).where(eq(environmentLeases.id, localLease.id));
+    expect(released?.status).toBe("released");
+    expect(released?.releasedAt).toBeInstanceOf(Date);
   });
 
   it("preserves a process-less native run while same-run resumption owns its retry", async () => {

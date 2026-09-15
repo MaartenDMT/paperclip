@@ -149,6 +149,17 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(second).toHaveLength(1);
     expect(second[0]!.connectionId).toBe(first[0]!.connectionId);
 
+    // The aggregate is delivered through runtimeMcp. Its persisted gateway
+    // must not be re-injected as a managed gateway on later heartbeats.
+    await expect(createManagedMcpRunConfig({
+      db,
+      agent: agent!,
+      runId: randomUUID(),
+      config: {},
+      projectId: null,
+      issueId: null,
+    })).resolves.toBeNull();
+
     const gateways = await db.select().from(toolMcpGateways);
     expect(gateways).toHaveLength(1);
     expect(gateways[0]!.metadata).toMatchObject({
@@ -555,6 +566,14 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       profileId: profile.id,
       status: "active" as const,
     }))).returning();
+    const [historicalRuntimeGateway] = await db.insert(toolMcpGateways).values({
+      companyId: company!.id,
+      name: "Historical runtime gateway",
+      slug: `historical-${randomUUID().slice(0, 8)}`,
+      profileId: profiles[0]!.id,
+      status: "active",
+      metadata: { managedRuntimeConnectionId: connections[0]!.id },
+    }).returning();
     await db.insert(toolConnectionInstalls).values({
       companyId: company!.id,
       connectionId: connections[0]!.id,
@@ -578,5 +597,6 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       endpointPath: `/mcp/gateways/${gateways[0]!.gatewayPublicId}`,
     });
     expect(config?.gateways.some((gateway) => gateway.id === gateways[1]!.id)).toBe(false);
+    expect(config?.gateways.some((gateway) => gateway.id === historicalRuntimeGateway!.id)).toBe(false);
   });
 });

@@ -145,7 +145,7 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
  * payload — otherwise an empty field would round-trip as `""` or `0` and
  * trip server-side "X must be greater than 0 when provided" style validators.
  */
-export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
+export function getDefaultForSchema(schema: JsonSchemaNode, isRequired = false): unknown {
   if (schema.default !== undefined) return schema.default;
 
   const type = resolveType(schema);
@@ -162,13 +162,13 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
     case "array":
       return [];
     case "object": {
-      if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
-      for (const [key, propSchema] of Object.entries(schema.properties)) {
-        const def = getDefaultForSchema(propSchema);
+      const required = new Set(schema.required ?? []);
+      for (const [key, propSchema] of Object.entries(schema.properties ?? {})) {
+        const def = getDefaultForSchema(propSchema, isRequired && required.has(key));
         if (def !== undefined) obj[key] = def;
       }
-      return obj;
+      return isRequired || Object.keys(obj).length > 0 ? obj : undefined;
     }
     default:
       return undefined;
@@ -325,9 +325,10 @@ export function validateJsonSchemaForm(
 export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const properties = schema.properties ?? {};
+  const required = new Set(schema.required ?? []);
 
   for (const [key, propSchema] of Object.entries(properties)) {
-    const def = getDefaultForSchema(propSchema);
+    const def = getDefaultForSchema(propSchema, required.has(key));
     if (def !== undefined) {
       result[key] = def;
     }

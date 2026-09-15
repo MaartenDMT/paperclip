@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonSchemaForm, getDefaultValues } from "./JsonSchemaForm";
+import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "./JsonSchemaForm";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -397,6 +397,59 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     expect("cpu" in defaults).toBe(false);
     expect("memory" in defaults).toBe(false);
     expect("size" in defaults).toBe(false);
+  });
+
+  it("keeps required empty objects but omits untouched optional approval objects", () => {
+    const schema = {
+      type: "object" as const,
+      required: ["actionVersion", "context", "input"],
+      properties: {
+        actionVersion: { type: "string" as const },
+        context: { type: "object" as const, properties: {} },
+        input: { type: "object" as const, properties: {} },
+        approvalRequest: {
+          type: "object" as const,
+          required: ["executionChallengeHash"],
+          properties: { executionChallengeHash: { type: "string" as const } },
+        },
+      },
+    };
+    const defaults = getDefaultValues(schema);
+    expect(defaults).toEqual({ context: {}, input: {} });
+    expect(validateJsonSchemaForm(schema, { ...defaults, actionVersion: "1.0.0" })).toEqual({});
+  });
+
+  it("initializes required empty objects at every required nesting level", () => {
+    const schema = {
+      type: "object" as const,
+      required: ["input"],
+      properties: {
+        input: {
+          type: "object" as const,
+          required: ["context"],
+          properties: { context: { type: "object" as const, properties: {} } },
+        },
+      },
+    };
+    const defaults = getDefaultValues(schema);
+    expect(defaults).toEqual({ input: { context: {} } });
+    expect(validateJsonSchemaForm(schema, defaults)).toEqual({});
+  });
+
+  it("does not initialize a required empty child inside an untouched optional object", () => {
+    const schema = {
+      type: "object" as const,
+      properties: {
+        approvalRequest: {
+          type: "object" as const,
+          required: ["execution"],
+          properties: { execution: { type: "object" as const, properties: {} } },
+        },
+      },
+    };
+    const defaults = getDefaultValues(schema);
+    expect(defaults).toEqual({});
+    expect(validateJsonSchemaForm(schema, defaults)).toEqual({});
   });
 
   it("renders datalist suggestions for numeric fields when examples are present", async () => {
