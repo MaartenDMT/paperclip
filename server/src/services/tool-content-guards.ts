@@ -44,6 +44,66 @@ function scanPromptInjection(value: unknown): string[] {
     .map((pattern) => pattern.code);
 }
 
+type ToolContentPath = readonly string[];
+
+function restoreStringPath(
+  source: unknown,
+  sanitized: unknown,
+  path: ToolContentPath,
+  index = 0,
+): unknown {
+  if (index >= path.length) {
+    return typeof source === "string" ? source : sanitized;
+  }
+
+  const segment = path[index];
+  if (Array.isArray(source) && Array.isArray(sanitized)) {
+    const arrayIndex = Number(segment);
+    if (
+      !Number.isSafeInteger(arrayIndex) ||
+      arrayIndex < 0 ||
+      arrayIndex >= source.length ||
+      arrayIndex >= sanitized.length
+    ) {
+      return sanitized;
+    }
+    const restored = restoreStringPath(
+      source[arrayIndex],
+      sanitized[arrayIndex],
+      path,
+      index + 1,
+    );
+    if (restored === sanitized[arrayIndex]) return sanitized;
+    const copy = sanitized.slice();
+    copy[arrayIndex] = restored;
+    return copy;
+  }
+
+  if (!isPlainObject(source) || !isPlainObject(sanitized) || !segment) {
+    return sanitized;
+  }
+  if (!(segment in source) || !(segment in sanitized)) return sanitized;
+  const restored = restoreStringPath(
+    source[segment],
+    sanitized[segment],
+    path,
+    index + 1,
+  );
+  if (restored === sanitized[segment]) return sanitized;
+  return { ...sanitized, [segment]: restored };
+}
+
+function restorePreservedStrings(
+  source: Record<string, unknown>,
+  sanitized: Record<string, unknown>,
+  paths: readonly ToolContentPath[],
+): Record<string, unknown> {
+  return paths.reduce(
+    (current, path) => restoreStringPath(source, current, path) as Record<string, unknown>,
+    sanitized,
+  );
+}
+
 export class ToolActionSigningSecretMissingError extends Error {
   constructor() {
     super(
@@ -224,11 +284,25 @@ export function validateToolContent(input: {
   direction: "arguments" | "result";
   sensitiveMode?: "redact" | "block";
   promptInjectionMode?: "redact" | "block" | "ignore";
+  /**
+   * Exact string leaves that a trusted structured result needs to preserve for
+   * consumers. The diagnostic summary remains based on the fully redacted
+   * value, and prompt-injection scanning always examines the raw input.
+   */
+  preserveStringPaths?: readonly ToolContentPath[];
 }) {
   const sensitiveMode = input.sensitiveMode ?? "redact";
   const promptInjectionMode = input.promptInjectionMode ?? (input.direction === "result" ? "block" : "ignore");
-  const redactedValue = isPlainObject(input.value) ? redactEventPayload(input.value) : input.value;
-  const redactedSummary = summarizeToolValue(redactedValue);
+  const sanitizedValue = isPlainObject(input.value) ? redactEventPayload(input.value) : input.value;
+  const redactedValue =
+    isPlainObject(input.value) && isPlainObject(sanitizedValue)
+      ? restorePreservedStrings(
+          input.value,
+          sanitizedValue,
+          input.preserveStringPaths ?? [],
+        )
+      : sanitizedValue;
+  const redactedSummary = summarizeToolValue(sanitizedValue);
   const findings: string[] = [];
 
   if (redactedSummary.redactedFields?.length) {

@@ -2838,6 +2838,74 @@ rl.on("line", (line) => {
     }
   });
 
+  it("preserves validated ReadersBase draft chunks without exposing sibling secrets", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const manuscript = "A bearer abcdefghi crossed the bridge.";
+    const fullManuscript = `${manuscript} The road continued beyond the ridge.`;
+    const contentHash = createHash("sha256").update(fullManuscript, "utf8").digest("hex");
+    const remoteResponse = (id: unknown) =>
+      new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: "provider returned Bearer abcdefghi" }],
+          structuredContent: {
+            actionId: "draft.content.get",
+            actionVersion: "1.0.0",
+            status: "completed",
+            output: {
+              projectId: "project-1",
+              workId: "work-1",
+              draftId: "draft-1",
+              content: manuscript,
+              offset: 0,
+              nextOffset: manuscript.length,
+              hasMore: true,
+              contentHash,
+              revision: "2026-09-17T00:00:00.000Z",
+            },
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    const remoteTool = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "readersbase",
+      connectionName: "ReadersBase",
+      toolName: "readersbase_draft_content_get",
+      title: "Read draft content",
+      url: "https://api.readersbase.com/mcp",
+      riskLevel: "read",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const requestBody = JSON.parse(String(init.body)) as { id?: unknown };
+        return remoteResponse(requestBody.id);
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const connectedTool = (await gateway.listToolsForSession(session.token))
+      .find((tool) => tool.catalogEntryId === remoteTool.catalogEntry.id);
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: connectedTool!.name,
+      parameters: { key: "draft", value: "read" },
+    });
+    const value = result.result as {
+      content: string;
+      data: { structuredContent: { output: { content: string; offset: number; nextOffset: number; contentHash: string } } };
+    };
+    const output = value.data.structuredContent.output;
+
+    expect(output.content).toBe(manuscript);
+    expect(output.content.length).toBe(output.nextOffset - output.offset);
+    expect(output.contentHash).toBe(contentHash);
+    expect(value.content).toContain("***REDACTED***");
+    expect(value.content).not.toContain("abcdefghi");
+  });
+
   it("discovers and calls the SDK-backed KV demo MCP server over Streamable HTTP", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   canonicalToolArguments,
@@ -78,5 +79,71 @@ describe("tool content guards", () => {
         direction: "result",
       }),
     ).toThrow(ToolContentValidationError);
+  });
+
+  it("preserves declared draft content while keeping its offsets and hash coherent", () => {
+    const manuscript = "A bearer abcdefghi crossed the bridge.";
+    const fullManuscript = `${manuscript} The road continued beyond the ridge.`;
+    const contentHash = createHash("sha256").update(fullManuscript, "utf8").digest("hex");
+    const result = validateToolContent({
+      value: {
+        content: "provider returned Bearer abcdefghi",
+        data: {
+          structuredContent: {
+            actionId: "draft.content.get",
+            output: {
+              content: manuscript,
+              offset: 0,
+              nextOffset: manuscript.length,
+              contentHash,
+              revision: "2026-09-17T00:00:00.000Z",
+            },
+          },
+        },
+      },
+      direction: "result",
+      preserveStringPaths: [["data", "structuredContent", "output", "content"]],
+    } as Parameters<typeof validateToolContent>[0]);
+
+    const output = (result.value as {
+      data: {
+        structuredContent: {
+          output: {
+            content: string;
+            offset: number;
+            nextOffset: number;
+            contentHash: string;
+          };
+        };
+      };
+    }).data.structuredContent.output;
+    expect(output.content).toBe(manuscript);
+    expect(output.content.length).toBe(output.nextOffset - output.offset);
+    expect(output.contentHash).toBe(contentHash);
+    expect((result.value as { content: string }).content).toContain("***REDACTED***");
+  });
+
+  it("continues redacting provider text outside the declared draft content path", () => {
+    const result = validateToolContent({
+      value: {
+        data: {
+          structuredContent: {
+            output: {
+              content: "safe synthetic content",
+              providerMessage: "request failed with Bearer abcdefghi",
+            },
+          },
+        },
+      },
+      direction: "result",
+      preserveStringPaths: [["data", "structuredContent", "output", "content"]],
+    } as Parameters<typeof validateToolContent>[0]);
+
+    const output = (result.value as {
+      data: { structuredContent: { output: Record<string, string> } };
+    }).data.structuredContent.output;
+    expect(output.content).toBe("safe synthetic content");
+    expect(output.providerMessage).toContain("***REDACTED***");
+    expect(output.providerMessage).not.toContain("abcdefghi");
   });
 });

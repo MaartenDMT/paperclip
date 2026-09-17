@@ -145,6 +145,7 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import { preservedMcpResultPaths } from "./mcp-result-integrity.js";
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -373,6 +374,7 @@ type RemoteHttpExecutionResult = {
   result: unknown;
   headerSummary?: HeaderPolicySummary;
   execution?: RemoteHttpExecutionAudit;
+  preserveStringPaths?: readonly (readonly string[])[];
 };
 
 type RemoteHttpExecutionAudit = {
@@ -6065,6 +6067,11 @@ export function createToolGatewayService(
         typeof connection.config.sourceTemplateKey === "string"
           ? connection.config.sourceTemplateKey
           : null;
+      const preserveStringPaths = preservedMcpResultPaths({
+        endpoint,
+        upstreamToolName: entry.toolName,
+        result: payloadRecord.result,
+      });
       const result = normalizeMcpToolResult(
         payloadRecord.result,
         "mcp_http",
@@ -6076,7 +6083,12 @@ export function createToolGatewayService(
         "ok",
         "Remote MCP server responded to tools/call.",
       );
-      return { result, headerSummary, execution };
+      return {
+        result,
+        headerSummary,
+        execution,
+        ...(preserveStringPaths ? { preserveStringPaths } : {}),
+      };
     } catch (error) {
       if (error instanceof ToolGatewayHttpError) {
         throw new ToolGatewayHttpError(
@@ -7004,6 +7016,7 @@ export function createToolGatewayService(
         direction: "result",
         sensitiveMode: "redact",
         promptInjectionMode: "block",
+        preserveStringPaths: connectedMcpExecution.preserveStringPaths,
       });
       await db
         .update(toolInvocations)
@@ -7795,25 +7808,26 @@ export function createToolGatewayService(
 
     try {
       const executionTimeoutMs = timeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
+      let connectedMcpExecution: RemoteHttpExecutionResult | null = null;
       const result =
         tool.providerType === "mcp_remote_http"
           ? (
-              await executeRemoteHttpTool(
+              (connectedMcpExecution = await executeRemoteHttpTool(
                 session,
                 tool,
                 parameters,
                 executionTimeoutMs,
                 invocation.id,
-              )
+              ))
             ).result
           : tool.providerType === "mcp_local_stdio"
             ? (
-                await executeLocalStdioTool(
+                (connectedMcpExecution = await executeLocalStdioTool(
                   session,
                   tool,
                   parameters,
                   executionTimeoutMs,
-                )
+                ))
               ).result
             : tool.providerType !== "paperclip_plugin"
               ? await runWithTimeout(
@@ -7839,6 +7853,7 @@ export function createToolGatewayService(
         direction: "result",
         sensitiveMode: "redact",
         promptInjectionMode: "block",
+        preserveStringPaths: connectedMcpExecution?.preserveStringPaths,
       });
       const now = new Date();
       await db
@@ -10247,6 +10262,7 @@ export function createToolGatewayService(
           direction: "result",
           sensitiveMode: "redact",
           promptInjectionMode: "block",
+          preserveStringPaths: connectedMcpExecution?.preserveStringPaths,
         });
         const completedAt = new Date();
         await db
