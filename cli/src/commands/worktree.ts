@@ -2,6 +2,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   promises as fsPromises,
   readdirSync,
@@ -38,6 +39,7 @@ import {
   authUsers,
   assets,
   companies,
+  companySkills,
   companyMemberships,
   createDb,
   documentRevisions,
@@ -221,6 +223,11 @@ type SeedWorktreeDatabaseResult = {
     name: string;
     fromCwd: string;
     toCwd: string;
+  }>;
+  reboundSkills: Array<{
+    name: string;
+    fromSourceLocator: string;
+    toSourceLocator: string;
   }>;
   validation: WorktreeSeedValidationSummary;
 };
@@ -852,6 +859,177 @@ async function rebindSeededProjectWorkspaces(input: {
   }
 }
 
+type ReboundManagedSkill = {
+  name: string;
+  fromSourceLocator: string;
+  toSourceLocator: string;
+};
+
+function normalizeManagedSkillDirectory(sourceLocator: string): string {
+  const resolved = path.resolve(sourceLocator);
+  return path.basename(resolved).toLowerCase() === "skill.md"
+    ? path.dirname(resolved)
+    : resolved;
+}
+
+function resolveManagedSkillRelativePath(
+  managedSkillsRoot: string,
+  sourceLocator: string,
+  companyId: string,
+): string | null {
+  const relative = path.relative(path.resolve(managedSkillsRoot), normalizeManagedSkillDirectory(sourceLocator));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  const segments = relative.split(path.sep);
+  if (segments.length !== 2 || segments[0]!.toLowerCase() !== companyId.toLowerCase()) return null;
+  if (segments.some((segment) => !segment || segment.startsWith("__"))) return null;
+  return relative;
+}
+
+function assertNoSymlinksInManagedSkill(currentPath: string): void {
+  for (const entry of readdirSync(currentPath, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Managed company skill contains a symlink: ${path.resolve(currentPath, entry.name)}.`);
+    }
+    if (entry.isDirectory()) {
+      assertNoSymlinksInManagedSkill(path.resolve(currentPath, entry.name));
+    }
+  }
+}
+
+function assertNoSymlinksAlongPath(rootPath: string, childPath: string): void {
+  const root = path.resolve(rootPath);
+  const child = path.resolve(childPath);
+  const relative = path.relative(root, child);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Managed company skill path escapes its root: ${child}.`);
+  }
+
+  let current = root;
+  for (const segment of relative.split(path.sep)) {
+    current = path.resolve(current, segment);
+    let stat: ReturnType<typeof lstatSync> | null = null;
+    try {
+      stat = lstatSync(current);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Managed company skill path contains a symlink: ${current}.`);
+    }
+  }
+}
+
+/** Rebind restored managed skill rows and copy their source trees to the target instance. */
+export async function rebindSeededManagedSkills(input: {
+  sourceConnectionString: string;
+  targetConnectionString: string;
+  sourceManagedSkillsRoot: string;
+  targetManagedSkillsRoot: string;
+}): Promise<ReboundManagedSkill[]> {
+  const sourceManagedSkillsRoot = path.resolve(input.sourceManagedSkillsRoot);
+  const targetManagedSkillsRoot = path.resolve(input.targetManagedSkillsRoot);
+  if (sourceManagedSkillsRoot === targetManagedSkillsRoot) {
+    throw new Error("Source and target managed skill roots are the same.");
+  }
+
+  const sourceDb = createDb(input.sourceConnectionString);
+  const targetDb = createDb(input.targetConnectionString);
+  const closeDb = async (db: typeof sourceDb) => {
+    await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+  };
+
+  try {
+    const rows = await sourceDb
+      .select({
+        id: companySkills.id,
+        companyId: companySkills.companyId,
+        name: companySkills.name,
+        sourceLocator: companySkills.sourceLocator,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.sourceType, "local_path"));
+    const rebound: ReboundManagedSkill[] = [];
+    const targetDirectories = new Set<string>();
+
+    for (const row of rows) {
+      const sourceLocator = nonEmpty(row.sourceLocator);
+      if (!sourceLocator) continue;
+      const relative = resolveManagedSkillRelativePath(
+        sourceManagedSkillsRoot,
+        sourceLocator,
+        row.companyId,
+      );
+      if (!relative) continue;
+
+      const sourceDir = path.resolve(sourceManagedSkillsRoot, relative);
+      const targetDir = path.resolve(targetManagedSkillsRoot, relative);
+      const targetDirectoryKey = process.platform === "win32" ? targetDir.toLowerCase() : targetDir;
+      if (targetDirectories.has(targetDirectoryKey)) {
+        throw new Error(`Multiple managed company skills resolve to the target directory ${targetDir}.`);
+      }
+      targetDirectories.add(targetDirectoryKey);
+      assertNoSymlinksAlongPath(sourceManagedSkillsRoot, sourceDir);
+      assertNoSymlinksAlongPath(targetManagedSkillsRoot, targetDir);
+      let sourceStat: ReturnType<typeof lstatSync>;
+      try {
+        sourceStat = lstatSync(sourceDir);
+      } catch {
+        throw new Error(`Managed company skill source does not exist at ${sourceDir}.`);
+      }
+      if (sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
+        throw new Error(`Managed company skill source does not exist at ${sourceDir}.`);
+      }
+      if (!existsSync(path.join(sourceDir, "SKILL.md"))) {
+        throw new Error(`Managed company skill source is missing SKILL.md at ${sourceDir}.`);
+      }
+      assertNoSymlinksInManagedSkill(sourceDir);
+
+      const restoredSkill = await targetDb
+        .select({ id: companySkills.id })
+        .from(companySkills)
+        .where(and(eq(companySkills.id, row.id), eq(companySkills.companyId, row.companyId)))
+        .limit(1);
+      if (restoredSkill.length === 0) {
+        throw new Error(`Restored managed company skill ${row.id} was not found in the target database.`);
+      }
+
+      let targetStat: ReturnType<typeof lstatSync> | null = null;
+      try {
+        targetStat = lstatSync(targetDir);
+      } catch {
+        // The target skill directory is created by the copy below when absent.
+      }
+      if (targetStat?.isSymbolicLink()) {
+        throw new Error(`Target managed company skill directory is a symlink: ${targetDir}.`);
+      }
+
+      rmSync(targetDir, { recursive: true, force: true });
+      copyDirectoryContents(sourceDir, targetDir);
+
+      const updated = await targetDb
+        .update(companySkills)
+        .set({
+          sourceLocator: targetDir,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companySkills.id, row.id), eq(companySkills.companyId, row.companyId)))
+        .returning({ id: companySkills.id });
+      if (updated.length === 0) throw new Error(`Managed company skill ${row.id} was not updated in the target database.`);
+
+      rebound.push({
+        name: row.name,
+        fromSourceLocator: path.resolve(sourceLocator),
+        toSourceLocator: targetDir,
+      });
+    }
+
+    return rebound;
+  } finally {
+    await closeDb(sourceDb);
+    await closeDb(targetDb);
+  }
+}
+
 export function resolveSourceConfigPath(opts: WorktreeInitOptions): string {
   if (opts.sourceConfigPathOverride) return path.resolve(opts.sourceConfigPathOverride);
   if (opts.fromConfig) return path.resolve(opts.fromConfig);
@@ -1049,6 +1227,27 @@ function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Reco
 
   const port = portOverride ?? config.database.embeddedPostgresPort;
   return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+}
+
+function resolveSeedManagedSkillsRoot(
+  configPath: string,
+  config: PaperclipConfig,
+  envEntries: Record<string, string>,
+): string | null {
+  const configuredHome = nonEmpty(envEntries.PAPERCLIP_HOME);
+  const configuredInstanceId = nonEmpty(envEntries.PAPERCLIP_INSTANCE_ID);
+  if (configuredHome && configuredInstanceId) {
+    return path.resolve(
+      expandHomePrefix(configuredHome),
+      "instances",
+      configuredInstanceId,
+      "skills",
+    );
+  }
+
+  if (config.database.mode !== "embedded-postgres") return null;
+  const databaseDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
+  return path.resolve(databaseDir, "..", "skills");
 }
 
 export function copySeededSecretsKey(input: {
@@ -1741,7 +1940,24 @@ async function seedWorktreeDatabase(input: {
       targetConnectionString,
       currentCwd: input.targetPaths.cwd,
     });
-    input.onPhase?.("workspace_rebind", "succeeded", `Rebound ${reboundWorkspaces.length} workspace path(s).`);
+    const sourceManagedSkillsRoot = resolveSeedManagedSkillsRoot(
+      input.sourceConfigPath,
+      input.sourceConfig,
+      sourceEnvEntries,
+    );
+    const reboundSkills = sourceManagedSkillsRoot
+      ? await rebindSeededManagedSkills({
+          sourceConnectionString,
+          targetConnectionString,
+          sourceManagedSkillsRoot,
+          targetManagedSkillsRoot: path.resolve(input.targetPaths.instanceRoot, "skills"),
+        })
+      : [];
+    input.onPhase?.(
+      "workspace_rebind",
+      "succeeded",
+      `Rebound ${reboundWorkspaces.length} workspace path(s) and ${reboundSkills.length} managed skill path(s).`,
+    );
     input.onPhase?.("post_restore_validation", "started");
     const targetValidation = await inspectVerifiedSeedDatabase(
       targetConnectionString,
@@ -1763,6 +1979,7 @@ async function seedWorktreeDatabase(input: {
       pausedScheduledRoutines,
       executionQuarantine,
       reboundWorkspaces,
+      reboundSkills,
       validation: targetValidation.summary,
     };
   } finally {
@@ -2511,6 +2728,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   let seedExecutionQuarantineSummary: SeededWorktreeExecutionQuarantineSummary | null = null;
   let pausedScheduledRoutineCount: number | null = null;
   let reboundWorkspaceSummary: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
+  let reboundSkillSummary: SeedWorktreeDatabaseResult["reboundSkills"] = [];
   if (opts.seed !== false) {
     if (!sourceConfig) {
       throw new Error(
@@ -2537,6 +2755,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       seedExecutionQuarantineSummary = seeded.executionQuarantine;
       pausedScheduledRoutineCount = seeded.pausedScheduledRoutines;
       reboundWorkspaceSummary = seeded.reboundWorkspaces;
+      reboundSkillSummary = seeded.reboundSkills;
       spinner.stop(`Seeded isolated worktree database (${seedMode}).`);
     } catch (error) {
       spinner.stop(pc.red("Failed to seed worktree database."));
@@ -2573,6 +2792,11 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     for (const rebound of reboundWorkspaceSummary) {
       p.log.message(
         pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
+      );
+    }
+    for (const rebound of reboundSkillSummary) {
+      p.log.message(
+        pc.dim(`Rebound managed skill ${rebound.name}: ${rebound.fromSourceLocator} -> ${rebound.toSourceLocator}`),
       );
     }
   }
@@ -2615,6 +2839,11 @@ export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOpti
       for (const rebound of result.details.reboundWorkspaces) {
         p.log.message(
           pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
+        );
+      }
+      for (const rebound of result.details.reboundSkills) {
+        p.log.message(
+          pc.dim(`Rebound managed skill ${rebound.name}: ${rebound.fromSourceLocator} -> ${rebound.toSourceLocator}`),
         );
       }
     }
@@ -4335,6 +4564,11 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     for (const rebound of seeded.reboundWorkspaces) {
       p.log.message(
         pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
+      );
+    }
+    for (const rebound of seeded.reboundSkills) {
+      p.log.message(
+        pc.dim(`Rebound managed skill ${rebound.name}: ${rebound.fromSourceLocator} -> ${rebound.toSourceLocator}`),
       );
     }
     p.outro(pc.green(`Reseed complete for ${targetEndpoint.label}.`));

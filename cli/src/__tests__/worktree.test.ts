@@ -13,6 +13,8 @@ import {
   authAccounts,
   authUsers,
   companies,
+  companySkills,
+  companySkillVersions,
   companyMemberships,
   createDb,
   closeRegisteredClients,
@@ -41,6 +43,7 @@ import {
   readWorktreeSeedManifest,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
+  rebindSeededManagedSkills,
   requiresWorktreeSeedCredentialAccount,
   resolveSourceConfigPath,
   resolveWorktreeReseedSource,
@@ -105,6 +108,7 @@ function mockVerifiedSeedResult() {
       stoppedRuntimeServices: 0,
     },
     reboundWorkspaces: [],
+    reboundSkills: [],
     validation: {
       authUserCount: 1,
       credentialAccountCount: 1,
@@ -2258,6 +2262,112 @@ describe("worktree helpers", () => {
         workspaceCwd: "/Users/example/other-project",
       }),
     ).toBeNull();
+  });
+
+  itEmbeddedPostgres("rebinds managed company skill sources and materializes them in the target instance", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-skill-rebind-"));
+    const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-skill-source-");
+    const targetDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-skill-target-");
+    onTestFinished(() => sourceDb.cleanup());
+    onTestFinished(() => targetDb.cleanup());
+
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const agentId = randomUUID();
+    const versionId = randomUUID();
+    const slug = "readersbase-agent-gateway";
+    const sourceManagedSkillsRoot = path.join(tempRoot, "source-instance", "skills");
+    const targetManagedSkillsRoot = path.join(tempRoot, "target-instance", "skills");
+    const sourceSkillDir = path.join(sourceManagedSkillsRoot, companyId, slug);
+    const targetSkillDir = path.join(targetManagedSkillsRoot, companyId, slug);
+    const sourceMarkdown = "---\nname: ReadersBase Agent Gateway\n---\nsource\n";
+    const sourceReference = "source reference\n";
+    const skillValues = {
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/${slug}`,
+      slug,
+      name: "ReadersBase Agent Gateway",
+      description: "Gateway skill",
+      markdown: sourceMarkdown,
+      sourceType: "local_path",
+      sourceLocator: sourceSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "references/checklist.md", kind: "reference" },
+      ],
+      metadata: { sourceKind: "managed_local" },
+    };
+
+    try {
+      fs.mkdirSync(path.join(sourceSkillDir, "references"), { recursive: true });
+      fs.writeFileSync(path.join(sourceSkillDir, "SKILL.md"), sourceMarkdown, "utf8");
+      fs.writeFileSync(path.join(sourceSkillDir, "references", "checklist.md"), sourceReference, "utf8");
+      fs.mkdirSync(targetSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(targetSkillDir, "SKILL.md"), "stale target\n", "utf8");
+
+      for (const connectionString of [sourceDb.connectionString, targetDb.connectionString]) {
+        const db = createDb(connectionString);
+        await db.insert(companies).values({
+          id: companyId,
+          name: "Skill Rebind Company",
+          issuePrefix: "REB",
+          requireBoardApprovalForNewAgents: false,
+        });
+        await db.insert(companySkills).values(skillValues);
+        await db.insert(companySkillVersions).values({
+          id: versionId,
+          companyId,
+          companySkillId: skillId,
+          revisionNumber: 1,
+          label: "Initial",
+          fileInventory: [{ path: "SKILL.md", kind: "skill", content: sourceMarkdown }],
+        });
+        await db.update(companySkills).set({ currentVersionId: versionId }).where(eq(companySkills.id, skillId));
+        await db.insert(agents).values({
+          id: agentId,
+          companyId,
+          name: "Gateway Agent",
+          adapterConfig: { paperclipSkillSync: { desiredSkills: [skillValues.key] } },
+        });
+        await db.$client.end({ timeout: 5 });
+      }
+
+      await expect(rebindSeededManagedSkills({
+        sourceConnectionString: sourceDb.connectionString,
+        targetConnectionString: targetDb.connectionString,
+        sourceManagedSkillsRoot,
+        targetManagedSkillsRoot,
+      })).resolves.toEqual([{
+        name: skillValues.name,
+        fromSourceLocator: sourceSkillDir,
+        toSourceLocator: targetSkillDir,
+      }]);
+
+      const targetCheck = createDb(targetDb.connectionString);
+      const [targetSkill] = await targetCheck
+        .select({ id: companySkills.id, sourceLocator: companySkills.sourceLocator, currentVersionId: companySkills.currentVersionId })
+        .from(companySkills);
+      const [targetVersion] = await targetCheck
+        .select({ id: companySkillVersions.id, companySkillId: companySkillVersions.companySkillId })
+        .from(companySkillVersions);
+      const [targetAgent] = await targetCheck
+        .select({ id: agents.id, adapterConfig: agents.adapterConfig })
+        .from(agents);
+      await targetCheck.$client.end({ timeout: 5 });
+      expect(targetSkill).toEqual({ id: skillId, sourceLocator: targetSkillDir, currentVersionId: versionId });
+      expect(targetVersion).toEqual({ id: versionId, companySkillId: skillId });
+      expect(targetAgent).toEqual({
+        id: agentId,
+        adapterConfig: { paperclipSkillSync: { desiredSkills: [skillValues.key] } },
+      });
+      expect(fs.readFileSync(path.join(targetSkillDir, "SKILL.md"), "utf8")).toBe(sourceMarkdown);
+      expect(fs.readFileSync(path.join(targetSkillDir, "references", "checklist.md"), "utf8")).toBe(sourceReference);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("copies shared git hooks into a linked worktree git dir", () => {

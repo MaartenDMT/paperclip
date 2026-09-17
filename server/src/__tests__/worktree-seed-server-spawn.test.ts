@@ -65,6 +65,7 @@ function verifiedSeedResult() {
       stoppedRuntimeServices: 0,
     },
     reboundWorkspaces: [],
+    reboundSkills: [],
     validation: {
       authUserCount: 1,
       credentialAccountCount: 1,
