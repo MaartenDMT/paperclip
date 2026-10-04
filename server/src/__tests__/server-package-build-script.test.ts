@@ -1,9 +1,22 @@
-import { readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const packageJsonPath = fileURLToPath(
   new URL("../../package.json", import.meta.url),
+);
+const copyBuildAssetsPath = fileURLToPath(
+  new URL("../../scripts/copy-build-assets.mjs", import.meta.url),
 );
 const runnerShimPath = fileURLToPath(
   new URL("../vendor/paperclip-runner/index.ts", import.meta.url),
@@ -26,19 +39,47 @@ describe("server package build script", () => {
     );
   });
 
-  it("copies static runtime asset directories into dist", () => {
+  it("copies runtime assets and the vendored runner into dist", () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
       scripts?: Record<string, string>;
     };
-    const buildScript = packageJson.scripts?.build ?? "";
+    expect(packageJson.scripts?.build).toContain(
+      "node scripts/copy-build-assets.mjs",
+    );
 
-    expect(buildScript).toContain(
-      "mkdir -p dist/onboarding-assets dist/built-ins",
-    );
-    expect(buildScript).toContain(
-      "cp -R src/onboarding-assets/. dist/onboarding-assets/",
-    );
-    expect(buildScript).toContain("cp -R src/built-ins/. dist/built-ins/");
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "paperclip-build-assets-"));
+    try {
+      const serverRoot = join(fixtureRoot, "server");
+      const scriptPath = join(serverRoot, "scripts", "copy-build-assets.mjs");
+      mkdirSync(join(serverRoot, "scripts"), { recursive: true });
+      copyFileSync(copyBuildAssetsPath, scriptPath);
+      const directories = [
+        ["server/src/onboarding-assets", "server/dist/onboarding-assets"],
+        ["server/src/built-ins", "server/dist/built-ins"],
+        ["server/src/services/scripts", "server/dist/services/scripts"],
+        ["packages/paperclip-runner/dist", "server/dist/vendor/paperclip-runner"],
+      ] as const;
+      for (const [source] of directories) {
+        mkdirSync(join(fixtureRoot, source, "nested"), { recursive: true });
+        writeFileSync(join(fixtureRoot, source, "nested", "fixture.txt"), source);
+      }
+
+      const result = spawnSync(process.execPath, [scriptPath], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      for (const [source, destination] of directories) {
+        expect(
+          readFileSync(
+            join(fixtureRoot, destination, "nested", "fixture.txt"),
+            "utf8",
+          ),
+        ).toBe(source);
+      }
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("vendors the private runner runtime without a production workspace dependency", () => {
@@ -57,9 +98,6 @@ describe("server package build script", () => {
     expect(packageJson.scripts?.["prepare:runner-vendor"]).toBe(
       "pnpm --filter @paperclipai/paperclip-runner build",
     );
-    expect(packageJson.scripts?.build).toContain(
-      "cp -R ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/",
-    );
   });
 
   it("verifies vendored runner dependencies are mirrored before building", () => {
@@ -68,7 +106,7 @@ describe("server package build script", () => {
     };
 
     // See scripts/verify-runner-vendor-dependencies.mjs: packages/paperclip-runner
-    // is vendored with a raw `cp -R` of its compiled dist/, so every runtime
+    // is vendored by copy-build-assets.mjs from its compiled dist/, so every runtime
     // dependency it imports must also be a direct dependency of server. This
     // check derives that requirement from an esbuild scan of the vendored
     // entry points instead of relying on a human to have kept a hand-copied

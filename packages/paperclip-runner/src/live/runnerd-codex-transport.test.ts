@@ -6160,9 +6160,27 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
+        const eventOwnership = {
+          heldSourceSeq: heldEvent!.sourceSeq,
+          heldSourceEventId: heldEvent!.sourceEventId,
+          ackedSourceSeq: retired.ackedSourceSeq,
+          receiptOldAckedSourceSeq:
+            retired.warmTransition?.receipt.oldAckedSourceSeq,
+          committedEventCount: retired.committedEvents.length,
+          committedTail: retired.committedEvents.slice(-8).map((entry) => ({
+            sourceSeq: entry.sourceSeq,
+            sourceEventId: entry.sourceEventId,
+            eventType: entry.eventType,
+          })),
+        };
+        expect(retired.ackedSourceSeq, JSON.stringify(eventOwnership))
+          .toBeGreaterThanOrEqual(heldEvent!.sourceSeq);
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-        )!;
+        );
+        expect(attachedEvent, JSON.stringify(eventOwnership)).toBeDefined();
+        if (!attachedEvent)
+          throw new Error("old authority attached event is missing");
         expect(attachedEvent.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,

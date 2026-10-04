@@ -518,8 +518,8 @@ export function connectionIntentService(db: Db) {
         state: existingConnections.length > 0 ? "needs_user_action" : "available",
         connectionId: null,
       },
-      existingConnections: existingConnections.map(({ id, applicationId, name, status, enabled }) => ({
-        id, applicationId, name, status, enabled,
+      existingConnections: existingConnections.map(({ id, applicationId, name, status, enabled, healthStatus }) => ({
+        id, applicationId, name, status, enabled, healthStatus,
       })),
       requestedAgentId: payload.requestingAgentId,
       aiConnection: managed?.binding,

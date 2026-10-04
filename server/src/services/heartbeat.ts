@@ -499,6 +499,8 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  hasPersistedPendingConsultationRecipient,
+  isPendingConsultationWakeContext,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -17022,6 +17024,24 @@ export function heartbeatService(
       },
     });
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
+    let consultationRejectedAtClaim = false;
+    const consultationWasPending = isPendingConsultationWakeContext(context);
+    const verifyConsultationAtClaim = async (tx: Db, current: typeof heartbeatRuns.$inferSelect) => {
+      const currentContext = parseObject(current.contextSnapshot);
+      if (!consultationWasPending && !isPendingConsultationWakeContext(currentContext)) return true;
+      if (!issueId || run.invocationSource !== "automation" ||
+        current.invocationSource !== "automation" ||
+        readNonEmptyString(currentContext.issueId) !== issueId) return false;
+      return hasPersistedPendingConsultationRecipient(tx, {
+        runId: current.id,
+        companyId: current.companyId,
+        agentId: current.agentId,
+        invocationSource: current.invocationSource,
+        issueId,
+        context: currentContext,
+        lockInteraction: true,
+      });
+    };
     if (
       issueId &&
       run.invocationSource === "automation" &&
@@ -17084,6 +17104,10 @@ export function heartbeatService(
                 lockedRun.status !== "queued" ||
                 lockedRun.wakeupRequestId !== wake.id
               ) {
+                return { kind: "stale" as const, run: null };
+              }
+              if (!await verifyConsultationAtClaim(tx as unknown as Db, lockedRun)) {
+                consultationRejectedAtClaim = true;
                 return { kind: "stale" as const, run: null };
               }
 
@@ -17348,8 +17372,21 @@ export function heartbeatService(
     }
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          // The earlier staleness check cannot authorize this claim: the
+          // addressee may answer while the run waits for the final gate.
+          const [current] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            eq(heartbeatRuns.status, "queued"),
+          )).limit(1);
+          if (!current) return null;
+          if (!await verifyConsultationAtClaim(tx, current)) {
+            consultationRejectedAtClaim = true;
+            return null;
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
@@ -17363,11 +17400,23 @@ export function heartbeatService(
               and(
                 eq(heartbeatRuns.id, run.id),
                 eq(heartbeatRuns.status, "queued"),
+                current.contextSnapshot === null
+                  ? isNull(heartbeatRuns.contextSnapshot)
+                  : eq(heartbeatRuns.contextSnapshot, current.contextSnapshot),
+                eq(heartbeatRuns.invocationSource, current.invocationSource),
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
+    if (consultationRejectedAtClaim) {
+      const staleness = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id,
+        companyId: run.companyId,
+        expectedStatus: "queued",
+      });
+      if (staleness.outcome === "cancelled") applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+    }
     if (!claimed) return null;
 
     publishLiveEvent({

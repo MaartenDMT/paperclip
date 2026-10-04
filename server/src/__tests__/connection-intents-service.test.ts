@@ -722,7 +722,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const requested = await service.request(claims, `connection:${connection!.id}`);
     const setup = await service.setupOptions(requested.interactionId!);
     expect(setup.existingConnections).toEqual([{
-      id: connection!.id, applicationId: application!.id, name: "Archive identity", status: "active", enabled: true,
+      id: connection!.id, applicationId: application!.id, name: "Archive identity", status: "active", enabled: true, healthStatus: "ok",
     }]);
     for (const value of ["private-access", "private-refresh", "private-client", "private-url", "private-header"]) {
       expect(JSON.stringify(setup)).not.toContain(value);

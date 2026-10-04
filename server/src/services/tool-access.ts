@@ -11659,6 +11659,15 @@ export function toolAccessService(
               reconnectUrl: connectionReconnectUrl(connection),
             });
           }
+          if (
+            error instanceof HttpError &&
+            asRecord(error.details).code === "remote_http_response_timeout"
+          ) {
+            throw new HttpError(error.status, "OAuth token refresh did not respond in time", {
+              ...asRecord(error.details),
+              stage: "oauth_refresh",
+            });
+          }
           throw error;
         }
 

@@ -541,6 +541,12 @@ work lands, how follow-ups stay associated with that work, and how users see
 success or recover from failure. Avoid introducing a separate mailbox or
 provider dashboard as the primary interaction surface.
 
+**Check the existing connection before repeating sign-in.** A transport timeout can occur while the saved OAuth identity is still valid.
+Use **Check again** in the connection's Permissions view when the current actor can run its health check.
+The check uses the existing grant and access controls.
+An active connection with a health error needs a successful check before task reuse.
+Unknown health is not evidence of a healthy connection.
+
 Use rich cards in the task feed when they make external activity easier to
 understand. An email card, for example, can show the sender, recipients, body,
 attachments, and delivery state. Keep external activity distinguishable from

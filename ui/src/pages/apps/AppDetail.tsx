@@ -172,6 +172,12 @@ export function AppDetail({ renderActions, onReconnect }: {
       && grantsQuery.data?.capabilities.canConnectAsCurrentUser,
     )
     : grantsQuery.data?.capabilities.canConfigure === true;
+  // Health checks use configure access except on exact per_user connections,
+  // where the server also accepts an active grant for the current user.
+  const canCheckHealth = canReconnect && (
+    grantsQuery.data?.capabilities.canConfigure === true
+    || (connection?.credentialPolicy === "per_user" && currentUserPersonalGrant?.status === "active")
+  );
   const reconnectUnavailableMessage = grantsQuery.isLoading
     ? "Checking who can reconnect this identity…"
     : grantsQuery.isError
@@ -570,6 +576,7 @@ export function AppDetail({ renderActions, onReconnect }: {
           connection={connection}
           galleryEntry={logoEntry}
           canReconnect={canReconnect}
+          canCheckHealth={canCheckHealth}
           reconnectUnavailableMessage={reconnectUnavailableMessage}
           onReconnect={onReconnect ? () => onReconnect(connection) : connection.connectionPurpose === "ai" ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
           onReconnected={() => {
