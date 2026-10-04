@@ -1249,6 +1249,68 @@ describe("AppDetail", () => {
     expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
+  it("hides health check from a personal fallback grant owner without configure access", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", credentialPolicy: "per_user_with_fallback",
+      createdByUserId: "user-2", healthStatus: "error",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [personalGrant()],
+      capabilities: fullCapabilities({ canConfigure: false }),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(findButton("Reconnect")).toBeTruthy();
+    expect(findButton("Check again")).toBeUndefined();
+    expect(checkConnectionHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("offers health check for an active personal-only grant owner", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", credentialPolicy: "per_user",
+      createdByUserId: "user-2", healthStatus: "error",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [personalGrant()],
+      capabilities: fullCapabilities({ canConfigure: false }),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(findButton("Check again")).toBeTruthy();
+    await act(async () => findButton("Check again")?.click());
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+  });
+
+  it.each(["manager", "creator"] as const)(
+    "offers health check for a %s on a personal fallback connection",
+    async (role) => {
+      getConnectionMock.mockResolvedValue(connection({
+        authKind: "oauth", credentialPolicy: "per_user_with_fallback",
+        createdByUserId: role === "creator" ? "user-1" : "user-2",
+        healthStatus: "error",
+      }));
+      listConnectionGrantsMock.mockResolvedValue({
+        connection: { id: "conn-1", uid: "conn-1" },
+        grants: [personalGrant()],
+        capabilities: fullCapabilities(),
+        currentUserId: "user-1",
+        members: [],
+      });
+
+      await renderAppDetail();
+
+      expect(findButton("Check again")).toBeTruthy();
+    },
+  );
+
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({

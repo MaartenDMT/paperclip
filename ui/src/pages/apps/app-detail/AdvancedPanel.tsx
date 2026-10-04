@@ -153,6 +153,7 @@ export function ReconnectCard({
   onReconnected,
   onReconnect,
   canReconnect = true,
+  canCheckHealth = false,
   reconnectUnavailableMessage,
 }: {
   connection: ToolConnection;
@@ -160,6 +161,7 @@ export function ReconnectCard({
   onReconnected: () => void;
   onReconnect?: () => void;
   canReconnect?: boolean;
+  canCheckHealth?: boolean;
   reconnectUnavailableMessage?: string;
 }) {
   const { pushToast } = useToast();
@@ -246,7 +248,7 @@ export function ReconnectCard({
         </p>
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">
-        {canReconnect && !methodUnavailable && connection.healthStatus === "error" && !managedByVercel && (
+        {canCheckHealth && !methodUnavailable && connection.healthStatus === "error" && !managedByVercel && (
           <Button type="button" size="sm" variant="outline" disabled={checkAgain.isPending} onClick={() => checkAgain.mutate()}>
             {checkAgain.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             {checkAgain.isPending ? "Checking…" : "Check again"}
