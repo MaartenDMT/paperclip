@@ -65,6 +65,62 @@ import type {
 import { RunDispatchApplicationError } from "../application/types.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
+
+export function isPendingConsultationWakeContext(context: Record<string, unknown>) {
+  return context.source === "issue.interaction.created" &&
+    context.wakeReason === "interaction_pending" &&
+    context.interactionKind === "ask_user_questions" &&
+    Boolean(readNonEmptyString(context.interactionId));
+}
+
+export async function hasPersistedPendingConsultationRecipient(
+  dbOrTx: Db,
+  input: {
+    runId: string;
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    context: Record<string, unknown>;
+    invocationSource: string;
+    lockInteraction?: boolean;
+  },
+) {
+  if (input.invocationSource !== "automation" || !isPendingConsultationWakeContext(input.context)) return false;
+  const interactionId = readNonEmptyString(input.context.interactionId)!;
+  const interactionQuery = dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      eq(issueThreadInteractions.status, "pending"),
+      eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+    ));
+  const [interaction] = await (input.lockInteraction
+    ? interactionQuery.for("update")
+    : interactionQuery).limit(1);
+  if (!interaction) return false;
+  const [wake] = await dbOrTx
+    .select({ payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests)
+    .where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+      eq(agentWakeupRequests.runId, input.runId),
+      eq(agentWakeupRequests.source, "automation"),
+      eq(agentWakeupRequests.reason, "interaction_pending"),
+      eq(agentWakeupRequests.idempotencyKey, `interaction-pending:${interactionId}`),
+      inArray(agentWakeupRequests.status, ["queued", "claimed", "coalesced"]),
+    ))
+    .limit(1);
+  const payload = parseObject(wake?.payload);
+  return payload.issueId === input.issueId &&
+    payload.interactionId === interactionId &&
+    payload.interactionKind === "ask_user_questions";
+}
+
 type LoadGateFactsInput = {
   conversationContinuation: boolean;
   runId: string;
@@ -82,6 +138,7 @@ type LoadStalenessFactsInput = {
   runId: string;
   companyId: string;
   agentId: string;
+  invocationSource: string;
   issueId: string;
   contextSnapshot: Record<string, unknown>;
   scheduledRetryReason: string | null;
@@ -496,6 +553,16 @@ export function createPostgresRunDispatchAdapter(
       context,
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
+    const isPendingConsultationRecipient = issue && isPendingConsultationWakeContext(context)
+      ? await hasPersistedPendingConsultationRecipient(dbOrTx, {
+          runId: input.runId,
+          companyId: input.companyId,
+          agentId: input.agentId,
+          invocationSource: input.invocationSource,
+          issueId,
+          context,
+        })
+      : false;
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
@@ -568,7 +635,7 @@ export function createPostgresRunDispatchAdapter(
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
-      isInteractionWake,
+      isInteractionWake: isInteractionWake || isPendingConsultationRecipient,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
@@ -918,6 +985,7 @@ export function createPostgresRunDispatchAdapter(
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
+        invocationSource: run.invocationSource,
         issueId,
         contextSnapshot,
         scheduledRetryReason: run.scheduledRetryReason,

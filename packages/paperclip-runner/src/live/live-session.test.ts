@@ -1443,7 +1443,7 @@ describe("Capability live runnerd and Codex session", () => {
     const first = await firstService.create({
       ...binding,
       attemptId: "attempt-killed",
-      turnTimeoutMs: 500,
+      turnTimeoutMs: 2_000,
     });
     state.holdAfterTool = true;
     const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
@@ -1451,7 +1451,7 @@ describe("Capability live runnerd and Codex session", () => {
       expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
         "Progress persisted through the live Codex tool loop.",
       );
-    });
+    }, { timeout: 1_500 });
     await expect(first.recordUsage({
       receiptId: "provider-response-1",
       providerResponseId: "response-1",

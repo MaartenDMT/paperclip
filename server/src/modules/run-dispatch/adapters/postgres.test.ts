@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -14,6 +15,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueTreeHolds,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -52,6 +54,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -60,6 +63,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -152,6 +156,58 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       updatedAt: now,
     });
     return runId;
+  }
+
+  async function seedPendingConsultationWake(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+  }) {
+    const interactionId = randomUUID();
+    const contextSnapshot = {
+      issueId: input.issueId,
+      taskId: input.issueId,
+      interactionId,
+      interactionKind: "ask_user_questions",
+      wakeReason: "interaction_pending",
+      source: "issue.interaction.created",
+    };
+    const runId = await seedRun({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      contextSnapshot,
+    });
+    await db.update(heartbeatRuns).set({ invocationSource: "automation" })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      addresseeAgentId: input.agentId,
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single",
+          options: [{ id: "yes", label: "Yes" }],
+        }],
+      },
+    });
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "automation",
+      reason: "interaction_pending",
+      status: "queued",
+      idempotencyKey: `interaction-pending:${interactionId}`,
+      payload: { issueId: input.issueId, interactionId, interactionKind: "ask_user_questions" },
+      runId,
+    }).returning({ id: agentWakeupRequests.id });
+    await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id }).where(eq(heartbeatRuns.id, runId));
+    return { runId, interactionId, wakeupRequestId: wake!.id };
   }
 
   async function seedContinuationSummary(input: {
@@ -608,6 +664,189 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+    });
+
+    it.each([
+      { status: "in_progress", executionState: null, coalesced: false },
+      { status: "in_progress", executionState: null, coalesced: true },
+      {
+        status: "in_review",
+        executionState: {
+          status: "completed",
+          currentParticipant: null,
+          currentStageId: null,
+          reviewRequest: null,
+        },
+        coalesced: false,
+      },
+    ])("keeps a persisted pending consultation for a nonassignee when issue is $status (coalesced=$coalesced)", async ({ status, executionState, coalesced }) => {
+      const { companyId, agentId: publisherId } = await seedCompanyAndAgent();
+      const researchId = randomUUID();
+      await seedAgent({ id: researchId, companyId, name: "Research" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status, executionState, assigneeAgentId: publisherId });
+      const { runId, wakeupRequestId } = await seedPendingConsultationWake({ companyId, issueId, agentId: researchId });
+      if (coalesced) {
+        await db.update(agentWakeupRequests).set({ status: "coalesced" })
+          .where(eq(agentWakeupRequests.id, wakeupRequestId));
+        await db.update(heartbeatRuns).set({ wakeupRequestId: null })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "not_stale" });
+    });
+
+    it("keeps a pending consultation blocked by a different active review participant", async () => {
+      const { companyId, agentId: publisherId } = await seedCompanyAndAgent();
+      const researchId = randomUUID();
+      const reviewerId = randomUUID();
+      await seedAgent({ id: researchId, companyId, name: "Research" });
+      await seedAgent({ id: reviewerId, companyId, name: "Reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_review",
+        assigneeAgentId: publisherId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+          returnAssignee: { type: "agent", agentId: publisherId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+      const { runId } = await seedPendingConsultationWake({ companyId, issueId, agentId: researchId });
+
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+    });
+
+    it.each([
+      "missing wake receipt",
+      "wrong recipient",
+      "wrong interaction company",
+      "wrong interaction issue",
+      "wrong interaction id",
+      "answered interaction",
+      "wrong interaction kind",
+      "wrong run invocation source",
+      "wrong wake agent",
+      "wrong wake company",
+      "wrong wake source",
+      "wrong wake reason",
+      "wrong wake status",
+      "wrong wake payload",
+      "wrong wake run",
+      "wrong wake idempotency",
+      "ordinary task context",
+      "resolved continuation context",
+    ] as const)("keeps nonassignee ownership for %s", async (mismatch) => {
+      const { companyId, agentId: publisherId } = await seedCompanyAndAgent();
+      const researchId = randomUUID();
+      await seedAgent({ id: researchId, companyId, name: "Research" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: publisherId });
+      const { runId, interactionId, wakeupRequestId } = await seedPendingConsultationWake({
+        companyId, issueId, agentId: researchId,
+      });
+      switch (mismatch) {
+        case "missing wake receipt":
+          await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, runId));
+          await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong recipient":
+          await db.update(issueThreadInteractions).set({ addresseeAgentId: publisherId })
+            .where(eq(issueThreadInteractions.id, interactionId));
+          break;
+        case "wrong interaction company": {
+          const { companyId: otherCompanyId } = await seedCompanyAndAgent();
+          await db.update(issueThreadInteractions).set({ companyId: otherCompanyId })
+            .where(eq(issueThreadInteractions.id, interactionId));
+          break;
+        }
+        case "wrong interaction issue": {
+          const otherIssueId = randomUUID();
+          await seedIssue({ companyId, issueId: otherIssueId, status: "in_progress", assigneeAgentId: publisherId });
+          await db.update(issueThreadInteractions).set({ issueId: otherIssueId })
+            .where(eq(issueThreadInteractions.id, interactionId));
+          break;
+        }
+        case "wrong interaction id":
+          await db.update(heartbeatRuns).set({ contextSnapshot: {
+            issueId, interactionId: randomUUID(), interactionKind: "ask_user_questions",
+            wakeReason: "interaction_pending", source: "issue.interaction.created",
+          } }).where(eq(heartbeatRuns.id, runId));
+          break;
+        case "answered interaction":
+          await db.update(issueThreadInteractions).set({ status: "answered" })
+            .where(eq(issueThreadInteractions.id, interactionId));
+          break;
+        case "wrong interaction kind":
+          await db.update(issueThreadInteractions).set({ kind: "request_confirmation" })
+            .where(eq(issueThreadInteractions.id, interactionId));
+          break;
+        case "wrong run invocation source":
+          await db.update(heartbeatRuns).set({ invocationSource: "assignment" })
+            .where(eq(heartbeatRuns.id, runId));
+          break;
+        case "wrong wake source":
+          await db.update(agentWakeupRequests).set({ source: "on_demand" })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake agent":
+          await db.update(agentWakeupRequests).set({ agentId: publisherId })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake company": {
+          const { companyId: otherCompanyId } = await seedCompanyAndAgent();
+          await db.update(agentWakeupRequests).set({ companyId: otherCompanyId })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        }
+        case "wrong wake reason":
+          await db.update(agentWakeupRequests).set({ reason: "issue_assigned" })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake status":
+          await db.update(agentWakeupRequests).set({ status: "cancelled" })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake payload":
+          await db.update(agentWakeupRequests).set({ payload: { issueId, interactionId: randomUUID() } })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake run":
+          await db.update(agentWakeupRequests).set({ runId: randomUUID() })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "wrong wake idempotency":
+          await db.update(agentWakeupRequests).set({ idempotencyKey: "forged" })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          break;
+        case "ordinary task context":
+          await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, wakeReason: "issue_assigned" } })
+            .where(eq(heartbeatRuns.id, runId));
+          break;
+        case "resolved continuation context":
+          await db.update(heartbeatRuns).set({ contextSnapshot: {
+            issueId, interactionId, interactionKind: "ask_user_questions",
+            interactionStatus: "answered", mutation: "interaction", wakeReason: "issue_commented",
+          } }).where(eq(heartbeatRuns.id, runId));
+          break;
+      }
+
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
     });
 
     it(
