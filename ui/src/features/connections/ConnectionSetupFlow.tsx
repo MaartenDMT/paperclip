@@ -44,8 +44,9 @@ import {
   getAvailableConnectionMethods,
   getRecommendedConnectionMethod,
   isGoogleWorkspaceConnectorProfileId,
+  isToolConnectionAttentionHealth,
 } from "@paperclipai/shared";
-import { useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -1837,7 +1838,11 @@ export function ConnectionSetupFlow({
         <ConnectionChoiceList
           choices={existingConnections.map((connection) => ({
             id: connection.id, name: connection.name,
-            description: connection.status === "active" && connection.enabled ? "Ready to use" : "Setup needs attention",
+            description: connection.status !== "active" || !connection.enabled || isToolConnectionAttentionHealth(connection.healthStatus)
+              ? "Needs a successful connection check"
+              : connection.healthStatus === "ok" || connection.healthStatus === "healthy"
+                ? "Ready to use" : "Available, not yet checked",
+            disabled: connection.status !== "active" || !connection.enabled || isToolConnectionAttentionHealth(connection.healthStatus),
           }))}
           pendingId={existingConnectionPendingId}
           onSelect={async (id) => {
@@ -1850,6 +1855,11 @@ export function ConnectionSetupFlow({
             }
           }}
         />
+        {existingConnections.filter((connection) => isToolConnectionAttentionHealth(connection.healthStatus)).map((connection) => (
+          <p key={connection.id} className="mt-3 text-sm text-muted-foreground">
+            {connection.name} needs attention. <Link className="underline" to={`/apps/${connection.id}/permissions`}>Open connection details to check it again.</Link>
+          </p>
+        ))}
         {existingConnectionError ? (
           <InlineBanner tone="danger" className="mt-4">{existingConnectionError}</InlineBanner>
         ) : null}

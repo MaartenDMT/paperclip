@@ -87,6 +87,7 @@ vi.mock("@/lib/browserNavigation", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: ReactNode; className?: string }) => <a href={to} {...props}>{children}</a>,
   useNavigate: () => mockNavigate,
   useParams: () => mockParams,
   useSearchParams: () => [new URLSearchParams(mockSearch.value), vi.fn()],
@@ -320,7 +321,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it.each(["config-url", "transport-url", "transport-serverUrl"] as const)("reloads a generic task reconnect endpoint from %s with selection-only card metadata", async (source) => {
     const endpoint = "https://archive.example.test/mcp";
-    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true, healthStatus: "ok" as const };
     listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
     listConnectionsMock.mockResolvedValue({ connections: [{
       ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault",
@@ -341,8 +342,28 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
+  it("does not offer an attention-state connection as ready for a task", async () => {
+    const onUseExisting = vi.fn();
+    await render(undefined, false, <ConnectionSetupFlow
+      host="dialog"
+      serviceSlug="readersbase"
+      requestedAgentId="agent-1"
+      existingConnections={[{
+        id: "conn-readersbase", applicationId: "app-readersbase", name: "ReadersBase MCP",
+        status: "active", enabled: true, healthStatus: "error",
+      }]}
+      onUseExisting={onUseExisting}
+    />);
+
+    expect(container.textContent).toContain("Needs a successful connection check");
+    expect(container.textContent).not.toContain("Ready to use");
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="ReadersBase MCP"]')?.disabled).toBe(true);
+    expect(container.querySelector('a[href="/apps/conn-readersbase/permissions"]')).toBeTruthy();
+    expect(onUseExisting).not.toHaveBeenCalled();
+  });
+
   it("preserves an edited task reconnect endpoint after refreshing connection data", async () => {
-    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true, healthStatus: "ok" as const };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
     listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });

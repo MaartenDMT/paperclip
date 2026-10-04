@@ -39,7 +39,7 @@ export interface ConnectionRequestResult {
 }
 
 /** Safe metadata for selecting a connection; never includes credential or transport configuration. */
-export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled">;
+export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled" | "healthStatus">;
 
 export interface ConnectionIntentSetupOptions {
   aiConnection?: import("../ai-connections.js").AiConnectionBinding;

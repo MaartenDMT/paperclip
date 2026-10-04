@@ -1233,6 +1233,22 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("Reconnect required");
   });
 
+  it("checks an OAuth timeout with the retained grant before offering sign-in", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "ReadersBase MCP", authKind: "oauth", healthStatus: "error",
+      healthMessage: "Remote MCP endpoint did not respond in time",
+    }));
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Connection needs checking");
+    expect(findButton("Check again")).toBeTruthy();
+    await act(async () => findButton("Check again")?.click());
+    await flushReact();
+
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({

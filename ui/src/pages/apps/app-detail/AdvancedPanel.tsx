@@ -208,6 +208,23 @@ export function ReconnectCard({
       tone: "error",
     }),
   });
+  const checkAgain = useMutation({
+    mutationFn: () => toolsApi.checkConnectionHealth(connection.id),
+    onSuccess: (result) => {
+      if (result.connection.status === "active" && result.connection.enabled
+        && (result.connection.healthStatus === "ok" || result.connection.healthStatus === "healthy")) {
+        pushToast({ title: "Connection checked", body: `${humanizeConnectionDisplayName(connection)} is back online.`, tone: "success" });
+        onReconnected();
+      } else {
+        pushToast({ title: "Connection still needs attention", body: "Review its health and try again.", tone: "error" });
+      }
+    },
+    onError: (error) => pushToast({
+      title: "Connection still needs attention",
+      body: error instanceof Error ? error.message : "Try again later or reconnect this identity.",
+      tone: "error",
+    }),
+  });
   const oauth = connection.authKind === "oauth";
   const managedByVercel = connection.credentialSource === "vercel_connect";
   const methodUnavailable = connectionMethodUnavailable(connection, galleryEntry);
@@ -216,17 +233,25 @@ export function ReconnectCard({
     <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-          {methodUnavailable ? "Connection no longer supported" : oauth ? "Reconnect required" : "This app needs reconnecting"}
+          {methodUnavailable ? "Connection no longer supported" : connection.healthStatus === "error" ? "Connection needs checking" : oauth ? "Reconnect required" : "This app needs reconnecting"}
         </h2>
         <p className="mt-0.5 text-sm text-amber-800 dark:text-amber-200">
           {methodUnavailable
             ? "Add a supported connection from Connectors, then remove this connection."
-            : connection.healthMessage?.trim() || (oauth
+            : connection.healthMessage?.trim() || (connection.healthStatus === "error"
+            ? "The connection could not be checked. Try again before reconnecting."
+            : oauth
             ? "Authorization expired or was revoked. Sign in again to restore access."
             : "The key stopped working. Paste a new one to get it back online.")}
         </p>
       </div>
-      <div className="shrink-0">
+      <div className="flex shrink-0 flex-wrap gap-2">
+        {canReconnect && !methodUnavailable && connection.healthStatus === "error" && !managedByVercel && (
+          <Button type="button" size="sm" variant="outline" disabled={checkAgain.isPending} onClick={() => checkAgain.mutate()}>
+            {checkAgain.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            {checkAgain.isPending ? "Checking…" : "Check again"}
+          </Button>
+        )}
         {!canReconnect ? (
           <p className="text-sm text-amber-800 dark:text-amber-200">
             {reconnectUnavailableMessage ?? "You don't have permission to reconnect this identity."}
