@@ -499,11 +499,9 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
-} from "../modules/run-dispatch/index.js";
-import {
   hasPersistedPendingConsultationRecipient,
   isPendingConsultationWakeContext,
-} from "../modules/run-dispatch/adapters/postgres.js";
+} from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
   WakeQueueApplicationError,

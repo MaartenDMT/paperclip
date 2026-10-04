@@ -10,6 +10,11 @@ import {
 import type { RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
 
 export {
+  hasPersistedPendingConsultationRecipient,
+  isPendingConsultationWakeContext,
+} from "./adapters/postgres.js";
+
+export {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
