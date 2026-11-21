@@ -166,4 +166,16 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
 
     expect(result).toBeNull();
   });
+
+  it("returns null from getById when Postgres rejects a non-UUID short id with 22P02", async () => {
+    const pgErr = Object.assign(new Error('invalid input syntax for type uuid: "9baccace"'), {
+      code: "22P02",
+    });
+    const selectWhere = vi.fn(() => Promise.reject(pgErr));
+    const from = vi.fn(() => ({ where: selectWhere }));
+    const select = vi.fn(() => ({ from }));
+    const svc = approvalService({ select } as any);
+
+    await expect(svc.getById("9baccace")).resolves.toBeNull();
+  });
 });

@@ -31,12 +31,24 @@ export function approvalService(db: Db) {
     await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
   }
 
+  function isInvalidUuidError(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const record = err as { code?: unknown; message?: unknown; cause?: unknown };
+    if (record.code === "22P02") return true;
+    if (typeof record.message === "string" && /invalid input syntax for type uuid/i.test(record.message)) return true;
+    return record.cause ? isInvalidUuidError(record.cause) : false;
+  }
+
   async function getExistingApproval(id: string) {
     const existing = await db
       .select()
       .from(approvals)
       .where(eq(approvals.id, id))
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null)
+      .catch((err) => {
+        if (isInvalidUuidError(err)) return null;
+        throw err;
+      });
     if (!existing) throw notFound("Approval not found");
     return existing;
   }
@@ -97,7 +109,11 @@ export function approvalService(db: Db) {
         .select()
         .from(approvals)
         .where(eq(approvals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null)
+        .catch((err) => {
+          if (isInvalidUuidError(err)) return null;
+          throw err;
+        }),
 
     findOpenHireApprovalForAgent: async (companyId: string, agentId: string) => {
       const rows = await db

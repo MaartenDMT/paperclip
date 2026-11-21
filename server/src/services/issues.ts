@@ -7320,7 +7320,18 @@ export function issueService(db: Db) {
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((err: unknown) => {
+          const rec = err && typeof err === "object" ? (err as { code?: unknown; cause?: { code?: unknown }; message?: unknown }) : null;
+          if (
+            rec?.code === "22P02" ||
+            rec?.cause?.code === "22P02" ||
+            (typeof rec?.message === "string" && /invalid input syntax for type uuid/i.test(rec.message))
+          ) {
+            return null;
+          }
+          throw err;
+        });
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
       return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);

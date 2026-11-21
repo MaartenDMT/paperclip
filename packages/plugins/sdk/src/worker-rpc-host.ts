@@ -189,6 +189,8 @@ interface EventRegistration {
 
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+/** Minimum timeout for subtree traversal RPCs that aggregate relations, documents, and active runs. */
+const SUBTREE_RPC_TIMEOUT_MS = 60_000;
 
 function realpathOrResolvedPath(filePath: string): string {
   const resolvedPath = path.resolve(filePath);
@@ -821,15 +823,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
 
         async getSubtree(issueId: string, companyId: string, options) {
-          return callHost("issues.getSubtree", {
-            issueId,
-            companyId,
-            includeRoot: options?.includeRoot,
-            includeRelations: options?.includeRelations,
-            includeDocuments: options?.includeDocuments,
-            includeActiveRuns: options?.includeActiveRuns,
-            includeAssignees: options?.includeAssignees,
-          });
+          return callHost(
+            "issues.getSubtree",
+            {
+              issueId,
+              companyId,
+              includeRoot: options?.includeRoot,
+              includeRelations: options?.includeRelations,
+              includeDocuments: options?.includeDocuments,
+              includeActiveRuns: options?.includeActiveRuns,
+              includeAssignees: options?.includeAssignees,
+            },
+            Math.max(rpcTimeoutMs, SUBTREE_RPC_TIMEOUT_MS),
+          );
         },
 
         async requestWakeup(issueId: string, companyId: string, options) {
